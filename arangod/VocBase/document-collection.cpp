@@ -1350,68 +1350,58 @@ typedef std::unordered_map<TRI_voc_fid_t, TRI_df_consumer_datafile_info_t> DfiMa
 /// @brief Thread local reporter for an executed mptr update
 ////////////////////////////////////////////////////////////////////////////////
 
-static void reportUpdate (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+static TRI_df_consumer_datafile_info_t GetReportDFI (DfiMap& dfiMap, TRI_voc_fid_t fid) {
   auto it = dfiMap.find(fid);
   if (it == dfiMap.end()) {
     TRI_df_consumer_datafile_info_t tmpDfi;
     dfiMap.emplace(fid, tmpDfi);
     it = dfiMap.find(fid);
   }
-  it->second._numberAlive--;
-  it->second._sizeAlive -= TRI_DF_ALIGN_BLOCK(size);
-  it->second._numberDead++;
-  it->second._sizeDead += TRI_DF_ALIGN_BLOCK(size);
+  return it->second;
+}
+
+static void ReportUpdate (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto dfi = GetReportDFI(dfiMap, fid);
+  dfi._numberAlive--;
+  dfi._sizeAlive -= TRI_DF_ALIGN_BLOCK(size);
+  dfi._numberDead++;
+  dfi._sizeDead += TRI_DF_ALIGN_BLOCK(size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Thread local reporter for an executed index insertion
 ////////////////////////////////////////////////////////////////////////////////
 
-static void reportInsert (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
-  auto it = dfiMap.find(fid);
-  if (it == dfiMap.end()) {
-    TRI_df_consumer_datafile_info_t tmpDfi;
-    dfiMap.emplace(fid, tmpDfi);
-    it = dfiMap.find(fid);
-  }
-  it->second._numberAlive++;
-  it->second._sizeAlive += TRI_DF_ALIGN_BLOCK(size);
+static void ReportInsert (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto dfi = GetReportDFI(dfiMap, fid);
+  dfi._numberAlive++;
+  dfi._sizeAlive += TRI_DF_ALIGN_BLOCK(size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Thread local reporter for an executed index removeal
 ////////////////////////////////////////////////////////////////////////////////
 
-static void reportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
-  auto it = dfiMap.find(fid);
-  if (it == dfiMap.end()) {
-    TRI_df_consumer_datafile_info_t tmpDfi;
-    dfiMap.emplace(fid, tmpDfi);
-    it = dfiMap.find(fid);
-  }
-  it->second._numberDead++;
-  it->second._sizeDead += TRI_DF_ALIGN_BLOCK(size);
+static void ReportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto dfi = GetReportDFI(dfiMap, fid);
+  dfi._numberDead++;
+  dfi._sizeDead += TRI_DF_ALIGN_BLOCK(size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Thread local reporter for deletion
 ////////////////////////////////////////////////////////////////////////////////
 
-static void reportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid) {
-  auto it = dfiMap.find(fid);
-  if (it == dfiMap.end()) {
-    TRI_df_consumer_datafile_info_t tmpDfi;
-    dfiMap.emplace(fid, tmpDfi);
-    it = dfiMap.find(fid);
-  }
-  it->second._numberDeletion++;
+static void ReportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid) {
+  auto dfi = GetReportDFI(dfiMap, fid);
+  dfi._numberDeletion++;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Insertion Marker operation for consumer thread
 ////////////////////////////////////////////////////////////////////////////////
 
-static void consumer_insert (DfiMap& dfiMap,
+static void ConsumerInsert (DfiMap& dfiMap,
                              TRI_df_consumer_info_t& info,
                              TRI_df_consumer_item_t const* item) {
   // no primary index lock required here because we are the only ones reading from the index ATM
@@ -1472,7 +1462,7 @@ static void consumer_insert (DfiMap& dfiMap,
     }
 
     ++info._numberDocuments;
-    reportInsert(dfiMap, item->fid, marker->_size);
+    ReportInsert(dfiMap, item->fid, marker->_size);
   }
   // it is an update, but only if found has a smaller revision identifier
   else if (found->_rid < d->_rid ||
@@ -1489,14 +1479,14 @@ static void consumer_insert (DfiMap& dfiMap,
 
     if (found->getDataPtr() != nullptr) {
       int64_t size = (int64_t) ((TRI_df_marker_t*) found->getDataPtr())->_size;  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
-      reportUpdate(dfiMap, found->_fid, size);
-      reportInsert(dfiMap, item->fid, size);
+      ReportUpdate(dfiMap, found->_fid, size);
+      ReportInsert(dfiMap, item->fid, size);
     }
   }
   // it is a stale update
   else {
     TRI_ASSERT(found->getDataPtr() != nullptr);  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
-    reportDelete(dfiMap, item->fid, ((TRI_df_marker_t*) found->getDataPtr())->_size);
+    ReportDelete(dfiMap, item->fid, ((TRI_df_marker_t*) found->getDataPtr())->_size);
   }
 }
 
@@ -1504,14 +1494,14 @@ static void consumer_insert (DfiMap& dfiMap,
 /// @brief Deletion Marker operation for consumer thread
 ////////////////////////////////////////////////////////////////////////////////
 
-static void consumer_remove (DfiMap& dfiMap,
+static void ConsumerRemove (DfiMap& dfiMap,
                              TRI_df_consumer_info_t& info,
                              TRI_df_consumer_item_t const* item) {
   auto primaryIndex = info._index;
   TRI_voc_key_t key = item->key;
   TRI_doc_mptr_t* found = primaryIndex->lookupKey(key);
 
-  reportDelete(dfiMap, item->fid);
+  ReportDelete(dfiMap, item->fid);
 
   // it is a new entry, so we missed the create
   if (found == nullptr) {
@@ -1520,7 +1510,7 @@ static void consumer_remove (DfiMap& dfiMap,
   // it is a real delete
   TRI_ASSERT(found->getDataPtr() != nullptr);  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
   int64_t size = (int64_t) ((TRI_df_marker_t*) found->getDataPtr())->_size;  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
-  reportUpdate(dfiMap, found->_fid, size);
+  ReportUpdate(dfiMap, found->_fid, size);
 
   primaryIndex->removeKey(key); // ONLY IN INDEX, PROTECTED by RUNTIME
 
@@ -1537,7 +1527,7 @@ static void consumer_remove (DfiMap& dfiMap,
 ///        reports datafile info protected under a lock.
 ////////////////////////////////////////////////////////////////////////////////
 
-static void consumer_thread (TRI_document_collection_t* document, // Concurrent access. Write only under reportLock
+static void ConsumerThread (TRI_document_collection_t* document, // Concurrent access. Write only under reportLock
                              ConsumerQueue& queue,
                              bool knowsSize,
                              std::mutex& reportLock,
@@ -1553,9 +1543,9 @@ static void consumer_thread (TRI_document_collection_t* document, // Concurrent 
     // TODO Sleep
     while (queue.pop(item)) {
       if (item->isInsert) {
-        consumer_insert(dfiMap, info, item);
+        ConsumerInsert(dfiMap, info, item);
       } else {
-        consumer_remove(dfiMap, info, item);
+        ConsumerRemove(dfiMap, info, item);
       }
       // Free the item
       delete item;
