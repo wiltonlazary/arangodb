@@ -805,7 +805,8 @@ static bool FixDatafile (TRI_datafile_t* datafile,
 ////////////////////////////////////////////////////////////////////////////////
 
 static bool CheckDatafile (TRI_datafile_t* datafile,
-                           bool ignoreFailures) {
+                           bool ignoreFailures,
+                           bool usesLegacyMarker) {
   // this function must not be called for non-physical datafiles
   TRI_ASSERT(datafile->isPhysical(datafile));
 
@@ -1893,12 +1894,16 @@ bool TRI_IterateDatafile (TRI_datafile_t* datafile,
 /// @brief opens an existing datafile
 ///
 /// The datafile will be opened read-only if a footer is found
+/// The third parameter is a flag that will indicate if the database uses
+/// pre WAL markers for document insertion and removing
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_datafile_t* TRI_OpenDatafile (char const* filename,
-                                  bool ignoreFailures) {
+                                  bool ignoreFailures,
+                                  bool& usesLegacyMarker) {
   // this function must not be called for non-physical datafiles
   TRI_ASSERT(filename != nullptr);
+  usesLegacyMarker = false;
 
   TRI_datafile_t* datafile = OpenDatafile(filename, false);
 
@@ -1907,7 +1912,7 @@ TRI_datafile_t* TRI_OpenDatafile (char const* filename,
   }
 
   // check the datafile by scanning markers
-  bool ok = CheckDatafile(datafile, ignoreFailures);
+  bool ok = CheckDatafile(datafile, ignoreFailures, usesLegacyMarker);
 
   if (! ok) {
     TRI_UNMMFile(datafile->_data, datafile->_maximalSize, datafile->_fd, &datafile->_mmHandle);

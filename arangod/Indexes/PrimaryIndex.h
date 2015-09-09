@@ -151,6 +151,13 @@ namespace triagens {
 
         void insertKey (struct TRI_doc_mptr_t*, uint64_t);
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief adds a complete list of elements into the index
+////////////////////////////////////////////////////////////////////////////////
+
+        void batchKeyInsert (std::vector<TRI_doc_mptr_t*> const* headers,
+                             size_t numThreads) override final;
+
         TRI_doc_mptr_t* removeKey (char const*);
 
         int resize (size_t);

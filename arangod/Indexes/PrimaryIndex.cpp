@@ -254,6 +254,13 @@ void PrimaryIndex::insertKey (TRI_doc_mptr_t* header,
   //
 }
 
+void PrimaryIndex::batchInsertKey (std::vector<TRI_doc_mptr_t*> const* headers,
+                                size_t numThreads) {
+
+  _primaryIndex->batchInsert(headers, numThreads);
+
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief removes an key/element from the index
 ////////////////////////////////////////////////////////////////////////////////

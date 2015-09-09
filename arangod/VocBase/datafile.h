@@ -710,7 +710,8 @@ bool TRI_IterateDatafile (TRI_datafile_t*,
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_datafile_t* TRI_OpenDatafile (char const*,
-                                  bool);
+                                  bool
+                                  bool&);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief closes a datafile and all memory regions
