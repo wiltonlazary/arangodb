@@ -140,7 +140,7 @@ namespace triagens {
 
         TRI_doc_mptr_t* lookupSequentialReverse (triagens::basics::BucketPosition& position);
 
-        int insertKey (TRI_doc_mptr_t*, void const**);
+        int insertKey (TRI_doc_mptr_t*, TRI_doc_mptr_t**);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief adds a key/element to the index
@@ -149,13 +149,6 @@ namespace triagens {
 ////////////////////////////////////////////////////////////////////////////////
 
         int insertKey (struct TRI_doc_mptr_t*, triagens::basics::BucketPosition const&);
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief adds a complete list of elements into the index
-////////////////////////////////////////////////////////////////////////////////
-
-        void batchKeyInsert (std::vector<TRI_doc_mptr_t*> const* headers,
-                             size_t numThreads) override final;
 
         TRI_doc_mptr_t* removeKey (char const*);
 

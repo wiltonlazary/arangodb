@@ -216,7 +216,7 @@ TRI_doc_mptr_t* PrimaryIndex::lookupSequentialReverse (triagens::basics::BucketP
 ////////////////////////////////////////////////////////////////////////////////
 
 int PrimaryIndex::insertKey (TRI_doc_mptr_t* header,
-                             void const** found) {
+                             TRI_doc_mptr_t** found) {
   *found = nullptr;
   int res = _primaryIndex->insert(header);
 
@@ -236,13 +236,6 @@ int PrimaryIndex::insertKey (TRI_doc_mptr_t* header,
 int PrimaryIndex::insertKey (TRI_doc_mptr_t* header,
                              triagens::basics::BucketPosition const& position) {
   return _primaryIndex->insertAtPosition(header, position);
-}
-
-void PrimaryIndex::batchInsertKey (std::vector<TRI_doc_mptr_t*> const* headers,
-                                size_t numThreads) {
-
-  _primaryIndex->batchInsert(headers, numThreads);
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
