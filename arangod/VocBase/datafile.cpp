@@ -1899,6 +1899,12 @@ bool TRI_IterateDatafile (TRI_datafile_t* datafile,
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_datafile_t* TRI_OpenDatafile (char const* filename,
+                                  bool ignoreFailures) {
+  bool tmp;
+  return TRI_OpenDatafile(filename, ignoreFailures, tmp);
+}
+
+TRI_datafile_t* TRI_OpenDatafile (char const* filename,
                                   bool ignoreFailures,
                                   bool& usesLegacyMarker) {
   // this function must not be called for non-physical datafiles

@@ -63,6 +63,8 @@
 #include "Wal/Marker.h"
 #include "Wal/Slots.h"
 
+#include <boost/lockfree/queue.hpp>
+
 using namespace triagens::arango;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -642,7 +644,7 @@ static int InsertPrimaryIndex (TRI_document_collection_t* document,
 
   // insert into primary index
   auto primaryIndex = document->primaryIndex();
-  int res = primaryIndex->insertKey(header, (void const**) &found);
+  int res = primaryIndex->insertKey(header, &found);
 
   if (res != TRI_ERROR_NO_ERROR) {
     return res;
@@ -761,7 +763,7 @@ static int DeleteSecondaryIndexes (TRI_document_collection_t* document,
 /// @brief creates and initially populates a document master pointer
 ////////////////////////////////////////////////////////////////////////////////
 
-static int CreateHeader (TRI_document_collection_t* document,
+static int CreateHeader (TRI_headers_t* headersPtr,
                          TRI_doc_document_key_marker_t const* marker,
                          TRI_voc_fid_t fid,
                          TRI_voc_key_t key,
@@ -771,7 +773,7 @@ static int CreateHeader (TRI_document_collection_t* document,
   TRI_ASSERT(markerSize > 0);
 
   // get a new header pointer
-  TRI_doc_mptr_t* header = document->_headersPtr->request(markerSize);  // ONLY IN OPENITERATOR
+  TRI_doc_mptr_t* header = headersPtr->request(markerSize);  // ONLY IN OPENITERATOR
 
   if (header == nullptr) {
     return TRI_ERROR_OUT_OF_MEMORY;
@@ -1223,6 +1225,12 @@ static int CloneMarkerNoLegend (triagens::wal::Marker*& marker,
 
 static size_t OpenIteratorBufferSize = 128;
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief size of OpenIterator consumer queue
+////////////////////////////////////////////////////////////////////////////////
+
+static size_t const QUEUE_SIZE = 1000;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                                     private types
 // -----------------------------------------------------------------------------
@@ -1258,9 +1266,320 @@ typedef struct open_iterator_operation_s {
 }
 open_iterator_operation_t;
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Consumer item that is needed to parallely insert elements
+///        into a primary index
+////////////////////////////////////////////////////////////////////////////////
+
+struct TRI_df_consumer_item_t {
+  bool isInsert;
+  TRI_voc_key_t key;
+  TRI_voc_fid_t fid;
+  TRI_df_marker_t const* marker;
+
+  TRI_df_consumer_item_t (
+      bool isInsert,
+      TRI_voc_key_t key,
+      TRI_voc_fid_t fid,
+      TRI_df_marker_t const* marker
+    ) : isInsert(isInsert),
+        key(key),
+        fid(fid),
+        marker(marker) {}
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Scanner - Consumer Communication lockfree queue type
+///        The consumer is responsible to delete the items.
+////////////////////////////////////////////////////////////////////////////////
+
+typedef boost::lockfree::queue<TRI_df_consumer_item_t*, boost::lockfree::capacity<QUEUE_SIZE>> ConsumerQueue;
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Information required for each consumer thread
+////////////////////////////////////////////////////////////////////////////////
+
+struct TRI_df_consumer_info_t {
+  triagens::arango::PrimaryIndex*  _index;
+  int64_t                          _numberDocuments;
+  TRI_headers_t*                   _headersPtr;
+  bool                             _knowsSize;
+
+  TRI_df_consumer_info_t (triagens::arango::PrimaryIndex* index,
+                          TRI_headers_t* headersPtr,
+                          bool knowsSize)
+    : _index(index),
+      _numberDocuments(0),
+      _headersPtr(headersPtr),
+      _knowsSize(knowsSize) {
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Thread local datafile information container
+////////////////////////////////////////////////////////////////////////////////
+
+struct TRI_df_consumer_datafile_info_t {
+  TRI_voc_ssize_t                   _numberAlive;
+  TRI_voc_ssize_t                   _numberDead;
+
+  int64_t                           _numberDeletion;
+  int64_t                           _sizeAlive;
+  int64_t                           _sizeDead;
+
+  TRI_df_consumer_datafile_info_t () 
+    : _numberAlive(0),
+      _numberDead(0),
+      _numberDeletion(0),
+      _sizeAlive(0),
+      _sizeDead(0) {
+  }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Map holding thread local datafile informations
+////////////////////////////////////////////////////////////////////////////////
+
+typedef std::unordered_map<TRI_voc_fid_t, TRI_df_consumer_datafile_info_t> DfiMap;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                                 private functions
 // -----------------------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Thread local reporter for an executed mptr update
+////////////////////////////////////////////////////////////////////////////////
+
+static void reportUpdate (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto it = dfiMap.find(fid);
+  if (it == dfiMap.end()) {
+    TRI_df_consumer_datafile_info_t tmpDfi;
+    dfiMap.emplace(fid, tmpDfi);
+    it = dfiMap.find(fid);
+  }
+  it->second._numberAlive--;
+  it->second._sizeAlive -= TRI_DF_ALIGN_BLOCK(size);
+  it->second._numberDead++;
+  it->second._sizeDead += TRI_DF_ALIGN_BLOCK(size);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Thread local reporter for an executed index insertion
+////////////////////////////////////////////////////////////////////////////////
+
+static void reportInsert (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto it = dfiMap.find(fid);
+  if (it == dfiMap.end()) {
+    TRI_df_consumer_datafile_info_t tmpDfi;
+    dfiMap.emplace(fid, tmpDfi);
+    it = dfiMap.find(fid);
+  }
+  it->second._numberAlive++;
+  it->second._sizeAlive += TRI_DF_ALIGN_BLOCK(size);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Thread local reporter for an executed index removeal
+////////////////////////////////////////////////////////////////////////////////
+
+static void reportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid, TRI_voc_ssize_t size) {
+  auto it = dfiMap.find(fid);
+  if (it == dfiMap.end()) {
+    TRI_df_consumer_datafile_info_t tmpDfi;
+    dfiMap.emplace(fid, tmpDfi);
+    it = dfiMap.find(fid);
+  }
+  it->second._numberDead++;
+  it->second._sizeDead += TRI_DF_ALIGN_BLOCK(size);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Thread local reporter for deletion
+////////////////////////////////////////////////////////////////////////////////
+
+static void reportDelete (DfiMap& dfiMap, TRI_voc_fid_t fid) {
+  auto it = dfiMap.find(fid);
+  if (it == dfiMap.end()) {
+    TRI_df_consumer_datafile_info_t tmpDfi;
+    dfiMap.emplace(fid, tmpDfi);
+    it = dfiMap.find(fid);
+  }
+  it->second._numberDeletion++;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Insertion Marker operation for consumer thread
+////////////////////////////////////////////////////////////////////////////////
+
+static void consumer_insert (DfiMap& dfiMap,
+                             TRI_df_consumer_info_t& info,
+                             TRI_df_consumer_item_t const* item) {
+  // no primary index lock required here because we are the only ones reading from the index ATM
+  auto primaryIndex = info._index;
+  TRI_voc_key_t key = item->key;
+  TRI_df_marker_t const* marker = item->marker;
+  TRI_doc_document_key_marker_t const* d = reinterpret_cast<TRI_doc_document_key_marker_t const*>(marker);
+
+  triagens::basics::BucketPosition slot;
+  uint64_t hash;
+  TRI_doc_mptr_t const* found = primaryIndex->lookupKey(key, slot, hash);
+
+  // it is a new entry
+  if (found == nullptr) {
+    TRI_doc_mptr_t* header;
+
+    // get a header
+    int res = CreateHeader(info._headersPtr, d, item->fid, key, hash, &header);
+
+    if (res != TRI_ERROR_NO_ERROR) {
+      LOG_ERROR("out of memory");
+      // TODO Error Handling
+      // return TRI_set_errno(res);
+    }
+    TRI_ASSERT(header != nullptr);
+
+    // insert into primary index
+    if (info._knowsSize) {
+      // we can now use an optimized insert method,
+      // no resize checks necessary and position is known
+      res  = primaryIndex->insertKey(header, slot);
+      if (res == TRI_ERROR_ARANGO_UNIQUE_CONSTRAINT_VIOLATED) {
+        info._headersPtr->release(header, true);  // ONLY IN OPENITERATOR
+      }
+    }
+    else {
+      // use regular insert method
+      TRI_doc_mptr_t* oldElement;
+      res = primaryIndex->insertKey(header, &oldElement);
+
+      if (res != TRI_ERROR_NO_ERROR) {
+        // TODO Error Handling cannot Return here!
+        LOG_ERROR("inserting document into indexes failed");
+        info._headersPtr->release(header, true);  // ONLY IN OPENITERATOR
+      }
+      if (oldElement != nullptr) {
+        // we found a previous revision in the index
+        // the found revision is still alive
+        LOG_TRACE("document '%s' already existed with revision %llu while creating revision %llu",
+                  key,  // ONLY IN INDEX, PROTECTED by RUNTIME
+                  (unsigned long long) oldElement->_rid,
+                  (unsigned long long) header->_rid);
+        LOG_ERROR("inserting document into indexes failed");
+
+        // TODO Error Handling cannot Return here!
+        info._headersPtr->release(header, true);  // ONLY IN OPENITERATOR
+      }
+    }
+
+    ++info._numberDocuments;
+    reportInsert(dfiMap, item->fid, marker->_size);
+  }
+  // it is an update, but only if found has a smaller revision identifier
+  else if (found->_rid < d->_rid ||
+           (found->_rid == d->_rid && found->_fid <= item->fid)) {
+    // save the old data
+    TRI_doc_mptr_copy_t oldData = *found;
+
+    TRI_doc_mptr_t* newHeader = const_cast<TRI_doc_mptr_t*>(found);
+
+    // update the header info
+    // This is safe. The header has to be in this bucket so no concurrency here
+    UpdateHeader(item->fid, marker, newHeader, found);
+    info._headersPtr->moveBack(newHeader, &oldData);  // ONLY IN OPENITERATOR
+
+    if (found->getDataPtr() != nullptr) {
+      int64_t size = (int64_t) ((TRI_df_marker_t*) found->getDataPtr())->_size;  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
+      reportUpdate(dfiMap, found->_fid, size);
+      reportInsert(dfiMap, item->fid, size);
+    }
+  }
+  // it is a stale update
+  else {
+    TRI_ASSERT(found->getDataPtr() != nullptr);  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
+    reportDelete(dfiMap, item->fid, ((TRI_df_marker_t*) found->getDataPtr())->_size);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Deletion Marker operation for consumer thread
+////////////////////////////////////////////////////////////////////////////////
+
+static void consumer_remove (DfiMap& dfiMap,
+                             TRI_df_consumer_info_t& info,
+                             TRI_df_consumer_item_t const* item) {
+  auto primaryIndex = info._index;
+  TRI_voc_key_t key = item->key;
+  TRI_doc_mptr_t* found = primaryIndex->lookupKey(key);
+
+  reportDelete(dfiMap, item->fid);
+
+  // it is a new entry, so we missed the create
+  if (found == nullptr) {
+    return;
+  }
+  // it is a real delete
+  TRI_ASSERT(found->getDataPtr() != nullptr);  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
+  int64_t size = (int64_t) ((TRI_df_marker_t*) found->getDataPtr())->_size;  // ONLY IN OPENITERATOR, PROTECTED by RUNTIME
+  reportUpdate(dfiMap, found->_fid, size);
+
+  primaryIndex->removeKey(key); // ONLY IN INDEX, PROTECTED by RUNTIME
+
+  --info._numberDocuments;
+  // free the header
+  info._headersPtr->release(found, true);   // ONLY IN OPENITERATOR
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Implementation of consumer thread.
+///        This thread has the following behvaiour:
+///        It listens on the given queue and inserts/deletes items in the index.
+///        If the queue is empty and the atomic isDone is true this thread
+///        reports datafile info protected under a lock.
+////////////////////////////////////////////////////////////////////////////////
+
+static void consumer_thread (TRI_document_collection_t* document, // Concurrent access. Write only under reportLock
+                             ConsumerQueue& queue,
+                             bool knowsSize,
+                             std::mutex& reportLock,
+                             std::atomic<bool>& isDone
+    ) {
+  triagens::arango::PrimaryIndex* idx = document->primaryIndex();
+  TRI_df_consumer_info_t info(idx, document->_headersPtr, knowsSize);
+  TRI_df_consumer_item_t* item;
+  DfiMap dfiMap;
+
+  // isDone is atomic globally And will be asked, if all buckets are empty
+  while (! isDone) {
+    // TODO Sleep
+    while (queue.pop(item)) {
+      if (item->isInsert) {
+        consumer_insert(dfiMap, info, item);
+      } else {
+        consumer_remove(dfiMap, info, item);
+      }
+      // Free the item
+      delete item;
+    }
+  }
+  // This thread is done
+  // Report the datafile info and numberDocuments
+  {
+    // Protected under reportLock
+    std::lock_guard<std::mutex> guard(reportLock);
+    for (auto& it : dfiMap) {
+      auto dfi = TRI_FindDatafileInfoDocumentCollection(document, it.first, true);
+      if (dfi != nullptr) {
+        dfi->_numberAlive += it.second._numberAlive;
+        dfi->_numberDead += it.second._numberDead;
+        dfi->_sizeAlive += it.second._sizeAlive;
+        dfi->_sizeDead += it.second._sizeDead;
+        dfi->_numberDeletion += it.second._numberDeletion;
+      }
+    }
+    document->_numberDocuments += info._numberDocuments;
+  }
+  // Everything is reported. Cleanup and report.
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief mark a transaction as failed during opening of a collection
@@ -1344,7 +1663,7 @@ static int OpenIteratorApplyInsert (open_iterator_state_t* state,
     TRI_doc_mptr_t* header;
 
     // get a header
-    int res = CreateHeader(document, (TRI_doc_document_key_marker_t*) marker, operation->_fid, key, hash, &header);
+    int res = CreateHeader(document->_headersPtr, (TRI_doc_document_key_marker_t*) marker, operation->_fid, key, hash, &header);
 
     if (res != TRI_ERROR_NO_ERROR) {
       LOG_ERROR("out of memory");
