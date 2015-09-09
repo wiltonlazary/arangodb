@@ -66,7 +66,7 @@ static void JS_StateLoggerReplication (const v8::FunctionCallbackInfo<v8::Value>
 
   v8::Handle<v8::Object> server = v8::Object::New(isolate);
   server->Set(TRI_V8_ASCII_STRING("version"),  TRI_V8_ASCII_STRING(TRI_VERSION));
-  server->Set(TRI_V8_ASCII_STRING("serverId"), TRI_V8_STD_STRING(StringUtils::itoa(TRI_GetIdServer()))); /// TODO
+  server->Set(TRI_V8_ASCII_STRING("serverId"), TRI_V8_STD_STRING(StringUtils::itoa(TRI_GetIdServer())));
   result->Set(TRI_V8_ASCII_STRING("server"), server);
   
   v8::Handle<v8::Object> clients = v8::Object::New(isolate);
@@ -179,12 +179,12 @@ static void JS_LastLoggerReplication (const v8::FunctionCallbackInfo<v8::Value>&
 /// @brief sync data from a remote master
 ////////////////////////////////////////////////////////////////////////////////
 
-static void JS_SynchroniseReplication (const v8::FunctionCallbackInfo<v8::Value>& args) {
+static void JS_SynchronizeReplication (const v8::FunctionCallbackInfo<v8::Value>& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
   if (args.Length() != 1 || ! args[0]->IsObject()) {
-    TRI_V8_THROW_EXCEPTION_USAGE("REPLICATION_SYNCHRONISE(<config>)");
+    TRI_V8_THROW_EXCEPTION_USAGE("REPLICATION_SYNCHRONIZE(<config>)");
   }
 
   TRI_vocbase_t* vocbase = GetContextVocBase(isolate);
@@ -711,7 +711,7 @@ void TRI_InitV8Replication (v8::Isolate* isolate,
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_LOGGER_LAST"), JS_LastLoggerReplication, true);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_LOGGER_TICK_RANGES"), JS_TickRangesLoggerReplication, true);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_LOGGER_FIRST_TICK"), JS_FirstTickLoggerReplication, true);
-  TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_SYNCHRONISE"), JS_SynchroniseReplication, true);
+  TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_SYNCHRONIZE"), JS_SynchronizeReplication, true);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_SERVER_ID"), JS_ServerIdReplication, true);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_APPLIER_CONFIGURE"), JS_ConfigureApplierReplication, true);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("REPLICATION_APPLIER_START"), JS_StartApplierReplication, true);

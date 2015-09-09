@@ -273,12 +273,12 @@ static void JS_StopOutputPager (const v8::FunctionCallbackInfo<v8::Value>& args)
 /// @FUN{importCsvFile(@FA{filename}, @FA{collection})}
 ///
 /// Imports data of a CSV file. The data is imported to @FA{collection}.
-////The seperator is @CODE{\,} and the quote is @CODE{"}.
+////The separator is @CODE{\,} and the quote is @CODE{"}.
 ///
 /// @FUN{importCsvFile(@FA{filename}, @FA{collection}, @FA{options})}
 ///
 /// Imports data of a CSV file. The data is imported to @FA{collection}.
-////The seperator is @CODE{\,} and the quote is @CODE{"}.
+////The separator is @CODE{\,} and the quote is @CODE{"}.
 ////////////////////////////////////////////////////////////////////////////////
 
 static void JS_ImportCsvFile (const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -1882,8 +1882,8 @@ static bool RunJsLint (v8::Isolate* isolate, v8::Handle<v8::Context> context) {
 ////////////////////////////////////////////////////////////////////////////////
 
 void* arangoshResourcesAllocated = nullptr;
-static void arangoshEntryFunction ();
-static void arangoshExitFunction (int, void*);
+static void LocalEntryFunction ();
+static void LocalExitFunction (int, void*);
 
 #ifdef _WIN32
 
@@ -1893,7 +1893,7 @@ static void arangoshExitFunction (int, void*);
 // TODO can we move this to a general function for all binaries?
 // .............................................................................
 
-void arangoshEntryFunction() {
+void LocalEntryFunction() {
   int maxOpenFiles = 1024;
   int res = 0;
 
@@ -1922,16 +1922,16 @@ void arangoshEntryFunction() {
     _exit(1);
   }
 
-  TRI_Application_Exit_SetExit(arangoshExitFunction);
+  TRI_Application_Exit_SetExit(LocalExitFunction);
 }
 
-static void arangoshExitFunction (int exitCode, void* data) {
+static void LocalExitFunction (int exitCode, void* data) {
   // ...........................................................................
   // TODO: need a terminate function for windows to be called and cleanup
   // any windows specific stuff.
   // ...........................................................................
 
-  int res = finaliseWindows(TRI_WIN_FINAL_WSASTARTUP_FUNCTION_CALL, 0);
+  int res = finalizeWindows(TRI_WIN_FINAL_WSASTARTUP_FUNCTION_CALL, 0);
 
   if (res != 0) {
     exit(1);
@@ -1941,10 +1941,10 @@ static void arangoshExitFunction (int exitCode, void* data) {
 }
 #else
 
-static void arangoshEntryFunction() {
+static void LocalEntryFunction() {
 }
 
-static void arangoshExitFunction (int exitCode, void* data) {
+static void LocalExitFunction (int exitCode, void* data) {
 }
 
 #endif
@@ -2306,7 +2306,7 @@ int main (int argc, char* args[]) {
     cygwinShell = true;
   }
 #endif
-  arangoshEntryFunction();
+  LocalEntryFunction();
 
   TRIAGENS_C_INITIALIZE(argc, args);
   TRIAGENS_REST_INITIALIZE(argc, args);
@@ -2469,7 +2469,7 @@ int main (int argc, char* args[]) {
   v8::V8::Dispose();
   v8::V8::ShutdownPlatform();
   delete platform;
-  arangoshExitFunction(ret, nullptr);
+  LocalExitFunction(ret, nullptr);
 
   return ret;
 }

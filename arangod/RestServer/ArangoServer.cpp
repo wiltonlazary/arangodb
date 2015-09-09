@@ -380,8 +380,7 @@ ArangoServer::ArangoServer (int argc, char** argv)
     _pairForAqlHandler(nullptr),
     _pairForJobHandler(nullptr),
     _indexPool(nullptr),
-    _threadAffinity(0),
-    _defaultIndexWatermarks() {
+    _threadAffinity(0) {
 
   TRI_SetApplicationName("arangod");
 
@@ -596,12 +595,12 @@ void ArangoServer::buildApplicationServer () {
     ("database.query-cache-mode", &_queryCacheMode, "mode for the AQL query cache (on, off, demand)")
     ("database.query-cache-max-results", &_queryCacheMaxResults, "maximum number of results in query cache per database")
     ("database.index-threads", &_indexThreads, "threads to start for parallel background index creation")
-    ("database.throw-collection-not-loaded-error", &_throwCollectionNotLoadedError, "throw an error when accessing a collection that is still loading")
-   /* 
+#if 0    
     ("database.index-initial-fill-factor", &_defaultIndexWatermarks.initialFillFactor, "the initial fill factor for hash and edge indexes")
     ("database.index-low-watermark", &_defaultIndexWatermarks.lowWatermark, "low watermark for hash and edge indexes")
     ("database.index-high-watermark", &_defaultIndexWatermarks.highWatermark, "high watermark for hash and edge indexes")
-    */
+#endif    
+    ("database.throw-collection-not-loaded-error", &_throwCollectionNotLoadedError, "throw an error when accessing a collection that is still loading")
   ;
 
   // .............................................................................
@@ -728,76 +727,8 @@ void ArangoServer::buildApplicationServer () {
     LOG_INFO("please use the '--database.directory' option");
     LOG_FATAL_AND_EXIT("no database path has been supplied, giving up");
   }
-  
-#ifdef __arm__
-  // detect alignment settings for ARM
-  {
-    // To change the alignment trap behavior, simply echo a number into
-    // /proc/cpu/alignment.  The number is made up from various bits:
-    // 
-    // bit             behavior when set
-    // ---             -----------------
-    // 
-    // 0               A user process performing an unaligned memory access
-    //                 will cause the kernel to print a message indicating
-    //                 process name, pid, pc, instruction, address, and the
-    //                 fault code.
-    // 
-    // 1               The kernel will attempt to fix up the user process
-    //                 performing the unaligned access.  This is of course
-    //                 slow (think about the floating point emulator) and
-    //                 not recommended for production use.
-    //
-    // 2               The kernel will send a SIGBUS signal to the user process
-    //                 performing the unaligned access.
-    bool alignmentDetected = false;
 
-    std::string const filename("/proc/cpu/alignment");
-    try {
-      std::string const cpuAlignment = triagens::basics::FileUtils::slurp(filename);
-      auto start = cpuAlignment.find("User faults:");
-
-      if (start != std::string::npos) {
-        start += strlen("User faults:");
-        size_t end = start;
-        while (end < cpuAlignment.size()) {
-          if (cpuAlignment[end] == ' ' || cpuAlignment[end] == '\t') {
-            ++end;
-          }
-          else {
-            break;
-          }
-        }
-        while (end < cpuAlignment.size()) {
-          ++end;
-          if (cpuAlignment[end] < '0' || cpuAlignment[end] > '9') {
-            break;
-          }
-        }
-      
-        int64_t alignment = std::stol(std::string(cpuAlignment.c_str() + start, end - start));
-        if ((alignment & 2) == 0) {
-          LOG_WARNING("possibly incompatible CPU alignment settings found in '%s'. this may cause arangod to abort with SIGBUS. it may be necessary to set the value in '%s' to 2", 
-                      filename.c_str(), 
-                      filename.c_str());
-        }
-
-        alignmentDetected = true;
-      }
-
-    }
-    catch (...) {
-      // ignore that we cannot detect the alignment
-      LOG_TRACE("unable to detect CPU alignment settings. could not process file '%s'", filename.c_str());
-    }
-
-    if (! alignmentDetected) {
-      LOG_WARNING("unable to detect CPU alignment settings. could not process file '%s'. this may cause arangod to abort with SIGBUS. it may be necessary to set the value in '%s' to 2", 
-        filename.c_str(),
-        filename.c_str());
-    }
-  }
-#endif
+  runStartupChecks(); 
 
   // strip trailing separators
   _databasePath = StringUtils::rTrim(_databasePath, TRI_DIR_SEPARATOR_STR);
@@ -816,6 +747,11 @@ void ArangoServer::buildApplicationServer () {
     // testing disables authentication
     _disableAuthentication = true;
   }
+ 
+#if 0 
+  // default defaults for index watermarks
+  IndexWatermarks::SetDefaults(_defaultIndexWatermarks);
+#endif
 
   TRI_SetThrowCollectionNotLoadedVocBase(nullptr, _throwCollectionNotLoadedError);
   
@@ -1276,6 +1212,82 @@ int ArangoServer::startupServer () {
 // -----------------------------------------------------------------------------
 // --SECTION--                                                   private methods
 // -----------------------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief run arbitrary checks at startup
+////////////////////////////////////////////////////////////////////////////////
+
+void ArangoServer::runStartupChecks () {
+#ifdef __arm__
+  // detect alignment settings for ARM
+  {
+    // To change the alignment trap behavior, simply echo a number into
+    // /proc/cpu/alignment.  The number is made up from various bits:
+    // 
+    // bit             behavior when set
+    // ---             -----------------
+    // 
+    // 0               A user process performing an unaligned memory access
+    //                 will cause the kernel to print a message indicating
+    //                 process name, pid, pc, instruction, address, and the
+    //                 fault code.
+    // 
+    // 1               The kernel will attempt to fix up the user process
+    //                 performing the unaligned access.  This is of course
+    //                 slow (think about the floating point emulator) and
+    //                 not recommended for production use.
+    //
+    // 2               The kernel will send a SIGBUS signal to the user process
+    //                 performing the unaligned access.
+    bool alignmentDetected = false;
+
+    std::string const filename("/proc/cpu/alignment");
+    try {
+      std::string const cpuAlignment = triagens::basics::FileUtils::slurp(filename);
+      auto start = cpuAlignment.find("User faults:");
+
+      if (start != std::string::npos) {
+        start += strlen("User faults:");
+        size_t end = start;
+        while (end < cpuAlignment.size()) {
+          if (cpuAlignment[end] == ' ' || cpuAlignment[end] == '\t') {
+            ++end;
+          }
+          else {
+            break;
+          }
+        }
+        while (end < cpuAlignment.size()) {
+          ++end;
+          if (cpuAlignment[end] < '0' || cpuAlignment[end] > '9') {
+            break;
+          }
+        }
+      
+        int64_t alignment = std::stol(std::string(cpuAlignment.c_str() + start, end - start));
+        if ((alignment & 2) == 0) {
+          LOG_FATAL_AND_EXIT("possibly incompatible CPU alignment settings found in '%s'. this may cause arangod to abort with SIGBUS. please set the value in '%s' to 2", 
+                             filename.c_str(), 
+                             filename.c_str());
+        }
+
+        alignmentDetected = true;
+      }
+
+    }
+    catch (...) {
+      // ignore that we cannot detect the alignment
+      LOG_TRACE("unable to detect CPU alignment settings. could not process file '%s'", filename.c_str());
+    }
+
+    if (! alignmentDetected) {
+      LOG_WARNING("unable to detect CPU alignment settings. could not process file '%s'. this may cause arangod to abort with SIGBUS. it may be necessary to set the value in '%s' to 2", 
+        filename.c_str(),
+        filename.c_str());
+    }
+  }
+#endif
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief wait for the heartbeat thread to run

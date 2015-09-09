@@ -140,6 +140,7 @@ HashIndex::UniqueArray::~UniqueArray () {
 
   delete _hashArray;
   delete _hashElement;
+  delete _isEqualElElByKey;
 }
 
 // -----------------------------------------------------------------------------
@@ -204,9 +205,9 @@ HashIndex::HashIndex (TRI_idx_iid_t iid,
   }
     
   std::unique_ptr<HashElementFunc> func(new HashElementFunc(_paths.size()));
+  std::unique_ptr<IsEqualElementElementByKey> compare(new IsEqualElementElementByKey(_paths.size()));
 
   if (unique) {
-    std::unique_ptr<IsEqualElementElementByKey> compare(new IsEqualElementElementByKey(_paths.size()));
     std::unique_ptr<TRI_HashArray_t> array(new TRI_HashArray_t(HashKey,
                                                                *(func.get()),
                                                                IsEqualKeyElementHash,
@@ -221,8 +222,6 @@ HashIndex::HashIndex (TRI_idx_iid_t iid,
   else {
     _multiArray = nullptr;
       
-    std::unique_ptr<IsEqualElementElementByKey> compare(new IsEqualElementElementByKey(_paths.size()));
-
     std::unique_ptr<TRI_HashArrayMulti_t> array(new TRI_HashArrayMulti_t(HashKey, 
                                                                          *(func.get()),
                                                                          IsEqualKeyElement,
@@ -234,9 +233,9 @@ HashIndex::HashIndex (TRI_idx_iid_t iid,
       
     _multiArray = new HashIndex::MultiArray(array.get(), func.get(), compare.get());
 
-    compare.release();
     array.release();
   }
+  compare.release();
 
   func.release();
 }
@@ -278,11 +277,11 @@ double HashIndex::selectivityEstimate () const {
         
 size_t HashIndex::memory () const {
   if (_unique) {
-    return static_cast<size_t>(keyEntrySize() * _uniqueArray->_hashArray->size() + 
+    return static_cast<size_t>(elementSize() * _uniqueArray->_hashArray->size() + 
                                _uniqueArray->_hashArray->memoryUsage());
   }
 
-  return static_cast<size_t>(keyEntrySize() * _multiArray->_hashArray->size() +
+  return static_cast<size_t>(elementSize() * _multiArray->_hashArray->size() +
                              _multiArray->_hashArray->memoryUsage());
 }
 
@@ -475,12 +474,8 @@ int HashIndex::lookup (TRI_index_search_value_t* searchValue,
 int HashIndex::insertUnique (TRI_doc_mptr_t const* doc,
                              bool isRollback) {
 
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
-
   std::vector<TRI_index_element_t*> elements;
-  int res = fillElement(allocate, elements, doc);
+  int res = fillElement(elements, doc);
   
   if (res != TRI_ERROR_NO_ERROR) {
     for (auto& it : elements) {
@@ -495,16 +490,17 @@ int HashIndex::insertUnique (TRI_doc_mptr_t const* doc,
     TRI_IF_FAILURE("InsertHashIndex") {
       return TRI_ERROR_DEBUG;
     }
-    return _uniqueArray->_hashArray->insert(element, isRollback);
+    return _uniqueArray->_hashArray->insert(element);
   };
 
-  size_t count = elements.size();
-  for (size_t i = 0; i < count; ++i) {
+  size_t const n = elements.size();
+
+  for (size_t i = 0; i < n; ++i) {
     auto hashElement = elements[i];
     res = work(hashElement, isRollback);
 
     if (res != TRI_ERROR_NO_ERROR) {
-      for (size_t j = i; j < count; ++j) {
+      for (size_t j = i; j < n; ++j) {
         // Free all elements that are not yet in the index
         FreeElement(elements[j]);
       }
@@ -517,14 +513,12 @@ int HashIndex::insertUnique (TRI_doc_mptr_t const* doc,
 
 int HashIndex::batchInsertUnique (std::vector<TRI_doc_mptr_t const*> const* documents, 
                                   size_t numThreads) {
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
-
   std::vector<TRI_index_element_t*> elements;
   elements.reserve(documents->size());
+
   for (auto& doc : *documents) {
-    int res = fillElement(allocate, elements, doc);
+    int res = fillElement(elements, doc);
+
     if (res != TRI_ERROR_NO_ERROR) {
       for (auto& it : elements) {
         // free all elements to prevent leak
@@ -533,6 +527,7 @@ int HashIndex::batchInsertUnique (std::vector<TRI_doc_mptr_t const*> const* docu
       return res;
     }
   }
+
   int res = _uniqueArray->_hashArray->batchInsert(&elements, numThreads);
 
   if (res != TRI_ERROR_NO_ERROR) {
@@ -549,12 +544,15 @@ int HashIndex::batchInsertUnique (std::vector<TRI_doc_mptr_t const*> const* docu
 int HashIndex::insertMulti (TRI_doc_mptr_t const* doc,
                             bool isRollback) {
 
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
-
   std::vector<TRI_index_element_t*> elements;
-  int res = fillElement(allocate, elements, doc);
+  int res = fillElement(elements, doc);
+    
+  if (res != TRI_ERROR_NO_ERROR) {
+    for (auto& hashElement : elements) {
+      FreeElement(hashElement);
+    }
+    return res;
+  }
 
   auto work = [this] (TRI_index_element_t* element, bool isRollback) -> int {
     TRI_IF_FAILURE("InsertHashIndex") {
@@ -574,12 +572,14 @@ int HashIndex::insertMulti (TRI_doc_mptr_t const* doc,
     return TRI_ERROR_NO_ERROR;
   };
   
-  size_t const count = elements.size();
-  for (size_t i = 0; i < count; ++i) {
+  size_t const n = elements.size();
+
+  for (size_t i = 0; i < n; ++i) {
     auto hashElement = elements[i];
     res = work(hashElement, isRollback);
+
     if (res != TRI_ERROR_NO_ERROR) {
-      for (size_t j = i; j < count; ++j) {
+      for (size_t j = i; j < n; ++j) {
         // Free all elements that are not yet in the index
         FreeElement(elements[j]);
       }
@@ -596,14 +596,11 @@ int HashIndex::insertMulti (TRI_doc_mptr_t const* doc,
 int HashIndex::batchInsertMulti (std::vector<TRI_doc_mptr_t const*> const* documents, 
                                  size_t numThreads) {
 
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
-
   std::vector<TRI_index_element_t*> elements;
 
   for (auto& doc : *documents) {
-    int res = fillElement(allocate, elements, doc);
+    int res = fillElement(elements, doc);
+
     if (res != TRI_ERROR_NO_ERROR) {
       // Filling the elements failed for some reason. Assume loading as failed
       for (auto& el : elements) {
@@ -638,11 +635,8 @@ int HashIndex::removeUniqueElement (TRI_index_element_t* element, bool isRollbac
 }
 
 int HashIndex::removeUnique (TRI_doc_mptr_t const* doc, bool isRollback) {
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
   std::vector<TRI_index_element_t*> elements;
-  int res = fillElement(allocate, elements, doc);
+  int res = fillElement(elements, doc);
 
   if (res != TRI_ERROR_NO_ERROR) {
     for (auto& hashElement : elements) {
@@ -659,32 +653,35 @@ int HashIndex::removeUnique (TRI_doc_mptr_t const* doc, bool isRollback) {
 }
 
 int HashIndex::removeMultiElement (TRI_index_element_t* element, bool isRollback) {
-    TRI_IF_FAILURE("RemoveHashIndex") {
-      return TRI_ERROR_DEBUG;
-    }
+  TRI_IF_FAILURE("RemoveHashIndex") {
+    return TRI_ERROR_DEBUG;
+  }
 
-    TRI_index_element_t* old = _multiArray->_hashArray->remove(element);
-       
-    if (old == nullptr) {
-      // not found
-      if (isRollback) {   // ignore in this case, because it can happen
-        return TRI_ERROR_NO_ERROR;
-      }
-      else {
-        return TRI_ERROR_INTERNAL;
-      }
+  TRI_index_element_t* old = _multiArray->_hashArray->remove(element);
+      
+  if (old == nullptr) {
+    // not found
+    if (isRollback) {   // ignore in this case, because it can happen
+      return TRI_ERROR_NO_ERROR;
     }
-    FreeElement(old);
-    return TRI_ERROR_NO_ERROR;
+    else {
+      return TRI_ERROR_INTERNAL;
+    }
+  }
+  FreeElement(old);
+
+  return TRI_ERROR_NO_ERROR;
 }
 
 int HashIndex::removeMulti (TRI_doc_mptr_t const* doc, bool isRollback) {
-
-  auto allocate = [this] () -> TRI_index_element_t* {
-    return TRI_index_element_t::allocate(keyEntrySize(), false);
-  };
   std::vector<TRI_index_element_t*> elements;
-  int res = fillElement(allocate, elements, doc);
+  int res = fillElement(elements, doc);
+
+  if (res != TRI_ERROR_NO_ERROR) {
+    for (auto& hashElement : elements) {
+      FreeElement(hashElement);
+    }
+  }
 
   for (auto& hashElement : elements) {
     res = removeMultiElement(hashElement, isRollback);
@@ -693,7 +690,6 @@ int HashIndex::removeMulti (TRI_doc_mptr_t const* doc, bool isRollback) {
                  
   return res;
 }
-
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                       END-OF-FILE

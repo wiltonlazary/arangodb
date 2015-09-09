@@ -36,11 +36,37 @@
 #include "Basics/gcd.h"
 #include "Basics/JsonHelper.h"
 #include "Basics/logging.h"
+#include "Basics/memory-map.h"
 #include "Basics/MutexLocker.h"
+#include "Basics/prime-numbers.h"
 #include "Basics/random.h"
 
 namespace triagens {
   namespace basics {
+
+// -----------------------------------------------------------------------------
+// --SECTION--                                Position object for bucket indexes
+// -----------------------------------------------------------------------------
+
+    struct BucketPosition {
+      size_t bucketId;
+      uint64_t position;
+
+      BucketPosition () 
+        : bucketId(SIZE_MAX),
+          position(0) {
+      }
+
+      void reset () {
+        bucketId = SIZE_MAX - 1;
+        position = 0;
+      }
+
+      bool operator== (BucketPosition const& other) const {
+        return position == other.position &&
+               bucketId == other.bucketId;
+      }
+    };
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                       UNIQUE ASSOCIATIVE POINTERS
@@ -54,7 +80,7 @@ namespace triagens {
       class AssocUnique {
 
         public:
-
+          
           typedef std::function<uint64_t(Key const*)> HashKeyFuncType;
           typedef std::function<uint64_t(Element const*)> HashElementFuncType;
           typedef std::function<bool(Key const*, uint64_t hash, Element const*)> 
@@ -206,9 +232,21 @@ namespace triagens {
 
             TRI_ASSERT(targetSize > 0);
 
+            targetSize = TRI_NearPrime(targetSize);
+
             // This might throw, is catched outside
             b._table = new Element* [targetSize];
 
+#ifdef __linux__
+            if (b._nrAlloc > 1000000) {
+              uintptr_t mem = reinterpret_cast<uintptr_t>(b._table);
+              uintptr_t pageSize = getpagesize();
+              mem = (mem / pageSize) * pageSize;
+              void* memptr = reinterpret_cast<void*>(mem);
+              TRI_MMFileAdvise(memptr, b._nrAlloc * sizeof(Element*),
+                               TRI_MADVISE_RANDOM);
+            }
+#endif
             for (uint64_t i = 0; i < targetSize; i++) {
               b._table[i] = nullptr;
             }
@@ -260,21 +298,30 @@ namespace triagens {
           }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief Finds the element at the given position in concatenated buckets.
-///        Say we have 2 Buckets each of size 5. Position 7 would be in
-///        the second bucket at Position 2 (7 - Bucket1.size())
+/// @brief Finds the element at the given position in the buckets.
+///        Iterates using the given step size
 ////////////////////////////////////////////////////////////////////////////////
 
-          Element* findElementSequentialBucktes (uint64_t position) const {
-            for (auto& b : _buckets) {
-              if (position >= b._nrAlloc) {
-                position -= b._nrAlloc;
+          Element* findElementSequentialBucketsRandom (BucketPosition& position,
+                                                       uint64_t const step,
+                                                       BucketPosition const& initial) const {
+            Element* found;
+            Bucket b = _buckets[position.bucketId];
+            do {
+              found = b._table[position.position];
+              position.position += step;
+              while (position.position >= b._nrAlloc) {
+                position.position -= b._nrAlloc;
+                position.bucketId = (position.bucketId + 1) % _buckets.size();
+                b = _buckets[position.bucketId];
               }
-              else {
-                return b._table[position];
+              if (position == initial) {
+                // We are done. Return the last element we have in hand
+                return found;
               }
             }
-            return nullptr;
+            while (found == nullptr);
+            return found;
           }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -290,11 +337,11 @@ namespace triagens {
             uint64_t i = hash % n;
             uint64_t k = i;
 
-            for (; i < n && b._table[i] != nullptr && 
-                ! _isEqualElementElementByKey(element, b._table[i]); ++i);
+            for (; i < n && b._table[i] != nullptr &&
+                 ! _isEqualElementElementByKey(element, b._table[i]); ++i);
             if (i == n) {
               for (i = 0; i < k && b._table[i] != nullptr && 
-                  ! _isEqualElementElementByKey(element, b._table[i]); ++i);
+                   ! _isEqualElementElementByKey(element, b._table[i]); ++i);
             }
 
             Element* arrayElement = b._table[i];
@@ -304,12 +351,10 @@ namespace triagens {
             }
 
             b._table[i] = element;
-            TRI_ASSERT(b._table[i] != nullptr);
             b._nrUsed++;
 
             return TRI_ERROR_NO_ERROR;
           }
-
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                  public functions
@@ -359,11 +404,14 @@ namespace triagens {
 ////////////////////////////////////////////////////////////////////////////////
 
           int resize (size_t size) {
+            size /= _buckets.size();
             for (auto& b : _buckets) {
+              if (2 * (2 * size + 1) < 3 * b._nrUsed) {
+                return TRI_ERROR_BAD_PARAMETER;
+              }
+
               try {
-                resizeInternal(b,
-                    (uint64_t) (3 * size / 2 + 1) / _buckets.size(), 
-                    false);
+                resizeInternal(b, 2 * size + 1, false);
               }
               catch (...) {
                 return TRI_ERROR_OUT_OF_MEMORY;
@@ -423,7 +471,8 @@ namespace triagens {
           Element* findByKey (Key const* key) const {
             uint64_t hash = _hashKey(key);
             uint64_t i = hash;
-            Bucket const& b = _buckets[i & _bucketsMask];
+            uint64_t bucketId = i & _bucketsMask;
+            Bucket const& b = _buckets[bucketId];
 
             uint64_t const n = b._nrAlloc;
             i = i % n;
@@ -435,6 +484,44 @@ namespace triagens {
               for (i = 0; i < k && b._table[i] != nullptr && 
                   ! _isEqualKeyElement(key, hash, b._table[i]); ++i);
             }
+            
+            // ...........................................................................
+            // return whatever we found, this is nullptr if the thing was not found
+            // and otherwise a valid pointer
+            // ...........................................................................
+
+            return b._table[i];
+          }
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief finds an element given a key, returns NULL if not found
+/// also returns the internal hash value and the bucket position the element
+/// was found at (or would be placed into)
+////////////////////////////////////////////////////////////////////////////////
+
+          Element* findByKey (Key const* key,
+                              BucketPosition& position,
+                              uint64_t& hash) const {
+            hash = _hashKey(key);
+            uint64_t i = hash;
+            uint64_t bucketId = i & _bucketsMask;
+            Bucket const& b = _buckets[bucketId];
+
+            uint64_t const n = b._nrAlloc;
+            i = i % n;
+            uint64_t k = i;
+
+            for (; i < n && b._table[i] != nullptr && 
+                ! _isEqualKeyElement(key, hash, b._table[i]); ++i);
+            if (i == n) {
+              for (i = 0; i < k && b._table[i] != nullptr && 
+                  ! _isEqualKeyElement(key, hash, b._table[i]); ++i);
+            }
+            
+            // if requested, pass the position of the found element back
+            // to the caller
+            position.bucketId = bucketId;
+            position.position = i;
 
             // ...........................................................................
             // return whatever we found, this is nullptr if the thing was not found
@@ -448,9 +535,7 @@ namespace triagens {
 /// @brief adds an element to the array
 ////////////////////////////////////////////////////////////////////////////////
 
-          int insert (Element* element,
-                      bool isRollback) {
-
+          int insert (Element* element) {
             uint64_t hash = _hashElement(element);
             Bucket& b = _buckets[hash & _bucketsMask];
 
@@ -459,6 +544,34 @@ namespace triagens {
             }
 
             return doInsert(element, b, hash);
+          }
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief adds an element to the array, at the specified position
+/// the caller must have calculated the correct position before. 
+/// the caller must also have checked that the bucket still has some reserve
+/// space.
+/// if the method returns TRI_ERROR_UNIQUE_CONSTRAINT_VIOLATED, the element
+/// was not inserted. if it returns TRI_ERROR_OUT_OF_MEMORY, the element was
+/// inserted, but resizing afterwards failed!
+////////////////////////////////////////////////////////////////////////////////
+
+          int insertAtPosition (Element* element, BucketPosition const& position) {
+            Bucket& b = _buckets[position.bucketId];
+            Element* arrayElement = b._table[position.position];
+
+            if (arrayElement != nullptr) {
+              return TRI_ERROR_ARANGO_UNIQUE_CONSTRAINT_VIOLATED;
+            }
+
+            b._table[position.position] = element;
+            b._nrUsed++;
+           
+            if (! checkResize(b, 0)) {
+              return TRI_ERROR_OUT_OF_MEMORY;
+            }
+            
+            return TRI_ERROR_NO_ERROR;
           }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -735,31 +848,65 @@ namespace triagens {
 /// @brief a method to iterate over all elements in the index in
 ///        a sequential order.
 ///        Returns nullptr if all documents have been returned.
-///        Convention: position === 0 indicates a new start.
+///        Convention: position.bucketId == SIZE_MAX indicates a new start.
+///        Convention: position.bucketId == SIZE_MAX - 1 indicates a restart.
+///        During a continue the total will not be modified.
 ////////////////////////////////////////////////////////////////////////////////
 
-          Element* findSequential (uint64_t& position,
+          Element* findSequential (BucketPosition& position,
                                    uint64_t& total) const {
-            if (position == 0) {
-              if (isEmpty()) {
+            if (position.bucketId >= _buckets.size()) {
+              // bucket id is out of bounds. now handle edge cases
+              if (position.bucketId < SIZE_MAX - 1) {
                 return nullptr;
               }
-              // Fill Total
-              total = 0;
-              for (auto& b : _buckets) {
-                total += b._nrAlloc;
+
+              if (position.bucketId == SIZE_MAX) {
+                // first call, now fill total
+                total = 0;
+                for (auto const& b : _buckets) {
+                  total += b._nrUsed;
+                }
+
+                if (total == 0) {
+                  return nullptr;
+                }
+
+                TRI_ASSERT(total > 0);
               }
-              TRI_ASSERT(total > 0);
+
+              position.bucketId = 0;
+              position.position = 0;
             }
 
-            Element* res = nullptr;
-            do {
-              res = findElementSequentialBucktes(position);
-              position++;
-            } 
-            while (position < total && res == nullptr);
+            while (true) {
+              Bucket const& b = _buckets[position.bucketId];
+              uint64_t const n = b._nrAlloc;
 
-            return res;
+              for (; position.position < n && b._table[position.position] == nullptr; ++position.position);
+
+              if (position.position != n) {
+                // found an element
+                auto found = b._table[position.position];
+                TRI_ASSERT_EXPENSIVE(found != nullptr);
+
+                // move forward the position indicator one more time
+                if (++position.position == n) {
+                  position.position = 0;
+                  ++position.bucketId;
+                }
+
+                return found;
+              }
+
+              // reached end
+              position.position = 0;
+              if (++position.bucketId >= _buckets.size()) {
+                // Indicate we are done
+                return nullptr;
+              }
+              // continue iteration with next bucket
+            }
           }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -769,28 +916,44 @@ namespace triagens {
 ///        Convention: position === UINT64_MAX indicates a new start.
 ////////////////////////////////////////////////////////////////////////////////
 
-          Element* findSequentialReverse (uint64_t& position) const {
-            if (position == UINT64_MAX) {
-              if (isEmpty()) {
+          Element* findSequentialReverse (BucketPosition& position) const {
+            if (position.bucketId >= _buckets.size()) {
+              // bucket id is out of bounds. now handle edge cases
+              if (position.bucketId < SIZE_MAX - 1) {
                 return nullptr;
               }
 
-              // Fill Total
-              uint64_t position = 0;
-              for (auto& b : _buckets) {
-                position += b._nrAlloc;
+              if (position.bucketId == SIZE_MAX && isEmpty()) {
+                return nullptr;
               }
-              TRI_ASSERT(position > 0);
+
+              position.bucketId = _buckets.size() - 1;
+              position.position = _buckets[position.bucketId]._nrAlloc - 1;
             }
 
-            Element* res = nullptr;
+            Bucket b = _buckets[position.bucketId];
+            Element* found;
             do {
-              res = findElementSequentialBucktes(position);
-              position--;
-            } 
-            while (position > 0 && res == nullptr);
+              found = b._table[position.position];
 
-            return res;
+              if (position.position == 0) {
+                if (position.bucketId == 0) {
+                  // Indicate we are done
+                  position.bucketId = _buckets.size();
+                  return nullptr;
+                }
+
+                --position.bucketId;
+                b = _buckets[position.bucketId];
+                position.position = b._nrAlloc - 1;
+              }
+              else {
+                --position.position;
+              }
+            } 
+            while (found == nullptr);
+
+            return found;
           }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -800,8 +963,8 @@ namespace triagens {
 ///        Convention: *step === 0 indicates a new start.
 ////////////////////////////////////////////////////////////////////////////////
 
-          Element* findRandom (uint64_t& initialPosition,
-                               uint64_t& position,
+          Element* findRandom (BucketPosition& initialPosition,
+                               BucketPosition& position,
                                uint64_t& step,
                                uint64_t& total) const {
             if (step != 0 && position == initialPosition) {
@@ -810,12 +973,14 @@ namespace triagens {
             }
             if (step == 0) {
               // Initialize
-              if (isEmpty()) {
-                return nullptr;
-              }
+              uint64_t used = 0;
               total = 0;
               for (auto& b : _buckets) {
                 total += b._nrAlloc;
+                used += b._nrUsed;
+              }
+              if (used == 0) {
+                return nullptr;
               }
               TRI_ASSERT(total > 0);
 
@@ -823,25 +988,26 @@ namespace triagens {
               while (true) {
                 step = TRI_UInt32Random() % total;
                 if (step > 10 && triagens::basics::binaryGcd<uint64_t>(total, step) == 1) {
-                  while (initialPosition == 0) {
-                    initialPosition = TRI_UInt32Random() % total;
+                  uint64_t initialPositionNr = 0;
+                  while (initialPositionNr == 0) {
+                    initialPositionNr = TRI_UInt32Random() % total;
                   }
-                  position = initialPosition;
+                  for (size_t i = 0; i < _buckets.size(); ++i) {
+                    if (initialPositionNr < _buckets[i]._nrAlloc) {
+                      position.bucketId = i;
+                      position.position = initialPositionNr;
+                      initialPosition.bucketId = i;
+                      initialPosition.position = initialPositionNr;
+                      break;
+                    }
+                    initialPositionNr -= _buckets[i]._nrAlloc;
+                  }
                   break;
                 }
               }
             }
 
-            // Find documents
-            Element* res = nullptr; 
-            do {
-              res = findElementSequentialBucktes(position);
-              position += step;
-              position = position % total;
-            } 
-            while (initialPosition != position && res == nullptr);
-
-            return res;
+            return findElementSequentialBucketsRandom(position, step, initialPosition);
           }
 
       };
