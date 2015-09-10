@@ -1231,6 +1231,8 @@ static size_t OpenIteratorBufferSize = 128;
 
 static size_t const QUEUE_SIZE = 1000;
 
+static uint64_t const QUEUE_SLEEP = 1000;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                                     private types
 // -----------------------------------------------------------------------------
@@ -1545,7 +1547,7 @@ static void ConsumerThread (TRI_document_collection_t* document, // Concurrent a
 
   // isDone is atomic globally And will be asked, if all buckets are empty
   while (! *isDone) {
-    // TODO Sleep
+    usleep(QUEUE_SLEEP);
     while (queue->pop(item)) {
       if (item->isInsert) {
         ConsumerInsert(dfiMap, info, item);
@@ -1647,7 +1649,11 @@ static int OpenIteratorApplyInsert (open_iterator_state_t* state,
 
   ++state->_documents;
   std::unique_ptr<TRI_df_consumer_item_t> item(new TRI_df_consumer_item_t(true, key, operation->_fid, marker));
-  queue->push(item.get());
+  bool ok = queue->push(item.get());
+  while (! ok) {
+    usleep(QUEUE_SLEEP);
+    ok = queue->push(item.get());
+  }
   item.release();
   return TRI_ERROR_NO_ERROR;
 }
@@ -1854,7 +1860,11 @@ static int OpenIteratorApplyRemove (open_iterator_state_t* state,
   document->_keyGenerator->track(key);
 
   std::unique_ptr<TRI_df_consumer_item_t> item(new TRI_df_consumer_item_t(false, key, operation->_fid, marker));
-  queue->push(item.get());
+  bool ok = queue->push(item.get());
+  while (! ok) {
+    usleep(QUEUE_SLEEP);
+    ok = queue->push(item.get());
+  }
   item.release();
   return TRI_ERROR_NO_ERROR;
 }
@@ -2698,6 +2708,9 @@ static int IterateMarkersCollection (TRI_collection_t* collection) {
   openState.queue = &queue;
   // read all documents and fill primary index
   TRI_IterateCollection(collection, OpenIterator, &openState);
+  isDone = true;
+
+  Consumer.join();
 
   LOG_TRACE("found %llu document markers, %llu deletion markers for collection '%s'",
             (unsigned long long) openState._documents,
@@ -2708,9 +2721,6 @@ static int IterateMarkersCollection (TRI_collection_t* collection) {
   OpenIteratorAbortTransaction(&openState);
 
   TRI_DestroyVector(&openState._operations);
-  isDone = true;
-
-  Consumer.join();
 
   return TRI_ERROR_NO_ERROR;
 }
