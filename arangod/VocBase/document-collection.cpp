@@ -1231,7 +1231,7 @@ static size_t OpenIteratorBufferSize = 128;
 
 static size_t const QUEUE_SIZE = 1000;
 
-static uint64_t const QUEUE_SLEEP = 1000;
+static uint64_t const QUEUE_SLEEP = 10;
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                     private types
