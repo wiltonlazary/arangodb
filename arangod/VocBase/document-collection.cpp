@@ -1236,26 +1236,6 @@ static size_t const QUEUE_SIZE = 1000;
 // -----------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief state during opening of a collection
-////////////////////////////////////////////////////////////////////////////////
-
-typedef struct open_iterator_state_s {
-  TRI_document_collection_t* _document;
-  TRI_voc_tid_t              _tid;
-  TRI_voc_fid_t              _fid;
-  TRI_doc_datafile_info_t*   _dfi;
-  TRI_vector_t               _operations;
-  TRI_vocbase_t*             _vocbase;
-  uint64_t                   _deletions;
-  uint64_t                   _documents;
-  int64_t                    _initialCount;
-  uint32_t                   _trxCollections;
-  uint32_t                   _numOps;
-  bool                       _trxPrepared;
-}
-open_iterator_state_t;
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief container for a single collection operation (used during opening)
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1294,6 +1274,29 @@ struct TRI_df_consumer_item_t {
 ////////////////////////////////////////////////////////////////////////////////
 
 typedef boost::lockfree::queue<TRI_df_consumer_item_t*, boost::lockfree::capacity<QUEUE_SIZE>> ConsumerQueue;
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief state during opening of a collection
+////////////////////////////////////////////////////////////////////////////////
+
+typedef struct open_iterator_state_s {
+  TRI_document_collection_t* _document;
+  TRI_voc_tid_t              _tid;
+  TRI_voc_fid_t              _fid;
+  TRI_doc_datafile_info_t*   _dfi;
+  TRI_vector_t               _operations;
+  TRI_vocbase_t*             _vocbase;
+  uint64_t                   _deletions;
+  uint64_t                   _documents;
+  int64_t                    _initialCount;
+  uint32_t                   _trxCollections;
+  uint32_t                   _numOps;
+  bool                       _trxPrepared;
+  ConsumerQueue*             queue;
+}
+open_iterator_state_t;
+
+
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Information required for each consumer thread
@@ -1528,20 +1531,22 @@ static void ConsumerRemove (DfiMap& dfiMap,
 ////////////////////////////////////////////////////////////////////////////////
 
 static void ConsumerThread (TRI_document_collection_t* document, // Concurrent access. Write only under reportLock
-                             ConsumerQueue& queue,
+                             ConsumerQueue* queue,
                              bool knowsSize,
-                             std::mutex& reportLock,
-                             std::atomic<bool>& isDone
+                             std::mutex* reportLock,
+                             std::atomic<bool>* isDone
     ) {
+  // Well this thread does not know anything about transactions...
+  TransactionBase fake(true);
   triagens::arango::PrimaryIndex* idx = document->primaryIndex();
   TRI_df_consumer_info_t info(idx, document->_headersPtr, knowsSize);
   TRI_df_consumer_item_t* item;
   DfiMap dfiMap;
 
   // isDone is atomic globally And will be asked, if all buckets are empty
-  while (! isDone) {
+  while (! *isDone) {
     // TODO Sleep
-    while (queue.pop(item)) {
+    while (queue->pop(item)) {
       if (item->isInsert) {
         ConsumerInsert(dfiMap, info, item);
       } else {
@@ -1555,7 +1560,7 @@ static void ConsumerThread (TRI_document_collection_t* document, // Concurrent a
   // Report the datafile info and numberDocuments
   {
     // Protected under reportLock
-    std::lock_guard<std::mutex> guard(reportLock);
+    std::lock_guard<std::mutex> guard(*reportLock);
     for (auto& it : dfiMap) {
       auto dfi = TRI_FindDatafileInfoDocumentCollection(document, it.first, true);
       if (dfi != nullptr) {
@@ -1589,6 +1594,66 @@ static int OpenIteratorNoteFailedTransaction (open_iterator_state_t const* state
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief apply an insert/update operation when opening a collection
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorApplyInsert (open_iterator_state_t* state,
+                                    open_iterator_operation_t const* operation,
+                                    ConsumerQueue* queue) {
+  TRI_document_collection_t* document = state->_document;
+
+  TRI_df_marker_t const* marker = operation->_marker;
+  TRI_doc_document_key_marker_t const* d = reinterpret_cast<TRI_doc_document_key_marker_t const*>(marker);
+
+  if (state->_fid != operation->_fid) {
+    // update the state
+    state->_fid = operation->_fid;
+    state->_dfi = TRI_FindDatafileInfoDocumentCollection(document, operation->_fid, true);
+  }
+
+  SetRevision(document, d->_rid, false);
+
+#ifdef TRI_ENABLE_LOGGER
+#ifdef TRI_ENABLE_MAINTAINER_MODE
+  
+#if 0
+  // currently disabled because it is too chatty in trace mode
+  if (marker->_type == TRI_DOC_MARKER_KEY_DOCUMENT) {
+    LOG_TRACE("document: fid %llu, key %s, rid %llu, _offsetJson %lu, _offsetKey %lu",
+              (unsigned long long) operation->_fid,
+              ((char*) d + d->_offsetKey),
+              (unsigned long long) d->_rid,
+              (unsigned long) d->_offsetJson,
+              (unsigned long) d->_offsetKey);
+  }
+  else {
+    TRI_doc_edge_key_marker_t const* e = reinterpret_cast<TRI_doc_edge_key_marker_t const*>(marker);
+    LOG_TRACE("edge: fid %llu, key %s, fromKey %s, toKey %s, rid %llu, _offsetJson %lu, _offsetKey %lu",
+              (unsigned long long) operation->_fid,
+              ((char*) d + d->_offsetKey),
+              ((char*) e + e->_offsetFromKey),
+              ((char*) e + e->_offsetToKey),
+              (unsigned long long) d->_rid,
+              (unsigned long) d->_offsetJson,
+              (unsigned long) d->_offsetKey);
+
+  }
+#endif
+
+#endif
+#endif
+
+  TRI_voc_key_t key = ((char*) d) + d->_offsetKey;
+  document->_keyGenerator->track(key);
+
+  ++state->_documents;
+  std::unique_ptr<TRI_df_consumer_item_t> item(new TRI_df_consumer_item_t(true, key, operation->_fid, marker));
+  queue->push(item.get());
+  item.release();
+  return TRI_ERROR_NO_ERROR;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief apply an insert/update operation when opening a collection (non parallel)
 ////////////////////////////////////////////////////////////////////////////////
 
 static int OpenIteratorApplyInsert (open_iterator_state_t* state,
@@ -1749,9 +1814,53 @@ static int OpenIteratorApplyInsert (open_iterator_state_t* state,
 
   return TRI_ERROR_NO_ERROR;
 }
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief apply a delete operation when opening a collection
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorApplyRemove (open_iterator_state_t* state,
+                                    open_iterator_operation_t const* operation,
+                                    ConsumerQueue* queue) {
+
+  TRI_df_marker_t const* marker;
+  TRI_doc_deletion_key_marker_t const* d;
+  TRI_voc_key_t key;
+
+  TRI_document_collection_t* document = state->_document;
+
+  marker = operation->_marker;
+  d = (TRI_doc_deletion_key_marker_t const*) marker;
+
+  SetRevision(document, d->_rid, false);
+
+  ++state->_deletions;
+
+  if (state->_fid != operation->_fid) {
+    // update the state
+    state->_fid = operation->_fid;
+    state->_dfi = TRI_FindDatafileInfoDocumentCollection(document, operation->_fid, true);
+  }
+
+  key = ((char*) d) + d->_offsetKey;
+
+#ifdef TRI_ENABLE_MAINTAINER_MODE
+  LOG_TRACE("deletion: fid %llu, key %s, rid %llu, deletion %llu",
+            (unsigned long long) operation->_fid,
+            (char*) key,
+            (unsigned long long) d->_rid,
+            (unsigned long long) marker->_tick);
+#endif
+
+  document->_keyGenerator->track(key);
+
+  std::unique_ptr<TRI_df_consumer_item_t> item(new TRI_df_consumer_item_t(false, key, operation->_fid, marker));
+  queue->push(item.get());
+  item.release();
+  return TRI_ERROR_NO_ERROR;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief apply a delete operation when opening a collection (non parallel version)
 ////////////////////////////////////////////////////////////////////////////////
 
 static int OpenIteratorApplyRemove (open_iterator_state_t* state,
@@ -1846,6 +1955,24 @@ static int OpenIteratorApplyRemove (open_iterator_state_t* state,
 ////////////////////////////////////////////////////////////////////////////////
 
 static int OpenIteratorApplyOperation (open_iterator_state_t* state,
+                                       open_iterator_operation_t const* operation,
+                                       ConsumerQueue* queue) {
+  if (operation->_type == TRI_VOC_DOCUMENT_OPERATION_REMOVE) {
+    return OpenIteratorApplyRemove(state, operation, queue);
+  }
+  else if (operation->_type == TRI_VOC_DOCUMENT_OPERATION_INSERT) {
+    return OpenIteratorApplyInsert(state, operation, queue);
+  }
+
+  LOG_ERROR("logic error in %s", __FUNCTION__);
+  return TRI_ERROR_INTERNAL;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief apply an operation when opening a collection
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorApplyOperation (open_iterator_state_t* state,
                                        open_iterator_operation_t const* operation) {
   if (operation->_type == TRI_VOC_DOCUMENT_OPERATION_REMOVE) {
     return OpenIteratorApplyRemove(state, operation);
@@ -1862,6 +1989,29 @@ static int OpenIteratorApplyOperation (open_iterator_state_t* state,
 /// @brief add an operation to the list of operations when opening a collection
 /// if the operation does not belong to a designated transaction, it is
 /// executed directly
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorAddOperation (open_iterator_state_t* state,
+                                     TRI_voc_document_operation_e type,
+                                     TRI_df_marker_t const* marker,
+                                     TRI_voc_fid_t fid,
+                                     ConsumerQueue* queue) {
+  open_iterator_operation_t operation;
+  operation._type   = type;
+  operation._marker = marker;
+  operation._fid    = fid;
+
+  if (state->_tid == 0) {
+    return OpenIteratorApplyOperation(state, &operation, queue);
+  }
+
+  return TRI_PushBackVector(&state->_operations, &operation);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief add an operation to the list of operations when opening a collection
+/// if the operation does not belong to a designated transaction, it is
+/// executed directly (non parallel version)
 ////////////////////////////////////////////////////////////////////////////////
 
 static int OpenIteratorAddOperation (open_iterator_state_t* state,
@@ -2009,6 +2159,20 @@ static int OpenIteratorCommitTransaction (open_iterator_state_t* state) {
 
 static int OpenIteratorHandleDocumentMarker (TRI_df_marker_t const* marker,
                                              TRI_datafile_t* datafile,
+                                             open_iterator_state_t* state,
+                                             ConsumerQueue* queue) {
+
+  TRI_doc_document_key_marker_t const* d = (TRI_doc_document_key_marker_t const*) marker;
+  TRI_ASSERT(d->_tid == 0);
+  return OpenIteratorAddOperation(state, TRI_VOC_DOCUMENT_OPERATION_INSERT, marker, datafile->_fid, queue);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief process a document (or edge) marker when opening a collection (no parallel version)
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorHandleDocumentMarker (TRI_df_marker_t const* marker,
+                                             TRI_datafile_t* datafile,
                                              open_iterator_state_t* state) {
 
   TRI_doc_document_key_marker_t const* d = (TRI_doc_document_key_marker_t const*) marker;
@@ -2035,6 +2199,18 @@ static int OpenIteratorHandleDocumentMarker (TRI_df_marker_t const* marker,
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief process a deletion marker when opening a collection
+////////////////////////////////////////////////////////////////////////////////
+
+static int OpenIteratorHandleDeletionMarker (TRI_df_marker_t const* marker,
+                                             TRI_datafile_t* datafile,
+                                             open_iterator_state_t* state,
+                                             ConsumerQueue* queue) {
+  OpenIteratorAddOperation(state, TRI_VOC_DOCUMENT_OPERATION_REMOVE, marker, datafile->_fid, queue);
+  return TRI_ERROR_NO_ERROR;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief process a deletion marker when opening a collection (non parallel version)
 ////////////////////////////////////////////////////////////////////////////////
 
 static int OpenIteratorHandleDeletionMarker (TRI_df_marker_t const* marker,
@@ -2232,14 +2408,15 @@ static int OpenIteratorHandleAbortMarker (TRI_df_marker_t const* marker,
 static bool OpenIterator (TRI_df_marker_t const* marker,
                           void* data,
                           TRI_datafile_t* datafile) {
-  TRI_document_collection_t* document = static_cast<open_iterator_state_t*>(data)->_document;
+  open_iterator_state_t* state = static_cast<open_iterator_state_t*>(data);
+  TRI_document_collection_t* document = state->_document;
   TRI_voc_tick_t tick = marker->_tick;
 
   int res;
 
   if (marker->_type == TRI_DOC_MARKER_KEY_EDGE ||
       marker->_type == TRI_DOC_MARKER_KEY_DOCUMENT) {
-    res = OpenIteratorHandleDocumentMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleDocumentMarker(marker, datafile, state, state->queue);
     
     if (datafile->_dataMin == 0) {
       datafile->_dataMin = tick;
@@ -2250,25 +2427,25 @@ static bool OpenIterator (TRI_df_marker_t const* marker,
     }
   }
   else if (marker->_type == TRI_DOC_MARKER_KEY_DELETION) {
-    res = OpenIteratorHandleDeletionMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleDeletionMarker(marker, datafile, state, state->queue);
   }
   else if (marker->_type == TRI_DF_MARKER_SHAPE) {
-    res = OpenIteratorHandleShapeMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleShapeMarker(marker, datafile, state);
   }
   else if (marker->_type == TRI_DF_MARKER_ATTRIBUTE) {
-    res = OpenIteratorHandleAttributeMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleAttributeMarker(marker, datafile, state);
   }
   else if (marker->_type == TRI_DOC_MARKER_BEGIN_TRANSACTION) {
-    res = OpenIteratorHandleBeginMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleBeginMarker(marker, datafile, state);
   }
   else if (marker->_type == TRI_DOC_MARKER_COMMIT_TRANSACTION) {
-    res = OpenIteratorHandleCommitMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleCommitMarker(marker, datafile, state);
   }
   else if (marker->_type == TRI_DOC_MARKER_PREPARE_TRANSACTION) {
-    res = OpenIteratorHandlePrepareMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandlePrepareMarker(marker, datafile, state);
   }
   else if (marker->_type == TRI_DOC_MARKER_ABORT_TRANSACTION) {
-    res = OpenIteratorHandleAbortMarker(marker, datafile, (open_iterator_state_t*) data);
+    res = OpenIteratorHandleAbortMarker(marker, datafile, state);
   }
   else {
     if (marker->_type == TRI_DF_MARKER_HEADER) {
@@ -2513,6 +2690,12 @@ static int IterateMarkersCollection (TRI_collection_t* collection) {
     return res;
   }
 
+  ConsumerQueue queue;
+  std::atomic<bool> isDone(false);
+  std::mutex reportLock;
+  std::thread Consumer(ConsumerThread, document, &queue, openState._initialCount != -1, &reportLock, &isDone);
+
+  openState.queue = &queue;
   // read all documents and fill primary index
   TRI_IterateCollection(collection, OpenIterator, &openState);
 
@@ -2525,6 +2708,9 @@ static int IterateMarkersCollection (TRI_collection_t* collection) {
   OpenIteratorAbortTransaction(&openState);
 
   TRI_DestroyVector(&openState._operations);
+  isDone = true;
+
+  Consumer.join();
 
   return TRI_ERROR_NO_ERROR;
 }
