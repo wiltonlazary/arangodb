@@ -28,7 +28,6 @@ independent, using multiple buckets provides the following benefits:
   per bucket. As each bucket only contains a fraction of the entire index,
   resizing and rehashing a bucket is much faster and less intrusive than resizing 
   and rehashing the entire index. 
-  index.
 
 When creating new collections, the default number of index buckets is `8` since
 ArangoDB 2.7. In previous versions, the default value was `1`. The number of
@@ -78,7 +77,7 @@ resizing times.
 
 !SUBSECTION Throughput enhancements
 
-The ArangoDB-internal implementtions for dispatching requests, keeping statistics
+The ArangoDB-internal implementations for dispatching requests, keeping statistics
 and assigning V8 contexts to threads have been improved in order to use less
 locks. These changes allow higher concurrency and throughput in these components,
 which can also make the server handle more requests in a given period of time.
@@ -103,16 +102,16 @@ collections.
 !SUBSECTION RETURN DISTINCT
 
 To return unique values from a query, AQL now provides the `DISTINCT` keyword.
-It can used as a modifier for `RETURN` statements, as a shorter alternative to
+It can be used as a modifier for `RETURN` statements, as a shorter alternative to
 the already existing `COLLECT` statement.
 
 For example, the following query only returns distinct (unique) `status`
 attribute values from the collection:
 
-````
+```
     FOR doc IN collection
       RETURN DISTINCT doc.status
-````
+```
 
 `RETURN DISTINCT` is not allowed on the top-level of a query if there is no `FOR` 
 loop in front of it. `RETURN DISTINCT` is allowed in subqueries.
@@ -255,8 +254,15 @@ not require defining the bind parameter values separately:
     });
 ```
 
-Note that template strings are available in the JavaScript functions provided
-in ArangoDB to build queries, but aren't an AQL feature. AQL could always handle
+The `aqlQuery` template string generator will also handle collection objects
+automatically:
+
+```js
+    db._query(aqlQuery`FOR u IN ${ db.users } RETURN u.name`);
+```
+
+Note that while template strings are available in the JavaScript functions provided
+to build queries, they aren't a feature of AQL itself. AQL could always handle
 multiline query strings and provided bind parameters (`@...`) for separating
 the query string and the parameter values. The `aqlQuery` template string
 generator function will take care of this separation, too, but will do it

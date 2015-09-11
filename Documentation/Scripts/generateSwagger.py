@@ -58,7 +58,7 @@ swagger = {
       "name": "Apache License, Version 2.0"
     }
   },
-  "basePath": "/_db/_system/_admin/aardvark",
+  "basePath": "/",
   "schemes": [
     "http"
   ],
@@ -71,6 +71,8 @@ swagger = {
 ################################################################################
 
 swaggerBaseTypes = [
+    'object',
+    'array',
     'integer',
     'long',
     'float',
@@ -127,6 +129,12 @@ currentTag = ''
 currentDocuBlock = ''
 
 ################################################################################
+### @brief index of example block we're reading
+################################################################################
+
+currentExample = 0
+
+################################################################################
 ### @brief collect json body parameter definitions:
 ################################################################################
 
@@ -146,7 +154,24 @@ C_FILE = False
 DEBUG = True
 DEBUG = False
 
+################################################################################
+### @brief facility to remove leading and trailing html-linebreaks
+################################################################################
 removeTrailingBR = re.compile("<br>$")
+removeLeadingBR = re.compile("^<br>")
+
+def brTrim(text):
+    return removeLeadingBR.sub("", removeTrailingBR.sub("", text.strip(' ')))
+
+################################################################################
+### @brief check for token to be right
+################################################################################
+
+reqOpt = ["required", "optional"]
+def CheckReqOpt(token):
+    if token not in reqOpt:
+        print >> sys.stderr, "This is supposed to be required or optional!"
+        raise Exception("invalid value")
 
 ################################################################################
 ### @brief trim_text
@@ -191,7 +216,7 @@ def BackTicks(txt, wordboundary = ['<em>','</em>']):
 ### *word* -> <b>word</b>
 ################################################################################
 
-def AsteriskItalic(txt, wordboundary = ['<em>','</em>']):
+def AsteriskItalic(txt, wordboundary = ['<strong>','</strong>']):
     r = rc(r"""([\(\s'/">]|^|.)\*(.*?)\*([<\s\.\),:;'"?!/-]|$)""", MS)
     subpattern = '\\1' + wordboundary[0] + '\\2' + wordboundary[1] + '\\3'
 
@@ -203,7 +228,7 @@ def AsteriskItalic(txt, wordboundary = ['<em>','</em>']):
 ### **word** -> <b>word</b>
 ################################################################################
 
-def AsteriskBold(txt, wordboundary = ['<em>','</em>']):
+def AsteriskBold(txt, wordboundary = ['<strong>','</strong>']):
     r = rc(r"""([\(\s'/">]|^|.)\*\*(.*?)\*\*([<\s\.\),:;'"?!/-]|$)""", MS)
     subpattern = '\\1' + wordboundary[0] + '\\2' + wordboundary[1] + '\\3'
 
@@ -256,10 +281,10 @@ def Typography(txt):
         txt = txt[0:-1]
 
 #    txt = BackTicks(txt)
-#    txt = AsteriskBold(txt)
-#    txt = AsteriskItalic(txt)
+    txt = AsteriskBold(txt)
+    txt = AsteriskItalic(txt)
 #    txt = FN(txt)
-#    txt = LIT(txt)
+    txt = LIT(txt)
 #    txt = FA(txt)
 #
     # no way to find out the correct link for Swagger, 
@@ -394,10 +419,7 @@ def next_step(fp, line, r):
     elif r.RESTRETURNCODES.match(line):       return restreturncodes, (fp, line)
     elif r.RESTURLPARAM.match(line):          return resturlparam, (fp, line)
     elif r.RESTURLPARAMETERS.match(line):     return resturlparameters, (fp, line)
-
-    if r.EXAMPLES.match(line):
-        operation['x-examples'] = ""
-        return examples, (fp, line)
+    elif r.EXAMPLES.match(line):              return examples, (fp, line)
 
     return None, None
 
@@ -495,38 +517,47 @@ def start_docublock(cargo, r=Regexen()):
     return generic_handler(cargo, r, 'start_docublock')
 
 
+def setRequired(where, which):
+    if not 'required' in where:
+        where['required'] = []
+    where['required'].append(which)
 
 ################################################################################
 ### @brief restheader
 ################################################################################
 
 def restheader(cargo, r=Regexen()):
-    global swagger, operation, httpPath, method, restBodyParam, fn
-
+    global swagger, operation, httpPath, method, restBodyParam, fn, currentExample
+    currentExample = 0
     (fp, last) = cargo
 
     temp = parameters(last).split(',')
-    (method, path) = temp[0].split()
+    (ucmethod, path) = temp[0].split()
 
     restBodyParam = None
     #TODO: hier checken, ob der letzte alles hatte (responses)
     summary = temp[1]
     summaryList = summary.split()
-    method = method.lower()
+    method = ucmethod.lower()
     nickname = summaryList[0] + ''.join([word.capitalize() for word in summaryList[1:]])
 
     httpPath = FA(path, wordboundary = ['{', '}'])
     if not httpPath in swagger['paths']:
         swagger['paths'][httpPath] = {}
+    if method in swagger['paths'][httpPath]:
+        print >> sys.stderr, "duplicate route detected:"
+        print >> sys.stderr, "There already is a route " + ucmethod + " " + httpPath
+        raise Exception("Duplicate route")
+
     swagger['paths'][httpPath][method] = {
-        'x-sourcefile': fn,
+        'x-filename': fn,
+        'x-examples': [],
         'tags': [currentTag],
         'summary': summary,
         'description': '',
         'parameters' : [],
         }
     operation = swagger['paths'][httpPath][method]
-
     return generic_handler(cargo, r, "resturlparameters")
 
 ################################################################################
@@ -601,7 +632,7 @@ def restheaderparam(cargo, r=Regexen()):
 ################################################################################
 
 def restbodyparam(cargo, r=Regexen()):
-    global swagger, operation, httpPath, method, restBodyParam
+    global swagger, operation, httpPath, method, restBodyParam, fn
     (fp, last) = cargo
 
     try:
@@ -609,14 +640,19 @@ def restbodyparam(cargo, r=Regexen()):
     except Exception as x:
         print >> sys.stderr, "RESTBODYPARAM: 4 arguments required. You gave me: " + parameters(last)
 
+    CheckReqOpt(required)
     if required == 'required':
         required = True
     else:
         required = False
 
     if restBodyParam == None:
+        # https://github.com/swagger-api/swagger-ui/issues/1430
+        # once this is solved we can skip this:
+        operation['description'] += "**A json post document with these Properties is required:**"
         restBodyParam = {
             'name': 'Json Post Body',
+            'x-description-offset': len(swagger['paths'][httpPath][method]['description']),
             'in': 'body',
             'required': True,
             'schema': {
@@ -624,14 +660,11 @@ def restbodyparam(cargo, r=Regexen()):
                 }
             }
         swagger['paths'][httpPath][method]['parameters'].append(restBodyParam) 
-        # https://github.com/swagger-api/swagger-ui/issues/1430
-        # once this is solved we can skip this:
-        operation['description'] += "<br><em>for the post body parameters see the 'Try this operation'-section</em><br>"
 
     if not currentDocuBlock in swagger['definitions']:
         swagger['definitions'][currentDocuBlock] = {
+            'x-filename': fn,
             'type' : 'object',
-            'required': [],
             'properties': {},
             }
 
@@ -647,14 +680,14 @@ def restbodyparam(cargo, r=Regexen()):
 
         if not ptype2 in swagger['definitions']:
             swagger['definitions'][ptype2] = {
+                'x-filename': fn,
                 'type': 'object',
-                'required': [],
                 'properties' : {},
                 'description': ''
                 }
 
         if required:
-            swagger['schema'][ptype2]['required'].append(name)
+            setRequired(swagger['schema'][ptype2], name)
         
         return generic_handler_desc(cargo, r, "restbodyparam", None,
                                     swagger['definitions'][ptype2],
@@ -669,6 +702,8 @@ def restbodyparam(cargo, r=Regexen()):
             swagger['definitions'][currentDocuBlock]['properties'][name]['items'] = {
                 'type': ptype2
             }
+            if ptype2 == 'object':
+                swagger['definitions'][currentDocuBlock]['properties'][name]['items']['additionalProperties'] = {}
     elif ptype == 'object':
             swagger['definitions'][currentDocuBlock]['properties'][name]['additionalProperties'] = {}
     elif ptype != 'string':
@@ -676,7 +711,7 @@ def restbodyparam(cargo, r=Regexen()):
 
 
     if required:
-        swagger['definitions'][currentDocuBlock]['required'].append(name)
+        setRequired(swagger['definitions'][currentDocuBlock], name)
 
     return generic_handler_desc(cargo, r, "restbodyparam", None,
                                 swagger['definitions'][currentDocuBlock]['properties'][name],
@@ -695,6 +730,7 @@ def restallbodyparam(cargo, r=Regexen()):
     except Exception as x:
         print >> sys.stderr, "RESTALLBODYPARAM: 3 arguments required. You gave me: " + parameters(last)
 
+    CheckReqOpt(required)
     if required == 'required':
         required = True
     else:
@@ -706,6 +742,7 @@ def restallbodyparam(cargo, r=Regexen()):
             'name': 'Json Post Body',
             'description': '',
             'in': 'body',
+            'x-description-offset': len(swagger['paths'][httpPath][method]['description']),
             'required': required,
             'schema': {
                 'type': 'object',
@@ -730,7 +767,9 @@ def reststruct(cargo, r=Regexen()):
         (name, className, ptype, required, ptype2) = parameters(last).split(',')
     except Exception as x:
         print >> sys.stderr, "RESTSTRUCT: 4 arguments required. You gave me: " + parameters(last)
+        raise
 
+    CheckReqOpt(required)
     if required == 'required':
         required = True
     else:
@@ -751,11 +790,11 @@ def reststruct(cargo, r=Regexen()):
 
     if ptype == 'array':
         if ptype2 not in swaggerBaseTypes:
-            swagger['definitions'][currentDocuBlock]['properties'][name]['items'] = {
+            swagger['definitions'][className]['properties'][name]['items'] = {
                 '$ref': '#/definitions/' + ptype2
             }
         else:
-            swagger['definitions'][currentDocuBlock]['properties'][name]['items'] = {
+            swagger['definitions'][className]['properties'][name]['items'] = {
                 'type': ptype2
             }
     elif ptype != 'string' and ptype != 'boolean':
@@ -775,6 +814,7 @@ def restqueryparam(cargo, r=Regexen()):
 
     parametersList = parameters(last).split(',')
 
+    CheckReqOpt(parametersList[2])
     if parametersList[2] == 'required':
         required = True
     else:
@@ -797,6 +837,7 @@ def restqueryparam(cargo, r=Regexen()):
 
 def restdescription(cargo, r=Regexen()):
     global swagger, operation, httpPath, method
+    swagger['paths'][httpPath][method]['description'] += '\n\n'
     return generic_handler_desc(cargo, r, "restdescription", None,
                                 swagger['paths'][httpPath][method],
                                 'description')
@@ -831,7 +872,9 @@ def restreturncode(cargo, r=Regexen()):
 ################################################################################
 
 def examples(cargo, r=Regexen()):
-    return generic_handler_desc(cargo, r, "x-examples", None, operation, 'x-examples')
+    global currentExample
+    operation['x-examples'].append('')
+    return generic_handler_desc(cargo, r, "x-examples", None, operation['x-examples'], currentExample)
 
 ################################################################################
 ### @brief example_arangosh_run
@@ -839,20 +882,21 @@ def examples(cargo, r=Regexen()):
 
 
 def example_arangosh_run(cargo, r=Regexen()):
-    global DEBUG, C_FILE
+    global currentExample, DEBUG, C_FILE
 
     if DEBUG: print >> sys.stderr, "example_arangosh_run"
     fp, last = cargo
 
+    exampleHeader = brTrim(operation['x-examples'][currentExample]).strip()
+
     # new examples code TODO should include for each example own object in json file
     examplefile = open(os.path.join(os.path.dirname(__file__), '../Examples/' + parameters(last) + '.generated'))
-
-    operation['x-examples'] += '<details><summary>Example</summary><br><br><pre><code class="json">'
+    operation['x-examples'][currentExample]= '<details><summary>Example: ' + exampleHeader.strip('\n ') + '</summary><br><br><pre><code class="json">'
 
     for line in examplefile.readlines():
-        operation['x-examples'] += line
+        operation['x-examples'][currentExample] += line
 
-    operation['x-examples'] += '</code></pre><br></details>'
+    operation['x-examples'][currentExample] += '</code></pre><br></details>\n'
 
     line = ""
 
@@ -861,6 +905,8 @@ def example_arangosh_run(cargo, r=Regexen()):
 
         if not line:
             return eof, (fp, line)
+
+    currentExample += 1
 
     return examples, (fp, line)
 
@@ -961,7 +1007,17 @@ def getOneApi(infile, filename):
     automat.set_fn(filename)
     automat.run((infile, ''))
 
-
+def getReference(name, source, verb):
+    ref = name['$ref'][defLen:]
+    if not ref in swagger['definitions']:
+        fn = ''
+        if verb:
+            fn = swagger['paths'][route][verb]['x-filename']
+        else:
+            fn = swagger['definitions'][source]['x-filename']
+        print >> sys.stderr, json.dumps(swagger['definitions'], indent=4, separators=(', ',': '), sort_keys=True)
+        raise Exception("invalid reference: " + ref + " in " + fn)
+    return ref
 
 def unwrapPostJson(reference, layer):
     global swagger
@@ -969,26 +1025,27 @@ def unwrapPostJson(reference, layer):
     for param in swagger['definitions'][reference]['properties'].keys():
         required = 'required' in swagger['definitions'][reference] and param in swagger['definitions'][reference]['required']
         if '$ref' in swagger['definitions'][reference]['properties'][param]:
-            subStructRef = swagger['definitions'][reference]['properties'][param]['$ref'][defLen:]
-            rc += "<li>*" + param + "*: "
-            rc += swagger['definitions'][subStructRef]['description'] + "\n<ul class=\"swagger-list\">\n"
+            subStructRef = getReference(swagger['definitions'][reference]['properties'][param], reference, None)
+
+            rc += "<li><strong>" + param + "</strong>: "
+            rc += swagger['definitions'][subStructRef]['description'] + "<ul class=\"swagger-list\">"
             rc += unwrapPostJson(subStructRef, layer + 1)
             rc += "</li></ul>"
         
         elif swagger['definitions'][reference]['properties'][param]['type'] == 'object':
-            rc += swagger['definitions'][reference]['properties'][param]['description']
+            rc += brTrim(swagger['definitions'][reference]['properties'][param]['description'])
         elif swagger['definitions'][reference]['properties'][param]['type'] == 'array':
-            rc += ' ' * layer + "<li>*" + param + "*: " + swagger['definitions'][reference]['properties'][param]['description']
+            rc += ' ' * layer + "<li><strong>" + param + "</strong>: " + brTrim(swagger['definitions'][reference]['properties'][param]['description'])
             if 'type' in swagger['definitions'][reference]['properties'][param]['items']:
-                rc += " of type " + swagger['definitions'][reference]['properties'][param]['type']['items']['type']
+                rc += " of type " + swagger['definitions'][reference]['properties'][param]['items']['type']#
             else:
-                subStructRef = swagger['definitions'][reference]['properties'][param]['items']['$ref'][defLen:]
-                rc += "\n<ul class=\"swagger-list\">\n"
+                subStructRef = getReference(swagger['definitions'][reference]['properties'][param]['items'], reference, None)
+                rc += "\n<ul class=\"swagger-list\">"
                 rc += unwrapPostJson(subStructRef, layer + 1)
-                rc += "\n</ul>\n"
-            rc += '</li>\n'
+                rc += "</ul>"
+            rc += '</li>'
         else:
-            rc += ' ' * layer + "<li>*" + param + "*: " + swagger['definitions'][reference]['properties'][param]['description'] + '</li>\n'
+            rc += ' ' * layer + "<li><strong>" + param + "</strong>: " + swagger['definitions'][reference]['properties'][param]['description'] + '</li>\n'
     return rc
 
 
@@ -1007,7 +1064,7 @@ files = {
   "graph" : [ "js/actions/api-graph.js" ],
   "import" : [ "arangod/RestHandler/RestImportHandler.cpp" ],
   "index" : [ "js/actions/api-index.js" ],
-  "job" : [ "arangod/HttpServer/AsyncJobManager.h" ],
+  "job" : [ "arangod/HttpServer/AsyncJobManager.h" ],# TODO: no docu here
   "log" : [ "arangod/RestHandler/RestAdminLogHandler.cpp" ],
   "query" : [ "arangod/RestHandler/RestQueryHandler.cpp" ],
   "replication" : [ "arangod/RestHandler/RestReplicationHandler.cpp" ],
@@ -1050,37 +1107,37 @@ paths = {};
 
 for name, filenames in sorted(files.items(), key=operator.itemgetter(0)):
     currentTag = name
-    tmpname = scriptDir + "/arango-swagger-" + name
-    if os.path.isfile(tmpname):
-        os.remove(tmpname)
-
-    with open(tmpname, 'w') as tmpfile:
-        for tmp in filenames:
-            with open(tmp) as infile:
-                tmpfile.write(infile.read())   
-
-    outfile = outDir + name + ".json"
-
-    infile = open(tmpname)
-    getOneApi(infile, name + " - " + ', '.join(filenames))
-    infile.close()
-
+    for fn in filenames:
+        infile = open(fn)
+        getOneApi(infile, name + " - " + ', '.join(filenames))
+        infile.close()
 
 for route in swagger['paths'].keys():
     for verb in swagger['paths'][route].keys():
+        if len(swagger['paths'][route][verb]['description']) == 0:
+            print >> sys.stderr, "Description of Route empty; @RESTDESCRIPTION missing?"
+            print >> sys.stderr, "in :" + verb + " " + route
+            #raise TODO
+        # insert the post json description into the place we extracted it:
         for nParam in range(0, len(swagger['paths'][route][verb]['parameters'])):
             if swagger['paths'][route][verb]['parameters'][nParam]['in'] == 'body':
-                #print swagger['paths'][route][verb]['parameters'][nParam]
+                descOffset = swagger['paths'][route][verb]['parameters'][nParam]['x-description-offset']
+                postText = swagger['paths'][route][verb]['description'][:descOffset]
                 if 'additionalProperties' in swagger['paths'][route][verb]['parameters'][nParam]['schema']:
-                    swagger['paths'][route][verb]['description'] += "free style json body"
+                    postText += "free style json body"
                 else:
-                    swagger['paths'][route][verb]['description'] += "<ul class=\"swagger-list\">" + unwrapPostJson(
-                        swagger['paths'][route][verb]['parameters'][nParam]['schema']['$ref'][defLen:],
-                        0) + "</ul>"
-                               
-        if 'x-examples' in swagger['paths'][route][verb]:
-            swagger['paths'][route][verb]['description'] +=  swagger['paths'][route][verb]['x-examples']
-            swagger['paths'][route][verb]['x-examples'] = None
+                    postText +="<ul class=\"swagger-list\">" + unwrapPostJson(
+                        getReference(swagger['paths'][route][verb]['parameters'][nParam]['schema'], route, verb),0) + "</ul>"
+
+                postText += swagger['paths'][route][verb]['description'][descOffset:]
+                swagger['paths'][route][verb]['description'] = postText
+
+        # Append the examples to the description:
+        if 'x-examples' in swagger['paths'][route][verb] and len(swagger['paths'][route][verb]['x-examples']) > 0:
+            swagger['paths'][route][verb]['description'] += '<br>'
+            for nExample in range(0, len(swagger['paths'][route][verb]['x-examples'])):
+                swagger['paths'][route][verb]['description'] +=  swagger['paths'][route][verb]['x-examples'][nExample]
+            swagger['paths'][route][verb]['x-examples'] = []# todo unset!
 
 #print highlight(yaml.dump(swagger, Dumper=yaml.RoundTripDumper), YamlLexer(), TerminalFormatter())
 #print yaml.dump(swagger, Dumper=yaml.RoundTripDumper)
