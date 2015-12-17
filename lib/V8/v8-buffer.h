@@ -123,13 +123,15 @@ class V8Buffer : public V8Wrapper<V8Buffer, TRI_V8_BUFFER_CID> {
 
       if (o->InternalFieldCount() == 0) {
         // seems object has become a FastBuffer already
-        if (! o->HasIndexedPropertiesInExternalArrayData()) {
+        if (! o->IsUint8Array()) {
           // probably not...
           return nullptr;
         }
 
-        void* data = o->GetIndexedPropertiesExternalArrayData();
-        return static_cast<char*>(data);
+        v8::Local<v8::Uint8Array> arrayBuff = (o).As<v8::Uint8Array>();
+        
+        v8::ArrayBuffer::Contents arrayBuffContent = arrayBuff->Buffer()->GetContents();
+        return static_cast<char*>(arrayBuffContent.Data());
       }
 
       V8Buffer* buffer = unwrap(o);
@@ -159,13 +161,15 @@ class V8Buffer : public V8Wrapper<V8Buffer, TRI_V8_BUFFER_CID> {
 
       if (o->InternalFieldCount() == 0) {
         // seems object has become a FastBuffer already
-        if (! o->HasIndexedPropertiesInExternalArrayData()) {
+        if (! o->IsUint8Array()) {
           // probably not...
           return 0;
         }
 
-        int len = o->GetIndexedPropertiesExternalArrayDataLength();
-        return static_cast<size_t>(len);
+        v8::Local<v8::Uint8Array> arrayBuff = (o).As<v8::Uint8Array>();
+        
+        return arrayBuff->ByteLength();
+        ///return static_cast<size_t>(len);
       }
 
       V8Buffer* buffer = unwrap(o);

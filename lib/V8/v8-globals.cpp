@@ -260,6 +260,28 @@ TRI_v8_global_t* TRI_GetV8Globals (v8::Isolate* isolate) {
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_AddMethodVocbase (v8::Isolate* isolate,
+                           v8::Local<v8::Object> tpl,
+                           v8::Handle<v8::String> name,
+                           void(*func)(v8::FunctionCallbackInfo<v8::Value> const&)) {
+
+  v8::Local<v8::FunctionTemplate> ft;
+  v8::Local<v8::External> external;// = v8::as_external();
+  v8::Local<v8::Signature> sig = v8::Signature::New(isolate, ft);
+  
+  ft = v8::FunctionTemplate::New(isolate, func, external, sig);
+
+  v8::Local<v8::Function> function = ft->GetFunction();
+
+  tpl->Set(name, function);
+  function->SetName(name);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief adds a method to an object template
+////////////////////////////////////////////////////////////////////////////////
+
+void TRI_AddMethodVocbase (v8::Isolate* isolate,
                            v8::Handle<v8::ObjectTemplate> tpl,
                            v8::Handle<v8::String> name,
                            void(*func)(v8::FunctionCallbackInfo<v8::Value> const&),

@@ -635,6 +635,8 @@ static HttpResponse* ResponseV8ToCpp (v8::Isolate* isolate,
       response->body().appendText(out);
     }
     else {
+      /*
+      TRI_V8_THROW_ERROR("not yet implemented");
       TRI_GET_GLOBAL_STRING(BodyKey);
       v8::Handle<v8::Value> b = res->Get(BodyKey);
       if (V8Buffer::hasInstance(isolate, b)) {
@@ -647,6 +649,7 @@ static HttpResponse* ResponseV8ToCpp (v8::Isolate* isolate,
         std::string&& obj(TRI_ObjectToString(res->Get(BodyKey)));
         response->body().appendText(obj);
       }
+      */
     }
   }
 
@@ -987,9 +990,12 @@ static void JS_RawRequestBody (const v8::FunctionCallbackInfo<v8::Value>& args) 
       auto request = static_cast<triagens::rest::HttpRequest*>(e->Value());
 
       if (request != nullptr) {
+        TRI_V8_THROW_ERROR("not yet implemented");
+        /*
         V8Buffer* buffer = V8Buffer::New(isolate, request->body(), request->bodySize());
 
         TRI_V8_RETURN(buffer->_handle);
+        */
       }
     }
   }
@@ -1147,13 +1153,15 @@ static void JS_RequestParts (const v8::FunctionCallbackInfo<v8::Value>& args) {
 
         v8::Handle<v8::Object> partObject = v8::Object::New(isolate);
         partObject->Set(TRI_V8_ASCII_STRING("headers"), headersObject);
- 
+   TRI_V8_THROW_ERROR("not yet implemented");
+   /*
         V8Buffer* buffer = V8Buffer::New(isolate, data, end - data);
         auto localHandle = v8::Local<v8::Object>::New(isolate, buffer->_handle);
 
         partObject->Set(TRI_V8_ASCII_STRING("data"), localHandle); 
         
         result->Set(j++, partObject);
+   */
       }
 
       TRI_V8_RETURN(result);

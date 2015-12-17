@@ -1583,7 +1583,8 @@ static void PrepareClusterCommRequest (
                         double& timeout) {
   v8::Isolate* isolate = args.GetIsolate();
   TRI_V8_CURRENT_GLOBALS_AND_SCOPE;
-
+  TRI_V8_THROW_ERROR("not yet implemented");
+  /*
   TRI_ASSERT(args.Length() >= 4);
 
   reqType = triagens::rest::HttpRequest::HTTP_REQUEST_GET;
@@ -1667,6 +1668,7 @@ static void PrepareClusterCommRequest (
   if (timeout == 0) {
     timeout = 24 * 3600.0;
   }
+  */
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -590,6 +590,12 @@ typedef struct TRI_v8_global_s {
 
   v8::Persistent<v8::Function> FastBufferConstructor;
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief fast Buffer prototype object
+////////////////////////////////////////////////////////////////////////////////
+
+  v8::Persistent<v8::Object> FastBufferPrototype;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                              JAVASCRIPT CONSTANTS
 // -----------------------------------------------------------------------------
@@ -1188,7 +1194,16 @@ inline void TRI_V8_AddMethod (v8::Isolate* isolate,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief adds a method to an object
+/// @brief adds a method to an object 
+////////////////////////////////////////////////////////////////////////////////
+
+void TRI_AddMethodVocbase (v8::Isolate* isolate,
+                           v8::Local<v8::Object> tpl,
+                           v8::Handle<v8::String> name,
+                           void(*func)(v8::FunctionCallbackInfo<v8::Value> const&));
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief adds a method to an object template
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_AddMethodVocbase (v8::Isolate* isolate,

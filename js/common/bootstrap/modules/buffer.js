@@ -207,6 +207,7 @@ function Buffer(subject, encoding, offset) {
     }
 
     if (this.length > Buffer.poolSize) {
+      require("internal").print("this.length > Buffer.poolSize");
       // Big buffer, just alloc one.
       this.parent = new SlowBuffer(this.length);
       this.offset = 0;
@@ -246,7 +247,7 @@ function Buffer(subject, encoding, offset) {
     }
   }
 
-  SlowBuffer.makeFastBuffer(this.parent, this, this.offset, this.length);
+  return SlowBuffer.makeFastBuffer(this.parent, this, this.offset, this.length);
 }
 
 function isArrayIsh(subject) {

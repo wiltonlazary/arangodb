@@ -1643,13 +1643,16 @@ static void JS_ByteLength (const v8::FunctionCallbackInfo<v8::Value>& args) {
 static void JS_MakeFastBuffer (const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
+  /// TRI_GET_GLOBALS();
 
   if (! V8Buffer::hasInstance(isolate, args[0])) {
     TRI_V8_THROW_EXCEPTION_USAGE("makeFastBuffer(<buffer>, <fastBuffer>, <offset>, <length>");
   }
 
   V8Buffer* buffer = V8Buffer::unwrap(args[0]->ToObject());
-  v8::Local<v8::Object> fast_buffer = args[1]->ToObject();;
+  v8::Local<v8::Uint8Array> fbObject = args[1]->ToObject().As<v8::Uint8Array>();
+  // v8::Local<v8::Uint8Array> fast_buffer = (fbObject).As<v8::Uint8Array>();
+
   uint32_t offset = args[2]->Uint32Value();
   uint32_t length = args[3]->Uint32Value();
 
@@ -1666,12 +1669,32 @@ static void JS_MakeFastBuffer (const v8::FunctionCallbackInfo<v8::Value>& args) 
     TRI_V8_THROW_RANGE_ERROR("<offset> or <length> out of range");
   }
 
+
+  /// v8::Local<v8::ArrayBuffer> buf = v8::ArrayBuffer::New(isolate, buffer->_data + offset, length);
+  
+  // fast_buffer->New(buf, 0, length);
+  /*
   fast_buffer->SetIndexedPropertiesToExternalArrayData(
     buffer->_data + offset,
-    v8::kExternalUnsignedByteArray,
+    v8::Uint8Array,
     length);
+  */
 
-  TRI_V8_RETURN_UNDEFINED();
+
+  v8::Local<v8::ArrayBuffer> ab =
+    v8::ArrayBuffer::New(isolate,
+                         buffer->_data,
+                         length,
+                         v8::ArrayBufferCreationMode::kInternalized);
+  // v8::Local<v8::Uint8Array> ui = v8::Uint8Array::New(ab, 0, length);
+  fbObject = v8::Uint8Array::New(ab, 0, length);
+  v8::Maybe<bool> mb = fbObject->SetPrototype(isolate->GetCurrentContext(), fbObject);
+
+  if (mb.FromMaybe(false))
+    TRI_V8_RETURN(fbObject);
+
+
+  TRI_V8_RETURN_FALSE();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1684,6 +1707,19 @@ static void JS_SetFastBufferConstructor (const v8::FunctionCallbackInfo<v8::Valu
   if (args[0]->IsFunction()) {
     v8::Handle<v8::Function> fn = args[0].As<v8::Function>();
     v8g->FastBufferConstructor.Reset(isolate, fn);
+  }
+  if (args[0]->IsObject()) {
+    uint32_t* const fields = nullptr;
+    v8::Local<v8::Object> bindingObj = args[1].As<v8::Object>();
+    v8::Local<v8::ArrayBuffer> arrayBuffer =
+      v8::ArrayBuffer::New(isolate, 0, 0); //// TODO fields_count);
+    /*
+    v8::Local<v8::String> flags = TRI_V8_ASCII_STRING("flags");
+    v8::Local<v8::Uint32Array> arr = v8::Uint32Array::New(arrayBuffer, 0, 1);
+    v8::Maybe<bool> mb = bindingObj->Set(isolate, flags, arr);
+
+ //// TODOfields_count));
+ */
   }
   TRI_V8_RETURN_UNDEFINED();
 }
