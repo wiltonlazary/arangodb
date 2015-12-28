@@ -924,8 +924,6 @@ static void EnsureIndex (const v8::FunctionCallbackInfo<v8::Value>& args,
 /// @brief create a collection on the coordinator
 ////////////////////////////////////////////////////////////////////////////////
 
-#include <iostream>
-
 static void CreateCollectionCoordinator (const v8::FunctionCallbackInfo<v8::Value>& args,
                                          TRI_col_type_e collectionType,
                                          std::string const& databaseName,
@@ -1081,8 +1079,6 @@ static void CreateCollectionCoordinator (const v8::FunctionCallbackInfo<v8::Valu
       size_t count2 = 0;
       do {
         candidate = dbServers[count++];
-        std::cout << "count: " << count << " count2: " << count2
-                  << "candidate: " << candidate << std::endl;
         if (count > dbServers.size()) {
           count = 0;
         }
