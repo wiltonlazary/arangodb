@@ -204,6 +204,7 @@ arangod_libarangod_a_SOURCES = \
 	arangod/VocBase/auth.cpp \
 	arangod/VocBase/cleanup.cpp \
 	arangod/VocBase/collection.cpp \
+	arangod/VocBase/CollectionIds.cpp \
 	arangod/VocBase/compactor.cpp \
 	arangod/VocBase/datafile.cpp \
 	arangod/VocBase/DatafileStatistics.cpp \

@@ -348,9 +348,8 @@ bool RestDocumentHandler::getDocumentCoordinator(std::string const& collname,
                                                  bool generateBody) {
   std::string const& dbname = _request->databaseName();
   arangodb::rest::HttpResponse::HttpResponseCode responseCode;
-  std::unique_ptr<std::map<std::string, std::string>> headers(
-      new std::map<std::string, std::string>(
-          arangodb::getForwardableRequestHeaders(_request)));
+  auto headers = std::make_unique<std::map<std::string, std::string>>(
+          arangodb::getForwardableRequestHeaders(_request));
   std::map<std::string, std::string> resultHeaders;
   std::string resultBody;
 
@@ -794,9 +793,8 @@ bool RestDocumentHandler::modifyDocumentCoordinator(
     TRI_voc_rid_t const rev, TRI_doc_update_policy_e policy, bool waitForSync,
     bool isPatch, VPackSlice const& document) {
   std::string const& dbname = _request->databaseName();
-  std::unique_ptr<std::map<std::string, std::string>> headers(
-      new std::map<std::string, std::string>(
-          arangodb::getForwardableRequestHeaders(_request)));
+  auto headers = std::make_unique<std::map<std::string, std::string>>(
+          arangodb::getForwardableRequestHeaders(_request));
   arangodb::rest::HttpResponse::HttpResponseCode responseCode;
   std::map<std::string, std::string> resultHeaders;
   std::string resultBody;
@@ -923,9 +921,8 @@ bool RestDocumentHandler::deleteDocumentCoordinator(
     TRI_voc_rid_t const rev, TRI_doc_update_policy_e policy, bool waitForSync) {
   std::string const& dbname = _request->databaseName();
   arangodb::rest::HttpResponse::HttpResponseCode responseCode;
-  std::unique_ptr<std::map<std::string, std::string>> headers(
-      new std::map<std::string, std::string>(
-          arangodb::getForwardableRequestHeaders(_request)));
+  auto headers = std::make_unique<std::map<std::string, std::string>>(
+          arangodb::getForwardableRequestHeaders(_request));
   std::map<std::string, std::string> resultHeaders;
   std::string resultBody;
 

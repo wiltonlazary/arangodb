@@ -23,6 +23,7 @@
 
 #ifndef ARANGOD_V8_SERVER_V8_VOCBASEPRIVATE_H
 #define ARANGOD_V8_SERVER_V8_VOCBASEPRIVATE_H 1
+
 #include "Basics/Common.h"
 #include "V8/v8-utils.h"
 #include "v8-vocbase.h"
@@ -91,5 +92,21 @@ bool ExtractDocumentHandle(v8::Isolate* isolate,
                            v8::Handle<v8::Value> const val,
                            std::string& collectionName,
                            std::unique_ptr<char[]>& key, TRI_voc_rid_t& rid);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief extracts a collection from a V8 object
+/// returns null if something goes wrong or the collection is deleted
+////////////////////////////////////////////////////////////////////////////////
+
+static inline TRI_vocbase_col_t* TRI_UnwrapCollection(v8::Handle<v8::Object> obj) {
+  auto collection = TRI_UnwrapClass<TRI_vocbase_col_t>(obj, WRP_VOCBASE_COL_TYPE);
+  return collection;
+
+  if (collection != nullptr && collection->isDropped()) {
+    return nullptr;
+  }
+
+  return collection;
+}
 
 #endif

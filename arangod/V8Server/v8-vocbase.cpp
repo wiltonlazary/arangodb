@@ -2760,8 +2760,7 @@ static void MapGetVocBase(v8::Local<v8::String> const name,
     v8::Handle<v8::Object> value =
         cacheObject->GetRealNamedProperty(cacheName)->ToObject();
 
-    collection =
-        TRI_UnwrapClass<TRI_vocbase_col_t>(value, WRP_VOCBASE_COL_TYPE);
+    collection = TRI_UnwrapCollection(value);
 
     // check if the collection is from the same database
     if (collection != nullptr && collection->_vocbase == vocbase) {
@@ -3607,12 +3606,6 @@ int TRI_ParseVertex(v8::FunctionCallbackInfo<v8::Value> const& args,
 
   return TRI_ERROR_NO_ERROR;
 }
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief return the private WRP_VOCBASE_COL_TYPE value
-////////////////////////////////////////////////////////////////////////////////
-
-int32_t TRI_GetVocBaseColType() { return WRP_VOCBASE_COL_TYPE; }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief run version check

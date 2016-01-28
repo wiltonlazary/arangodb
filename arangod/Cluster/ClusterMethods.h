@@ -36,12 +36,11 @@
 #include "VocBase/update-policy.h"
 #include "VocBase/voc-types.h"
 #include "Cluster/AgencyComm.h"
+#include "Cluster/ClusterComm.h"
 #include "Cluster/ClusterInfo.h"
 #include "Cluster/ServerState.h"
-#include "Cluster/ClusterComm.h"
 
 struct TRI_json_t;
-struct TRI_vector_pointer_s;
 
 namespace arangodb {
 namespace velocypack {

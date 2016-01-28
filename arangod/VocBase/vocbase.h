@@ -359,6 +359,8 @@ class TRI_vocbase_col_t {
   bool canDrop() const { return _canDrop; }
   bool canUnload() const { return _canUnload; }
   bool canRename() const { return _canRename; }
+  bool isDropped() const { return _isDropped; }
+  void setDropped() { _isDropped = true; }
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -408,7 +410,8 @@ class TRI_vocbase_col_t {
   std::string const _path;    // path to the collection files
   std::string const _dbName;  // name of the database
   std::string _name;          // name of the collection
-
+ 
+  bool _isDropped; 
   bool _isLocal;    // if true, the collection is local. if false,
                     // the collection is a remote (cluster) collection
   bool _canDrop;    // true if the collection can be dropped

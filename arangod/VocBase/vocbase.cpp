@@ -102,6 +102,7 @@ TRI_vocbase_col_t::TRI_vocbase_col_t(TRI_vocbase_t* vocbase,
       _path(path),
       _dbName(vocbase->_name),
       _name(name),
+      _isDropped(false),
       _isLocal(true),
       _canDrop(true),
       _canUnload(true),
@@ -1139,6 +1140,7 @@ static int DropCollection(TRI_vocbase_t* vocbase, TRI_vocbase_col_t* collection,
   // .............................................................................
 
   else if (collection->_status == TRI_VOC_COL_STATUS_UNLOADED) {
+    collection->setDropped();
     try {
       arangodb::VocbaseCollectionInfo info =
           arangodb::VocbaseCollectionInfo::fromFile(collection->pathc_str(),
@@ -1186,7 +1188,6 @@ static int DropCollection(TRI_vocbase_t* vocbase, TRI_vocbase_col_t* collection,
 
   else if (collection->_status == TRI_VOC_COL_STATUS_LOADING) {
     // loop until status changes
-
     TRI_WRITE_UNLOCK_STATUS_VOCBASE_COL(collection);
     state = DROP_AGAIN;
 
@@ -1200,6 +1201,7 @@ static int DropCollection(TRI_vocbase_t* vocbase, TRI_vocbase_col_t* collection,
 
   else if (collection->_status == TRI_VOC_COL_STATUS_LOADED ||
            collection->_status == TRI_VOC_COL_STATUS_UNLOADING) {
+    collection->setDropped();
     collection->_collection->_info.setDeleted(true);
 
     bool doSync = (vocbase->_settings.forceSyncProperties &&

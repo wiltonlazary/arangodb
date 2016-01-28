@@ -22,17 +22,16 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "ClusterMethods.h"
-#include "Cluster/ClusterInfo.h"
 #include "Cluster/ClusterComm.h"
+#include "Cluster/ClusterInfo.h"
 #include "Basics/conversions.h"
 #include "Basics/json.h"
-#include "Basics/tri-strings.h"
-#include "Basics/vector.h"
 #include "Basics/json-utilities.h"
 #include "Basics/StringUtils.h"
+#include "Basics/tri-strings.h"
 #include "Indexes/Index.h"
-#include "VocBase/Traverser.h"
 #include "VocBase/server.h"
+#include "VocBase/Traverser.h"
 
 #include <velocypack/Iterator.h>
 #include <velocypack/velocypack-aliases.h>

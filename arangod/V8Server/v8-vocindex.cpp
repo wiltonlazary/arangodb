@@ -41,6 +41,7 @@
 #include "V8Server/v8-collection.h"
 #include "V8Server/v8-vocbase.h"
 #include "V8Server/v8-vocbaseprivate.h"
+#include "VocBase/CollectionIds.h"
 
 #include <velocypack/Builder.h>
 
@@ -856,8 +857,7 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  TRI_vocbase_col_t* collection = TRI_UnwrapCollection(args.Holder());
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -956,11 +956,11 @@ static void CreateCollectionCoordinator(
   std::vector<std::string> shardKeys;
 
   // default shard key
-  shardKeys.push_back("_key");
+  shardKeys.push_back(TRI_VOC_ATTRIBUTE_KEY);
 
   std::string distributeShardsLike;
 
-  std::string cid = "";  // Could come from properties
+//  std::string cid = "";  // Could come from properties
   if (2 <= args.Length()) {
     if (!args[1]->IsObject()) {
       TRI_V8_THROW_TYPE_ERROR("<properties> must be an object");
@@ -1010,7 +1010,7 @@ static void CreateCollectionCoordinator(
             std::string const key = TRI_ObjectToString(v);
 
             // system attributes are not allowed (except _key)
-            if (!key.empty() && (key[0] != '_' || key == "_key")) {
+            if (!key.empty() && (key[0] != '_' || key == TRI_VOC_ATTRIBUTE_KEY)) {
               shardKeys.push_back(key);
             }
           }
@@ -1023,11 +1023,12 @@ static void CreateCollectionCoordinator(
       distributeShardsLike = TRI_ObjectToString(
           p->Get(TRI_V8_ASCII_STRING("distributeShardsLike")));
     }
-
+/*
     auto idKey = TRI_V8_ASCII_STRING("id");
     if (p->Has(idKey) && p->Get(idKey)->IsString()) {
       cid = TRI_ObjectToString(p->Get(idKey));
     }
+*/    
   }
 
   if (numberOfShards == 0 || numberOfShards > 1000) {
@@ -1042,12 +1043,16 @@ static void CreateCollectionCoordinator(
 
   // fetch a unique id for the new collection plus one for each shard to create
   uint64_t const id = ci->uniqid(1 + numberOfShards);
-  if (cid.empty()) {
+  std::string cidString = StringUtils::itoa(id);
+
+  if (parameters.id() != 0) {
+    cidString = std::to_string(parameters.id());
+  }
+/*  if (cid.empty()) {
     // collection id is the first unique id we got
-    cid = StringUtils::itoa(id);
     // if id was given, the first unique id is wasted, this does not matter
   }
-
+*/
   std::vector<std::string> dbServers;
 
   if (distributeShardsLike.empty()) {
@@ -1059,7 +1064,7 @@ static void CreateCollectionCoordinator(
                                      "no database servers found in cluster");
     }
 
-    random_shuffle(dbServers.begin(), dbServers.end());
+    std::random_shuffle(dbServers.begin(), dbServers.end());
   } else {
     CollectionNameResolver resolver(vocbase);
     TRI_voc_cid_t otherCid =
@@ -1098,7 +1103,7 @@ static void CreateCollectionCoordinator(
 
   {
     ObjectBuilder ob(&velocy);
-    velocy("id", Value(cid))("name", Value(name))("type",
+    velocy("id", Value(cidString))("name", Value(name))("type",
                                                   Value((int)collectionType))(
         "status", Value((int)TRI_VOC_COL_STATUS_LOADED))(
         "deleted", Value(parameters.deleted()))("doCompact",
@@ -1131,8 +1136,7 @@ static void CreateCollectionCoordinator(
 
       // create a dummy primary index
       TRI_document_collection_t* doc = nullptr;
-      std::unique_ptr<arangodb::PrimaryIndex> primaryIndex(
-          new arangodb::PrimaryIndex(doc));
+      auto primaryIndex = std::make_unique<arangodb::PrimaryIndex>(doc);
 
       velocy.openObject();
       primaryIndex->toVelocyPack(velocy, false);
@@ -1151,14 +1155,22 @@ static void CreateCollectionCoordinator(
 
   std::string errorMsg;
   int myerrno = ci->createCollectionCoordinator(
-      databaseName, cid, numberOfShards, velocy.slice(), errorMsg, 240.0);
+      databaseName, cidString, numberOfShards, velocy.slice(), errorMsg, 240.0);
 
   if (myerrno != TRI_ERROR_NO_ERROR) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(myerrno, errorMsg);
   }
   ci->loadPlannedCollections();
 
-  std::shared_ptr<CollectionInfo> c = ci->getCollection(databaseName, cid);
+
+  try {
+    TRI_StoreIdCollectionRepository(vocbase, name.c_str(), TRI_UInt64String(cidString.c_str()));
+  }
+  catch (...) {
+    // ignore if this fails
+  }
+
+  std::shared_ptr<CollectionInfo> c = ci->getCollection(databaseName, cidString);
   TRI_vocbase_col_t* newcoll = CoordinatorCollection(vocbase, *c);
   TRI_V8_RETURN(WrapCollection(isolate, newcoll));
 }
@@ -1255,8 +1267,7 @@ static void JS_DropIndexVocbaseCol(
 
   PREVENT_EMBEDDED_TRANSACTION();
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  TRI_vocbase_col_t* collection = TRI_UnwrapCollection(args.Holder());
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1366,8 +1377,7 @@ static void JS_GetIndexesVocbaseCol(
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  TRI_vocbase_col_t* collection = TRI_UnwrapCollection(args.Holder());
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1538,6 +1548,16 @@ static void CreateVocBase(v8::FunctionCallbackInfo<v8::Value> const& args,
   VocbaseCollectionInfo parameters(vocbase, name.c_str(), collectionType,
                                    infoSlice);
 
+  if (!infoSlice.isObject() ||
+      (infoSlice.isObject() && !infoSlice.hasKey("id"))) {
+    auto previousCid = TRI_LookupIdCollectionRepository(vocbase, name.c_str());
+
+    if (previousCid != 0) {
+      parameters.setCollectionId(previousCid);
+    }
+  }
+
+
   if (ServerState::instance()->isCoordinator()) {
     CreateCollectionCoordinator(args, collectionType, vocbase->_name,
                                 parameters, vocbase);
@@ -1549,6 +1569,13 @@ static void CreateVocBase(v8::FunctionCallbackInfo<v8::Value> const& args,
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_errno(), "cannot create collection");
+  }
+
+  try {
+    TRI_StoreIdCollectionRepository(vocbase, name.c_str(), parameters.id());
+  }
+  catch (...) {
+    // ignore if this fails
   }
 
   v8::Handle<v8::Value> result = WrapCollection(isolate, collection);

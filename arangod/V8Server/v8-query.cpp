@@ -39,6 +39,7 @@
 #include "V8/v8-utils.h"
 #include "V8/v8-vpack.h"
 #include "V8Server/v8-shape-conv.h"
+#include "V8Server/v8-vocbaseprivate.h"
 #include "V8Server/v8-vocbase.h"
 #include "V8Server/v8-vocindex.h"
 #include "V8Server/v8-wrapshapedjson.h"
@@ -497,8 +498,7 @@ static void ExecuteSkiplistQuery(
     reverse = TRI_ObjectToBoolean(args[4]);
   }
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -717,8 +717,7 @@ static void EdgesQuery(TRI_edge_direction_e direction,
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -870,9 +869,7 @@ static void JS_AllQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION_USAGE("ALL(<skip>, <limit>)");
   }
 
-  TRI_vocbase_col_t const* col;
-  col = TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(),
-                                           TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -949,8 +946,7 @@ static void JS_AnyQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1009,8 +1005,7 @@ static void JS_ByExampleQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_TYPE_ERROR("<example> must be an object");
   }
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1243,8 +1238,7 @@ static void JS_ByExampleHashIndex(
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1419,8 +1413,7 @@ static void JS_ChecksumCollection(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_CLUSTER_UNSUPPORTED);
   }
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1558,9 +1551,7 @@ static void JS_FirstQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION_PARAMETER("invalid value for <count>");
   }
 
-  TRI_vocbase_col_t const* col;
-  col = TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(),
-                                           TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1724,8 +1715,7 @@ static void JS_FulltextQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1787,8 +1777,7 @@ static void JS_LastQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION_PARAMETER("invalid value for <count>");
   }
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1911,8 +1900,7 @@ static void JS_NearQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -2013,8 +2001,7 @@ static void JS_WithinQuery(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -2055,8 +2042,7 @@ static void JS_LookupByKeys(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -2111,8 +2097,7 @@ static void JS_RemoveByKeys(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t const* col = TRI_UnwrapClass<TRI_vocbase_col_t>(
-      args.Holder(), TRI_GetVocBaseColType());
+  TRI_vocbase_col_t const* col = TRI_UnwrapCollection(args.Holder());
 
   if (col == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");

@@ -247,6 +247,7 @@ add_executable(
     VocBase/auth.cpp
     VocBase/cleanup.cpp
     VocBase/collection.cpp
+    VocBase/CollectionIds.cpp
     VocBase/compactor.cpp
     VocBase/datafile.cpp
     VocBase/DatafileStatistics.cpp

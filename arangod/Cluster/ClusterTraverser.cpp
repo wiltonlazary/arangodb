@@ -186,8 +186,7 @@ void ClusterTraverser::EdgeGetter::operator()(std::string const& startVertex,
       expVertices = found->second;
     }
 
-    std::unique_ptr<std::map<std::string, std::string>> headers(
-        new std::map<std::string, std::string>());
+    auto headers = std::make_unique<std::map<std::string, std::string>>();
     _traverser->_readDocuments += verticesToFetch.size();
     res = getFilteredDocumentsOnCoordinator(_traverser->_dbname, expVertices,
                                             headers, verticesToFetch,
@@ -250,8 +249,7 @@ void ClusterTraverser::setStartVertex(arangodb::traverser::VertexId const& v) {
   auto it = _vertices.find(id);
   if (it == _vertices.end()) {
     arangodb::rest::HttpResponse::HttpResponseCode responseCode;
-    std::unique_ptr<std::map<std::string, std::string>> headers(
-        new std::map<std::string, std::string>());
+    auto headers = std::make_unique<std::map<std::string, std::string>>();
     std::map<std::string, std::string> resultHeaders;
     std::vector<std::string> splitId =
         arangodb::basics::StringUtils::split(id, '/');

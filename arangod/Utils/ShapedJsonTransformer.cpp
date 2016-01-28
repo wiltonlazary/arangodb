@@ -36,6 +36,7 @@ Json TRI_ExpandShapedJson(VocShaper* shaper,
   TRI_EXTRACT_SHAPED_JSON_MARKER(shaped, marker);
 
   auto s = TRI_JsonShapedJson(shaper, &shaped);
+
   if (s == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
