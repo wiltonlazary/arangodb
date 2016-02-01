@@ -26,9 +26,7 @@
 #include "Aql/SortCondition.h"
 #include "Basics/AttributeNameParser.h"
 #include "Basics/debugging.h"
-#include "Basics/logging.h"
 #include "VocBase/document-collection.h"
-#include "VocBase/transaction.h"
 #include "VocBase/VocShaper.h"
 
 #include <velocypack/Iterator.h>
@@ -115,8 +113,17 @@ static TRI_index_operator_t* buildRangeOperator(VPackSlice const& lowerBound,
                                                 VocShaper* shaper) {
   std::unique_ptr<TRI_index_operator_t> lowerOperator(buildBoundOperator(
       lowerBound, lowerBoundInclusive, false, parameters, shaper));
+
+  if (lowerOperator == nullptr && !lowerBound.isNone()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+
   std::unique_ptr<TRI_index_operator_t> upperOperator(buildBoundOperator(
       upperBound, upperBoundInclusive, true, parameters, shaper));
+  
+  if (upperOperator == nullptr && !upperBound.isNone()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
 
   if (lowerOperator == nullptr) {
     return upperOperator.release();
@@ -439,21 +446,19 @@ void SkiplistIterator::findHelper(
   SkiplistIteratorInterval interval;
   Node* temp;
 
-  TRI_relation_index_operator_t* relationOperator =
-      (TRI_relation_index_operator_t*)indexOperator;
-  TRI_logical_index_operator_t* logicalOperator =
-      (TRI_logical_index_operator_t*)indexOperator;
-
   switch (indexOperator->_type) {
     case TRI_EQ_INDEX_OPERATOR:
     case TRI_LE_INDEX_OPERATOR:
     case TRI_LT_INDEX_OPERATOR:
     case TRI_GE_INDEX_OPERATOR:
-    case TRI_GT_INDEX_OPERATOR:
+    case TRI_GT_INDEX_OPERATOR: {
+      TRI_relation_index_operator_t* relationOperator =
+        (TRI_relation_index_operator_t*)indexOperator;
 
       values._fields = relationOperator->_fields;
       values._numFields = relationOperator->_numFields;
       break;  // this is to silence a compiler warning
+    }
 
     default: {
       // must not access relationOperator->xxx if the operator is not a
@@ -464,6 +469,8 @@ void SkiplistIterator::findHelper(
 
   switch (indexOperator->_type) {
     case TRI_AND_INDEX_OPERATOR: {
+      TRI_logical_index_operator_t* logicalOperator =
+        (TRI_logical_index_operator_t*)indexOperator;
       findHelper(logicalOperator->_left, leftResult);
       findHelper(logicalOperator->_right, rightResult);
 
@@ -1511,7 +1518,7 @@ IndexIterator* SkiplistIndex::iteratorForCondition(
         while (true) {
           if (++permutationStates[np - current].current <
               permutationStates[np - current].n) {
-            current = 0;
+            current = 0; // note: resetting the variable has no effect here
             // abort inner iteration
             break;
           }

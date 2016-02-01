@@ -23,12 +23,9 @@
 
 #include "PrimaryIndex.h"
 #include "Aql/AstNode.h"
-#include "Aql/SortCondition.h"
 #include "Basics/Exceptions.h"
 #include "Basics/hashes.h"
-#include "Basics/logging.h"
 #include "Indexes/SimpleAttributeEqualityMatcher.h"
-#include "Utils/CollectionNameResolver.h"
 #include "VocBase/document-collection.h"
 #include "VocBase/transaction.h"
 
@@ -420,11 +417,6 @@ IndexIterator* PrimaryIndex::createIterator(
     } else {
       keys.emplace_back(valNode->getStringValue());
     }
-  }
-
-  if (keys.empty()) {
-    // nothing to do: still new to return an empty iterator
-    return new PrimaryIndexIterator(trx, this, keys);
   }
 
   TRI_IF_FAILURE("PrimaryIndex::noIterator") {

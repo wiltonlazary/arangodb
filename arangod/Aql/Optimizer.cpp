@@ -21,7 +21,7 @@
 /// @author Max Neunhoeffer
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "Aql/Optimizer.h"
+#include "Optimizer.h"
 #include "Aql/ExecutionEngine.h"
 #include "Aql/OptimizerRules.h"
 #include "Cluster/ServerState.h"
@@ -393,6 +393,13 @@ void Optimizer::setupRules() {
   // wrong!)
   registerHiddenRule("specialize-collect", specializeCollectRule,
                      specializeCollectRule_pass1, false);
+
+  // inline subqueries one level higher
+  // rule not yet tested
+#if 0
+  registerRule("inline-subqueries", inlineSubqueriesRule,
+               inlineSubqueriesRule_pass1, true);
+#endif
 
   // move calculations up the dependency chain (to pull them out of
   // inner loops etc.)
