@@ -20,19 +20,19 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef APPLICATION_FEATURES_SHUTDOWN_FEATURE_H
-#define APPLICATION_FEATURES_SHUTDOWN_FEATURE_H 1
+#ifndef ARANGODB_APPLICATION_FEATURES_SHUTDOWN_FEATURE_H
+#define ARANGODB_APPLICATION_FEATURES_SHUTDOWN_FEATURE_H 1
 
 #include "ApplicationFeatures/ApplicationFeature.h"
 
 namespace arangodb {
 class ShutdownFeature final : public application_features::ApplicationFeature {
  public:
-  explicit ShutdownFeature(application_features::ApplicationServer* server,
-                           std::string const&);
+  ShutdownFeature(application_features::ApplicationServer* server,
+                  std::vector<std::string> const& features);
 
  public:
-  void start() override;
+  void start() override final;
 };
 }
 

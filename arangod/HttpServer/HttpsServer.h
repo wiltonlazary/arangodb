@@ -42,7 +42,7 @@ class HttpsServer : public HttpServer {
   //////////////////////////////////////////////////////////////////////////////
 
   HttpsServer(Scheduler*, Dispatcher*, HttpHandlerFactory*, AsyncJobManager*,
-              double keepAliveTimeout, SSL_CTX*);
+              double keepAliveTimeout, std::vector<std::string> const&, SSL_CTX*);
 
   ~HttpsServer();
 
@@ -66,7 +66,7 @@ class HttpsServer : public HttpServer {
     return Endpoint::EncryptionType::SSL;
   }
 
-  HttpCommTask* createCommTask(TRI_socket_t, const ConnectionInfo&) override;
+  HttpCommTask* createCommTask(TRI_socket_t, ConnectionInfo&&) override;
 
  private:
   //////////////////////////////////////////////////////////////////////////////

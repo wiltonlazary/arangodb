@@ -1,5 +1,5 @@
 /*jshint globalstrict:false, strict:false, unused : false */
-/*global assertEqual, assertNotEqual */
+/*global assertEqual, assertNotEqual, fail */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief tests for dump/reload
@@ -32,7 +32,6 @@ var db = require("@arangodb").db;
 var internal = require("internal");
 var jsunity = require("jsunity");
 
-
 function runSetup () {
   'use strict';
   internal.debugClearFailAt();
@@ -40,6 +39,7 @@ function runSetup () {
   internal.debugSetFailAt("CreateDatabase::tempDirectory");
   try {
     db._createDatabase("UnitTestsRecovery1");
+    fail();
   }
   catch (err) {
   }
@@ -48,6 +48,7 @@ function runSetup () {
   internal.debugSetFailAt("CreateDatabase::tempFile");
   try {
     db._createDatabase("UnitTestsRecovery2");
+    fail();
   }
   catch (err) {
   }
@@ -56,6 +57,7 @@ function runSetup () {
   internal.debugSetFailAt("CreateDatabase::renameDirectory");
   try {
     db._createDatabase("UnitTestsRecovery3");
+    fail();
   }
   catch (err) {
   }
@@ -86,10 +88,10 @@ function recoverySuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testCreateDatabaseFail : function () {
-      assertEqual(-1, db._listDatabases().indexOf("UnitTestsRecovery1")); 
-      assertEqual(-1, db._listDatabases().indexOf("UnitTestsRecovery2")); 
-      assertNotEqual(-1, db._listDatabases().indexOf("UnitTestsRecovery3")); 
-      assertNotEqual(-1, db._listDatabases().indexOf("UnitTestsRecovery4")); 
+      assertEqual(-1, db._databases().indexOf("UnitTestsRecovery1")); 
+      assertEqual(-1, db._databases().indexOf("UnitTestsRecovery2")); 
+      assertNotEqual(-1, db._databases().indexOf("UnitTestsRecovery3")); 
+      assertNotEqual(-1, db._databases().indexOf("UnitTestsRecovery4")); 
     }
         
   };

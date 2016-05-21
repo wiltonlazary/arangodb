@@ -25,14 +25,19 @@
 /// @author Copyright 2012, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "Basics/Common.h"
+
+#define BOOST_TEST_INCLUDED
 #include <boost/test/unit_test.hpp>
 
 #include "Basics/StringBuffer.h"
 #include "Basics/files.h"
 #include "Basics/json.h"
-#include "Basics/random.h"
+#include "Random/RandomGenerator.h"
 
 using namespace arangodb::basics;
+
+static bool Initialized = false;
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                 setup / tear-down
@@ -43,10 +48,17 @@ struct CFilesSetup {
     long systemError;
     std::string errorMessage;
     BOOST_TEST_MESSAGE("setup files");
+    
+    if (!Initialized) {
+      Initialized = true;
+      arangodb::RandomGenerator::initialize(arangodb::RandomGenerator::RandomType::MERSENNE);
+    }
 
-    _directory.appendText("/tmp/arangotest-");
-    _directory.appendInteger((uint64_t) TRI_microtime());
-    _directory.appendInteger((uint32_t) TRI_UInt32Random());
+    _directory.appendText(TRI_GetTempPath());
+    _directory.appendChar(TRI_DIR_SEPARATOR_CHAR);
+    _directory.appendText("arangotest-");
+    _directory.appendInteger(static_cast<uint64_t>(TRI_microtime()));
+    _directory.appendInteger(arangodb::RandomGenerator::interval(UINT32_MAX));
 
     TRI_CreateDirectory(_directory.c_str(), systemError, errorMessage);
   }
@@ -56,7 +68,6 @@ struct CFilesSetup {
     
     // let's be sure we delete the right stuff
     assert(_directory.length() > 10);
-    assert(memcmp((void*) _directory.c_str(), (void*) "/tmp/arangotest-", 16) == 0);
 
     TRI_RemoveDirectory(_directory.c_str());
   }
@@ -68,12 +79,12 @@ struct CFilesSetup {
     filename->appendText(_directory);
     filename->appendText("/tmp-");
     filename->appendInteger(++counter);
-    filename->appendInteger((uint32_t) TRI_UInt32Random());
+    filename->appendInteger(arangodb::RandomGenerator::interval(UINT32_MAX));
 
     FILE* fd = fopen(filename->c_str(), "wb");
 
     if (fd) {
-      ssize_t numWritten = fwrite(blob, strlen(blob), 1, fd);
+      size_t numWritten = fwrite(blob, strlen(blob), 1, fd);
       (void) numWritten;
       fclose(fd);
     }
@@ -151,6 +162,50 @@ BOOST_AUTO_TEST_CASE (tst_filesize_non) {
 BOOST_AUTO_TEST_CASE (tst_absolute_paths) {
   char* path;
 
+#ifdef _WIN32
+  path = TRI_GetAbsolutePath("the-fox", "\\tmp");
+
+  BOOST_CHECK_EQUAL("\\tmp\\the-fox", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+
+  path = TRI_GetAbsolutePath("the-fox.lol", "\\tmp");
+  BOOST_CHECK_EQUAL("\\tmp\\the-fox.lol", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("the-fox.lol", "\\tmp\\the-fox");
+  BOOST_CHECK_EQUAL("\\tmp\\the-fox\\the-fox.lol", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("file", "\\");
+  BOOST_CHECK_EQUAL("\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath(".\\file", "\\");
+  BOOST_CHECK_EQUAL("\\.\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("\\file", "\\tmp");
+  BOOST_CHECK_EQUAL("\\tmp\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("\\file\\to\\file", "\\tmp");
+  BOOST_CHECK_EQUAL("\\tmp\\file\\to\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("file\\to\\file", "\\tmp");
+  BOOST_CHECK_EQUAL("\\tmp\\file\\to\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("c:\\file\\to\\file", "abc");
+  BOOST_CHECK_EQUAL("c:\\file\\to\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+  
+  path = TRI_GetAbsolutePath("c:\\file\\to\\file", "\\tmp");
+  BOOST_CHECK_EQUAL("c:\\file\\to\\file", path);
+  TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
+
+#else
+
   path = TRI_GetAbsolutePath("the-fox", "/tmp");
   BOOST_CHECK_EQUAL("/tmp/the-fox", path);
   TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
@@ -186,47 +241,7 @@ BOOST_AUTO_TEST_CASE (tst_absolute_paths) {
   path = TRI_GetAbsolutePath("c:file/to/file", "/tmp");
   BOOST_CHECK_EQUAL("c:file/to/file", path);
   TRI_Free(TRI_UNKNOWN_MEM_ZONE, path);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test slurp file
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_slurp) {
-  size_t length;
-  char* filename;
-  char* result;
-
-  filename = TRI_Concatenate2File(_directory.c_str(), "files-unittest.tmp");
-
-  // remove file if it exists
-  TRI_UnlinkFile(filename);
-
-  // non-existing file
-  result = TRI_SlurpFile(TRI_CORE_MEM_ZONE, filename, &length);
-  BOOST_CHECK_EQUAL((char*) 0, result);
-
-  TRI_json_t* json = TRI_JsonString(TRI_CORE_MEM_ZONE, "{ \"this\" : true, \"is\" : [ \"a\", \"test\" ] }");
-  bool ok = TRI_SaveJson(filename, json, false);
-  BOOST_CHECK_EQUAL(true, ok);
-
-  // file exists now
-  result = TRI_SlurpFile(TRI_CORE_MEM_ZONE, filename, &length);
-
-  BOOST_CHECK_EQUAL(0, strcmp("{\"this\":true,\"is\":[\"a\",\"test\"]}\n", result));
-  BOOST_CHECK_EQUAL(length, strlen("{\"this\":true,\"is\":[\"a\",\"test\"]}\n"));
-  TRI_Free(TRI_CORE_MEM_ZONE, result);
-
-  // test without length
-  length = 42;
-  result = TRI_SlurpFile(TRI_CORE_MEM_ZONE, filename, 0);
-
-  BOOST_CHECK_EQUAL(0, strcmp("{\"this\":true,\"is\":[\"a\",\"test\"]}\n", result));
-  BOOST_CHECK_EQUAL(42, (int) length);
-  TRI_Free(TRI_CORE_MEM_ZONE, result);
-
-  TRI_FreeJson(TRI_CORE_MEM_ZONE, json);
-  TRI_Free(TRI_CORE_MEM_ZONE, filename);
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////

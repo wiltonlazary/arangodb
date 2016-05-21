@@ -41,7 +41,7 @@ namespace httpclient {
 /// @brief empty map, used for headers
 ////////////////////////////////////////////////////////////////////////////////
 
-std::map<std::string, std::string> const SimpleHttpClient::NO_HEADERS;
+std::unordered_map<std::string, std::string> const SimpleHttpClient::NO_HEADERS {};
 
 // -----------------------------------------------------------------------------
 // constructors and destructors
@@ -50,7 +50,7 @@ std::map<std::string, std::string> const SimpleHttpClient::NO_HEADERS;
 SimpleHttpClient::SimpleHttpClient(GeneralClientConnection* connection,
                                    double requestTimeout, bool warn)
     : _connection(connection),
-      _writeBuffer(TRI_UNKNOWN_MEM_ZONE),
+      _writeBuffer(TRI_UNKNOWN_MEM_ZONE, false),
       _readBuffer(TRI_UNKNOWN_MEM_ZONE),
       _readBufferOffset(0),
       _requestTimeout(requestTimeout),
@@ -156,7 +156,7 @@ SimpleHttpResult* SimpleHttpClient::retryRequest(
 SimpleHttpResult* SimpleHttpClient::retryRequest(
     GeneralRequest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
-    std::map<std::string, std::string> const& headers) {
+    std::unordered_map<std::string, std::string> const& headers) {
   SimpleHttpResult* result = nullptr;
   size_t tries = 0;
 
@@ -210,7 +210,7 @@ SimpleHttpResult* SimpleHttpClient::request(
 SimpleHttpResult* SimpleHttpClient::request(
     GeneralRequest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
-    std::map<std::string, std::string> const& headers) {
+    std::unordered_map<std::string, std::string> const& headers) {
   return doRequest(method, location, body, bodyLength, headers);
 }
 
@@ -221,7 +221,7 @@ SimpleHttpResult* SimpleHttpClient::request(
 SimpleHttpResult* SimpleHttpClient::doRequest(
     GeneralRequest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
-    std::map<std::string, std::string> const& headers) {
+    std::unordered_map<std::string, std::string> const& headers) {
   // ensure connection has not yet been invalidated
   TRI_ASSERT(_connection != nullptr);
 
@@ -314,6 +314,7 @@ SimpleHttpResult* SimpleHttpClient::doRequest(
             return nullptr;
           }
           this->close();  // this sets the state to IN_CONNECT for a retry
+          usleep(5000);
           break;
         }
 
@@ -489,7 +490,7 @@ SimpleHttpResult* SimpleHttpClient::getResult() {
 void SimpleHttpClient::setRequest(
     GeneralRequest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
-    std::map<std::string, std::string> const& headers) {
+    std::unordered_map<std::string, std::string> const& headers) {
   // clear read-buffer (no pipeling!)
   _readBufferOffset = 0;
   _readBuffer.reset();
@@ -515,7 +516,7 @@ void SimpleHttpClient::setRequest(
   _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR(" HTTP/1.1\r\n"));
 
   // append hostname
-  std::string&& hostname = _connection->getEndpoint()->host();
+  std::string hostname = _connection->getEndpoint()->host();
 
   _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("Host: "));
   _writeBuffer.appendText(hostname);
@@ -582,7 +583,9 @@ void SimpleHttpClient::setRequest(
     _writeBuffer.appendText(body, bodyLength);
   }
 
-  LOG(TRACE) << "Request: " << _writeBuffer.c_str();
+  _writeBuffer.ensureNullTerminated();
+
+  LOG(TRACE) << "Request: " << std::string(_writeBuffer.c_str(), _writeBuffer.length());
 
   if (_state == DEAD) {
     _connection->resetNumConnectRetries();
@@ -632,7 +635,7 @@ void SimpleHttpClient::processHeader() {
     }
 
     // end of header found
-    if (*ptr == '\r' || *ptr == '\0') {
+    if (*ptr == '\r' || *ptr == '\n' || *ptr == '\0') {
       size_t len = pos - ptr;
       _readBufferOffset += len + 1;
       ptr += len + 1;
@@ -756,6 +759,7 @@ void SimpleHttpClient::processBody() {
     // _result->getContentLength() <= _readBuffer.length()-_readBufferOffset
     _result->getBody().appendText(_readBuffer.c_str() + _readBufferOffset,
                                   _result->getContentLength());
+    _result->getBody().ensureNullTerminated();
   }
 
   _readBufferOffset += _result->getContentLength();
@@ -808,7 +812,7 @@ void SimpleHttpClient::processChunkedHeader() {
 
   try {
     contentLength =
-        static_cast<uint32_t>(std::stol(line, nullptr, 16));  // C++11
+        static_cast<uint32_t>(std::stol(line, nullptr, 16));  
   } catch (...) {
     setErrorMessage("found invalid content-length", true);
     // reset connection
@@ -863,9 +867,11 @@ void SimpleHttpClient::processChunkedBody() {
 
     if (_result->isDeflated()) {
       _readBuffer.inflate(_result->getBody(), 16384, _readBufferOffset);
+      _result->getBody().ensureNullTerminated();
     } else {
       _result->getBody().appendText(_readBuffer.c_str() + _readBufferOffset,
                                     (size_t)_nextChunkedSize);
+      _result->getBody().ensureNullTerminated();
     }
 
     _readBufferOffset += (size_t)_nextChunkedSize + 2;
@@ -878,28 +884,35 @@ void SimpleHttpClient::processChunkedBody() {
 /// @brief extract an error message from a response
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string SimpleHttpClient::getHttpErrorMessage(SimpleHttpResult* result) {
+std::string SimpleHttpClient::getHttpErrorMessage(SimpleHttpResult const* result,
+                                                  int* errorCode) {
+  if (errorCode != nullptr) {
+    *errorCode = TRI_ERROR_NO_ERROR;
+  }
+
   arangodb::basics::StringBuffer const& body = result->getBody();
   std::string details;
 
-  std::unique_ptr<TRI_json_t> json(
-      arangodb::basics::JsonHelper::fromString(body.c_str(), body.length()));
+  try {
+    std::shared_ptr<VPackBuilder> builder = VPackParser::fromJson(body.c_str(), body.length());
 
-  if (json != nullptr) {
-    std::string const errorMessage =
-        arangodb::basics::JsonHelper::getStringValue(json.get(), "errorMessage",
-                                                     "");
-    int errorNum = arangodb::basics::JsonHelper::getNumericValue<int>(
-        json.get(), "errorNum", 0);
+    VPackSlice slice = builder->slice();
+    if (slice.isObject()) {
+      VPackSlice msg = slice.get("errorMessage");
+      int errorNum = slice.get("errorNum").getNumericValue<int>();
 
-    if (errorMessage != "" && errorNum > 0) {
-      details =
-          ": ArangoError " + StringUtils::itoa(errorNum) + ": " + errorMessage;
+      if (msg.isString() && msg.getStringLength() > 0 && errorNum > 0) {
+        if (errorCode != nullptr) {
+          *errorCode = errorNum;
+        }
+        details = ": ArangoError " + std::to_string(errorNum) + ": " + msg.copyString();
+      }
     }
+  } catch (...) {
+    // don't rethrow here. we'll respond with an error message anyway
   }
 
-  return "got error from server: HTTP " +
-         arangodb::basics::StringUtils::itoa(result->getHttpReturnCode()) +
+  return "got error from server: HTTP " + std::to_string(result->getHttpReturnCode()) +
          " (" + result->getHttpReturnMessage() + ")" + details;
 }
 
@@ -907,7 +920,11 @@ std::string SimpleHttpClient::getHttpErrorMessage(SimpleHttpResult* result) {
 /// @brief fetch the version from the server
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string SimpleHttpClient::getServerVersion() {
+std::string SimpleHttpClient::getServerVersion(int* errorCode) {
+  if (errorCode != nullptr) {
+    *errorCode = TRI_ERROR_INTERNAL;
+  }
+
   std::unique_ptr<SimpleHttpResult> response(
       request(GeneralRequest::RequestType::GET, "/_api/version", nullptr, 0));
 
@@ -915,36 +932,50 @@ std::string SimpleHttpClient::getServerVersion() {
     return "";
   }
 
-  std::string version;
-
-  if (response->getHttpReturnCode() == (int) GeneralResponse::ResponseCode::OK) {
+  if (response->getHttpReturnCode() == static_cast<int>(GeneralResponse::ResponseCode::OK)) {
     // default value
-    version = "arango";
+    std::string version = "arango";
 
-    // convert response body to json
-    std::unique_ptr<TRI_json_t> json(
-        TRI_JsonString(TRI_UNKNOWN_MEM_ZONE, response->getBody().c_str()));
+    arangodb::basics::StringBuffer const& body = response->getBody();
+    try {
+      std::shared_ptr<VPackBuilder> builder = VPackParser::fromJson(body.c_str(), body.length());
 
-    if (json != nullptr) {
-      // look up "server" value
-      std::string const server = arangodb::basics::JsonHelper::getStringValue(
-          json.get(), "server", "");
-
-      // "server" value is a string and content is "arango"
-      if (server == "arango") {
-        // look up "version" value
-        version = arangodb::basics::JsonHelper::getStringValue(json.get(),
-                                                               "version", "");
+      VPackSlice slice = builder->slice();
+      if (slice.isObject()) {
+        VPackSlice server = slice.get("server");
+        if (server.isString() && server.copyString() == "arango") {
+          // "server" value is a string and its content is "arango"
+          VPackSlice v = slice.get("version");
+          if (v.isString()) {
+            version = v.copyString();
+          }
+        }
       }
-    }
-  } else {
-    if (response->wasHttpError()) {
-      setErrorMessage(getHttpErrorMessage(response.get()), false);
-    }
-    _connection->disconnect();
-  }
 
-  return version;
+      if (errorCode != nullptr) {
+        *errorCode = TRI_ERROR_NO_ERROR;
+      }
+      return version;
+    } catch (std::exception const& ex) {
+      setErrorMessage(ex.what(), false);
+      return "";
+    } catch (...) {
+      setErrorMessage("Unable to parse server response", false);
+      return "";
+    }
+  } 
+  
+  if (response->wasHttpError()) {
+    std::string msg = getHttpErrorMessage(response.get(), errorCode);
+    if (errorCode != nullptr) {
+      setErrorMessage(msg, *errorCode);
+    } else {
+      setErrorMessage(msg, false);
+    }
+  }
+  _connection->disconnect();
+
+  return "";
 }
 }
 }

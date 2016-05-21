@@ -1,5 +1,5 @@
 /*jshint globalstrict:false, strict:false */
-/*global fail, assertFalse, assertTrue, assertEqual, assertNotEqual, ArangoAgency */
+/*global fail, assertFalse, assertTrue, assertEqual, ArangoAgency */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief test the agency communication layer
@@ -38,7 +38,6 @@ var jsunity = require("jsunity");
 function AgencySuite () {
   'use strict';
   var agency = ArangoAgency;
-  var oldPrefix = agency.prefix(true);
 
   var cleanupLocks = function () {
     agency.set("UnitTestsAgency/Target/Lock", "UNLOCKED");
@@ -49,12 +48,8 @@ function AgencySuite () {
   return {
 
     setUp : function () {
-      agency.setPrefix("UnitTestsAgency");
-      assertEqual("UnitTestsAgency", agency.prefix(true));
-      
       try {
         agency.remove("UnitTestsAgency", true);
-        //agency.remove("UnitTestsAgency", true);
       }
       catch (err) {
         // dir may not exist. this is not a problem
@@ -69,117 +64,6 @@ function AgencySuite () {
       }
       catch (err) {
       }
-
-      agency.setPrefix(oldPrefix);
-      assertEqual(oldPrefix, agency.prefix(true));
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test list
-////////////////////////////////////////////////////////////////////////////////
-
-    testList : function () {
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo"));
-      assertTrue(agency.set("UnitTestsAgency/foo/1", "foo1"));
-      assertTrue(agency.set("UnitTestsAgency/foo/2", "foo2"));
-      assertTrue(agency.set("UnitTestsAgency/foo/3", "foo3"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bam"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/1", "bar1"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/2", "bar2"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar/baz"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/baz/1", "baz1"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar/baz/bam"));
-
-      var values = agency.list("UnitTestsAgency/foo");
-      assertEqual({ 
-        "UnitTestsAgency/foo/1" : false, 
-        "UnitTestsAgency/foo/2" : false, 
-        "UnitTestsAgency/foo/3" : false, 
-        "UnitTestsAgency/foo/bam" : true, 
-        "UnitTestsAgency/foo/bar" : true 
-      }, values);
-
-      values = agency.list("UnitTestsAgency/foo", true);
-      assertEqual({ 
-        "UnitTestsAgency/foo/1" : false, 
-        "UnitTestsAgency/foo/2" : false, 
-        "UnitTestsAgency/foo/3" : false, 
-        "UnitTestsAgency/foo/bam" : true, 
-        "UnitTestsAgency/foo/bar" : true, 
-        "UnitTestsAgency/foo/bar/1" : false, 
-        "UnitTestsAgency/foo/bar/2" : false, 
-        "UnitTestsAgency/foo/bar/baz" : true, 
-        "UnitTestsAgency/foo/bar/baz/1" : false, 
-        "UnitTestsAgency/foo/bar/baz/bam" : true 
-      }, values);
-      
-      // insert a new directory (above the others, sort order is important)
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/abc"));
-      values = agency.list("UnitTestsAgency/foo");
-
-      assertEqual({ 
-        "UnitTestsAgency/foo/1" : false, 
-        "UnitTestsAgency/foo/2" : false, 
-        "UnitTestsAgency/foo/3" : false, 
-        "UnitTestsAgency/foo/abc" : true, 
-        "UnitTestsAgency/foo/bam" : true, 
-        "UnitTestsAgency/foo/bar" : true 
-      }, values);
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test list
-////////////////////////////////////////////////////////////////////////////////
-
-    testListFlat : function () {
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo"));
-      assertTrue(agency.set("UnitTestsAgency/foo/1", "foo1"));
-      assertTrue(agency.set("UnitTestsAgency/foo/2", "foo2"));
-      assertTrue(agency.set("UnitTestsAgency/foo/3", "foo3"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bam"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/1", "bar1"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/2", "bar2"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar/baz"));
-      assertTrue(agency.set("UnitTestsAgency/foo/bar/baz/1", "baz1"));
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/bar/baz/bam"));
-
-      var values = agency.list("UnitTestsAgency/foo", false, true);
-      assertEqual([ 
-        "UnitTestsAgency/foo/1",
-        "UnitTestsAgency/foo/2",
-        "UnitTestsAgency/foo/3", 
-        "UnitTestsAgency/foo/bam", 
-        "UnitTestsAgency/foo/bar"
-      ], values);
-
-      values = agency.list("UnitTestsAgency/foo", true, true);
-      assertEqual([ 
-        "UnitTestsAgency/foo/1", 
-        "UnitTestsAgency/foo/2", 
-        "UnitTestsAgency/foo/3", 
-        "UnitTestsAgency/foo/bam", 
-        "UnitTestsAgency/foo/bar", 
-        "UnitTestsAgency/foo/bar/1", 
-        "UnitTestsAgency/foo/bar/2", 
-        "UnitTestsAgency/foo/bar/baz", 
-        "UnitTestsAgency/foo/bar/baz/1", 
-        "UnitTestsAgency/foo/bar/baz/bam" 
-      ], values);
-      
-      // insert a new directory (above the others, sort order is important)
-      assertTrue(agency.createDirectory("UnitTestsAgency/foo/abc"));
-      values = agency.list("UnitTestsAgency/foo", false, true);
-
-      assertEqual([
-        "UnitTestsAgency/foo/1", 
-        "UnitTestsAgency/foo/2", 
-        "UnitTestsAgency/foo/3", 
-        "UnitTestsAgency/foo/abc", 
-        "UnitTestsAgency/foo/bam", 
-        "UnitTestsAgency/foo/bar" 
-      ], values);
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -322,129 +206,43 @@ function AgencySuite () {
       // insert
       agency.set("UnitTestsAgency/foo", "test1");
       var values = agency.get("UnitTestsAgency/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/foo"));
-      assertEqual(values["UnitTestsAgency/foo"], "test1");
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("foo"));
+      assertEqual(values.arango.UnitTestsAgency.foo, "test1");
 
       // overwrite
       agency.set("UnitTestsAgency/foo", "test2", 2);
       values = agency.get("UnitTestsAgency/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/foo"));
-      assertEqual(values["UnitTestsAgency/foo"], "test2");
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("foo"));
+      assertEqual(values.arango.UnitTestsAgency.foo, "test2");
 
       assertTrue(agency.remove("UnitTestsAgency/foo"));
       
       // re-insert
       agency.set("UnitTestsAgency/foo", "test3");
       values = agency.get("UnitTestsAgency/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/foo"));
-      assertEqual(values["UnitTestsAgency/foo"], "test3");
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("foo"));
+      assertEqual(values.arango.UnitTestsAgency.foo, "test3");
 
       // update with ttl
       agency.set("UnitTestsAgency/foo", "test4", 2);
       values = agency.get("UnitTestsAgency/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/foo"));
-      assertEqual(values["UnitTestsAgency/foo"], "test4");
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("foo"));
+      assertEqual(values.arango.UnitTestsAgency.foo, "test4");
 
       require("internal").wait(3);
       
-      try {
-        values = agency.get("UnitTestsAgency/foo");
-        fail();
-      }
-      catch (e) {
-        assertEqual(404, e.code); 
-        assertEqual(100, e.errorNum);  // not found
-      }
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test watch
-////////////////////////////////////////////////////////////////////////////////
-
-    testWatchTimeout : function () {
-      assertTrue(agency.set("UnitTestsAgency/foo", "bar"));
-
-      var wait = 3;
-      var start = require("internal").time();
-      assertFalse(agency.watch("UnitTestsAgency/foo", 0, wait));
-      var end = require("internal").time();
-      assertEqual(wait, Math.round(end - start));
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test watch
-////////////////////////////////////////////////////////////////////////////////
-
-    testWatchChange : function () {
-      assertTrue(agency.set("UnitTestsAgency/foo", "bar"));
-
-      var wait = 1;
-      var start = require("internal").time();
-
-      assertFalse(agency.watch("UnitTestsAgency/foo", 0, wait));
-      var end = require("internal").time();
-      assertEqual(wait, Math.round(end - start));
-
-      assertTrue(agency.set("UnitTestsAgency/foo", "baz"));
-      assertTrue(agency.set("UnitTestsAgency/foo", "bart"));
-
-      var idx = agency.get("UnitTestsAgency/foo", false, true)["UnitTestsAgency/foo"].index;
-      start = require("internal").time();
-      var result = agency.watch("UnitTestsAgency/foo", idx, wait);
-      end = require("internal").time();
-
-      assertEqual(0, Math.round(end - start));
-
-      idx = agency.get("UnitTestsAgency/foo", false, true)["UnitTestsAgency/foo"].index;
-      start = require("internal").time();
-      result = agency.watch("UnitTestsAgency/foo", idx + 100000, wait);
-      end = require("internal").time();
-
-      assertEqual(wait, Math.round(end - start));
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test recursive watch
-////////////////////////////////////////////////////////////////////////////////
-
-    testWatchRecursive : function () {
-      assertTrue(agency.set("UnitTestsAgency/foo/1", "bar"));
-      assertTrue(agency.set("UnitTestsAgency/foo/2", "baz"));
-
-      var wait = 1;
-      var start = require("internal").time();
-      assertFalse(agency.watch("UnitTestsAgency/foo", 0, wait));
-      var end = require("internal").time();
-
-      // expecting this to time out
-      assertEqual(wait, Math.round(end - start));
-
-      assertTrue(agency.set("UnitTestsAgency/foo/3", "bart"));
-      var idx = agency.get("UnitTestsAgency/foo", false, true)["UnitTestsAgency/foo/3"].index;
-      assertTrue(agency.set("UnitTestsAgency/foo/3", "bartz"));
-      start = require("internal").time();
-      var result = agency.watch("UnitTestsAgency/foo", idx - 100, wait);
-      end = require("internal").time();
-
-      // expecting an immediate return
-      assertEqual(0, Math.round(end - start));
-     
-      idx = agency.get("UnitTestsAgency/foo", false, true)["UnitTestsAgency/foo/3"].index;
-      assertTrue(agency.set("UnitTestsAgency/foo/3", "barto"));
-      start = require("internal").time();
-      result = agency.watch("UnitTestsAgency/foo", idx, wait, true);
-      end = require("internal").time();
-
-      // expecting an immediate return
-      assertEqual(0, Math.round(end - start));
-      
-      idx = agency.get("UnitTestsAgency/foo", false, true)["UnitTestsAgency/foo/3"].index;
-      start = require("internal").time();
-      result = agency.watch("UnitTestsAgency/foo", idx + 100000, wait, true);
-      end = require("internal").time();
-
-      // expecting a timeout
-      assertEqual(wait, Math.round(end - start));
+      values = agency.get("UnitTestsAgency/foo");
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertFalse(values.arango.UnitTestsAgency.hasOwnProperty("foo"));
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -540,7 +338,7 @@ function AgencySuite () {
       assertTrue(agency.remove("UnitTestsAgency/1", true));
       assertTrue(agency.remove("UnitTestsAgency/2", true));
       
-      var values = agency.get("UnitTestsAgency", true);
+      var values = agency.get("UnitTestsAgency", true).arango.UnitTestsAgency;
       assertEqual({ }, values); // empty
     },
 
@@ -561,16 +359,16 @@ function AgencySuite () {
 
       assertTrue(agency.remove("UnitTestsAgency/1", true));
 
-      try {
-        agency.get("UnitTestsAgency/1", true);
-        fail();
-      }
-      catch (err) {
-        // key not found
-      }
+      var values = agency.get("UnitTestsAgency/1", true);
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertFalse(values.arango.UnitTestsAgency.hasOwnProperty("1"));
         
-      var values = agency.get("UnitTestsAgency/2", true);
-      assertEqual({ "UnitTestsAgency/2/1/foo" : "baz" }, values); 
+      values = agency.get("UnitTestsAgency/2", true);
+      assertTrue(values.hasOwnProperty("arango"));
+      assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+      assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("2"));
+      assertEqual(values.arango.UnitTestsAgency["2"], {"1":{"foo":"baz"}}); 
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -590,13 +388,9 @@ function AgencySuite () {
 
       assertTrue(agency.remove("UnitTestsAgency", true));
 
-      try {
-        agency.get("UnitTestsAgency", true);
-        fail();
-      }
-      catch (err) {
-        // key not found
-      }
+      var value = agency.get("UnitTestsAgency", true);
+      assertTrue(value.hasOwnProperty("arango"));
+      assertEqual(value.arango, {});
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -631,17 +425,15 @@ function AgencySuite () {
       var values;
       for (i = 0; i < 100; ++i) {
         if (i >= 10 && i < 90) {
-          try {
-            values = agency.get("UnitTestsAgency/" + i);
-            fail();
-          }
-          catch (err) {
-          }
+          values = agency.get("UnitTestsAgency/" + i);
+          assertEqual(values, {"arango":{"UnitTestsAgency":{}}});
         }
         else {
           values = agency.get("UnitTestsAgency/" + i);
-          assertTrue(values.hasOwnProperty("UnitTestsAgency/" + i));
-          assertEqual(values["UnitTestsAgency/" + i], "value" + i);
+          assertTrue(values.hasOwnProperty("arango"));
+          assertTrue(values.arango.hasOwnProperty("UnitTestsAgency"));
+          assertTrue(values.arango.UnitTestsAgency.hasOwnProperty("" + i));
+          assertEqual(values.arango.UnitTestsAgency[i], "value" + i);
         }
       }
     },
@@ -656,8 +448,7 @@ function AgencySuite () {
       agency.set("UnitTestsAgency/someDir/foo", "bar");
       
       var values = agency.get("UnitTestsAgency/someDir/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo"));
-      assertEqual(values["UnitTestsAgency/someDir/foo"], "bar");
+      assertEqual(values, {"arango":{"UnitTestsAgency":{"someDir":{"foo":"bar"}}}});
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -674,57 +465,25 @@ function AgencySuite () {
       agency.set("UnitTestsAgency/someDir/foo/2/1/1", "bar5");
       agency.set("UnitTestsAgency/someDir/foo/2/1/2", "bar6");
       
-      var values = agency.get("UnitTestsAgency/someDir");
-      assertEqual({ }, values);
-      values = agency.get("UnitTestsAgency/someDir/foo");
-      assertEqual({ }, values);
+      var values = agency.get("UnitTestsAgency/someDir").arango.UnitTestsAgency.someDir.foo;
+      assertEqual({"1":{"1":{"1":"bar1","2":"bar2"},
+                        "2":{"1":"bar3","2":"bar4"}},
+                   "2":{"1":{"1":"bar5","2":"bar6"}}}, values);
+
+      values = agency.get("UnitTestsAgency/someDir/foo").arango.UnitTestsAgency.someDir.foo;
+      assertEqual({"1":{"1":{"1":"bar1","2":"bar2"},
+                        "2":{"1":"bar3","2":"bar4"}},
+                   "2":{"1":{"1":"bar5","2":"bar6"}}}, values);
       
-      values = agency.get("UnitTestsAgency/someDir", true);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/1/1/1"));
-      assertEqual("bar1", values["UnitTestsAgency/someDir/foo/1/1/1"]);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/1/1/2"));
-      assertEqual("bar2", values["UnitTestsAgency/someDir/foo/1/1/2"]);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/1/2/1"));
-      assertEqual("bar3", values["UnitTestsAgency/someDir/foo/1/2/1"]);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/1/2/2"));
-      assertEqual("bar4", values["UnitTestsAgency/someDir/foo/1/2/2"]);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/2/1/1"));
-      assertEqual("bar5", values["UnitTestsAgency/someDir/foo/2/1/1"]);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo/2/1/2"));
-      assertEqual("bar6", values["UnitTestsAgency/someDir/foo/2/1/2"]);
-    },
+      values = agency.get("UnitTestsAgency/someDir", true).arango.UnitTestsAgency.someDir.foo;
+      assertEqual({"1":{"1":{"1":"bar1","2":"bar2"},
+                        "2":{"1":"bar3","2":"bar4"}},
+                   "2":{"1":{"1":"bar5","2":"bar6"}}}, values);
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test get w/ indexes
-////////////////////////////////////////////////////////////////////////////////
-
-    testGetIndexes : function () {
-      assertTrue(agency.createDirectory("UnitTestsAgency/someDir"));
-
-      agency.set("UnitTestsAgency/someDir/foo", "bar");
-      agency.set("UnitTestsAgency/someDir/bar", "baz");
-      
-      var values = agency.get("UnitTestsAgency/someDir", true, true);
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo"));
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/bar"));
-      assertEqual(values["UnitTestsAgency/someDir/foo"].value, "bar");
-      assertEqual(values["UnitTestsAgency/someDir/bar"].value, "baz");
-      assertTrue(values["UnitTestsAgency/someDir/foo"].hasOwnProperty("index"));
-      assertTrue(values["UnitTestsAgency/someDir/bar"].hasOwnProperty("index"));
-
-      assertNotEqual(values["UnitTestsAgency/someDir/foo"].index, values["UnitTestsAgency/someDir/bar"].index);
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test set / get directory
-////////////////////////////////////////////////////////////////////////////////
-
-    testGetDirectory : function () {
-      assertTrue(agency.createDirectory("UnitTestsAgency/someDir"));
-      assertTrue(agency.set("UnitTestsAgency/someDir/foo", "bar"));
-
-      var values = agency.get("UnitTestsAgency", false);
-      assertEqual({ }, values);
+      values = agency.get("UnitTestsAgency/someDir/foo", true).arango.UnitTestsAgency.someDir.foo;
+      assertEqual({"1":{"1":{"1":"bar1","2":"bar2"},
+                        "2":{"1":"bar3","2":"bar4"}},
+                   "2":{"1":{"1":"bar5","2":"bar6"}}}, values);
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -736,8 +495,8 @@ function AgencySuite () {
       assertTrue(agency.set("UnitTestsAgency/someDir/foo", "bar"));
       assertTrue(agency.set("UnitTestsAgency/someDir/baz", "bart"));
       
-      var values = agency.get("UnitTestsAgency", true);
-      assertEqual({ "UnitTestsAgency/someDir/baz" : "bart", "UnitTestsAgency/someDir/foo" : "bar" }, values);
+      var values = agency.get("UnitTestsAgency", true).arango.UnitTestsAgency;
+      assertEqual({ "someDir" : {"foo": "bar", "baz": "bart"}}, values);
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -749,14 +508,12 @@ function AgencySuite () {
 
       agency.set("UnitTestsAgency/someDir/foo", "bar");
       
-      var values = agency.get("UnitTestsAgency/someDir/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo"));
-      assertEqual(values["UnitTestsAgency/someDir/foo"], "bar");
+      var values = agency.get("UnitTestsAgency/someDir/foo").arango.UnitTestsAgency.someDir.foo;
+      assertEqual(values, "bar");
       
       agency.set("UnitTestsAgency/someDir/foo", "baz");
-      values = agency.get("UnitTestsAgency/someDir/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo"));
-      assertEqual(values["UnitTestsAgency/someDir/foo"], "baz");
+      values = agency.get("UnitTestsAgency/someDir/foo").arango.UnitTestsAgency.someDir.foo;
+      assertEqual(values, "baz");
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -768,19 +525,13 @@ function AgencySuite () {
 
       agency.set("UnitTestsAgency/someDir/foo", "bar");
       
-      var values = agency.get("UnitTestsAgency/someDir/foo");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foo"));
-      assertEqual(values["UnitTestsAgency/someDir/foo"], "bar");
+      var values = agency.get("UnitTestsAgency/someDir/foo").arango.UnitTestsAgency.someDir.foo;
+      assertEqual(values, "bar");
       
       agency.remove("UnitTestsAgency/someDir/foo");
 
-      try {
-        values = agency.get("UnitTestsAgency/someDir/foo");
-        fail();
-      }
-      catch (err) {
-        // key not found
-      }
+      values = agency.get("UnitTestsAgency/someDir/foo").arango.UnitTestsAgency.someDir;
+      assertEqual(values, {});
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -790,13 +541,8 @@ function AgencySuite () {
     testGetNonExisting1 : function () {
       assertTrue(agency.createDirectory("UnitTestsAgency/someDir"));
 
-      try {
-        agency.get("UnitTestsAgency/someDir/foo");
-        fail();
-      }
-      catch (err) {
-        // key not found
-      }
+      var value = agency.get("UnitTestsAgency/someDir/foo");
+      assertEqual(value, {"arango":{"UnitTestsAgency":{"someDir":{}}}});
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -804,13 +550,8 @@ function AgencySuite () {
 ////////////////////////////////////////////////////////////////////////////////
 
     testGetNonExisting2 : function () {
-      try {
-        agency.get("UnitTestsAgency/someOtherDir");
-        fail();
-      }
-      catch (err) {
-        // key not found
-      }
+      var value = agency.get("UnitTestsAgency/someOtherDir");
+      assertEqual(value, {"arango":{"UnitTestsAgency":{}}});
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -823,24 +564,8 @@ function AgencySuite () {
       var value = "bar=BAT;foo=%47abc;degf=2343%20hihi aha\nabc";
       agency.set("UnitTestsAgency/someDir/foobar", value);
       
-      var values = agency.get("UnitTestsAgency/someDir/foobar");
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/foobar"));
-      assertEqual(values["UnitTestsAgency/someDir/foobar"], value);
-    },
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test set / get
-////////////////////////////////////////////////////////////////////////////////
-
-    testGetUrlEncodedKey : function () {
-      assertTrue(agency.createDirectory("UnitTestsAgency/someDir"));
-
-      var key = "foo bar baz / hihi";
-      agency.set("UnitTestsAgency/someDir/" + encodeURIComponent(key), "something");
-     
-      var values = agency.get("UnitTestsAgency/someDir/" + encodeURIComponent(key));
-      assertTrue(values.hasOwnProperty("UnitTestsAgency/someDir/" + key));
-      assertEqual(values["UnitTestsAgency/someDir/" + key], "something");
+      var values = agency.get("UnitTestsAgency/someDir/foobar").arango.UnitTestsAgency.someDir.foobar;
+      assertEqual(values, value);
     }
 
   };

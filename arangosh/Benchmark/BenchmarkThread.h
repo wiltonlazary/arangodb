@@ -21,8 +21,8 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef ARANGOSH_BENCHMARK_BENCHMARK_THREAD_H
-#define ARANGOSH_BENCHMARK_BENCHMARK_THREAD_H 1
+#ifndef ARANGODB_BENCHMARK_BENCHMARK_THREAD_H
+#define ARANGODB_BENCHMARK_BENCHMARK_THREAD_H 1
 
 #include "Basics/Common.h"
 
@@ -40,7 +40,7 @@
 #include "SimpleHttpClient/SimpleHttpResult.h"
 
 namespace arangodb {
-namespace arangob {
+namespace arangobench {
 
 class BenchmarkThread : public arangodb::Thread {
  public:
@@ -71,7 +71,7 @@ class BenchmarkThread : public arangodb::Thread {
         _time(0.0),
         _verbose(verbose) {
     _errorHeader =
-        basics::StringUtils::tolower(HttpResponse::BATCH_ERROR_HEADER);
+        basics::StringUtils::tolower(StaticStrings::Errors);
   }
 
   ~BenchmarkThread() { shutdown(); }
@@ -169,20 +169,19 @@ class BenchmarkThread : public arangodb::Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   static std::string rewriteLocation(void* data, std::string const& location) {
-    auto t = static_cast<arangob::BenchmarkThread*>(data);
+    auto t = static_cast<arangobench::BenchmarkThread*>(data);
 
     TRI_ASSERT(t != nullptr);
 
-    if (location.substr(0, 5) == "/_db/") {
+    if (location.compare(0, 5, "/_db/") == 0) {
       // location already contains /_db/
       return location;
     }
 
     if (location[0] == '/') {
       return std::string("/_db/" + t->_databaseName + location);
-    } else {
-      return std::string("/_db/" + t->_databaseName + "/" + location);
-    }
+    } 
+    return std::string("/_db/" + t->_databaseName + "/" + location);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -190,7 +189,7 @@ class BenchmarkThread : public arangodb::Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   void executeBatchRequest(const unsigned long numOperations) {
-    static char const boundary[] = "XXXarangob-benchmarkXXX";
+    static char const boundary[] = "XXXarangobench-benchmarkXXX";
     size_t blen = strlen(boundary);
 
     basics::StringBuffer batchPayload(TRI_UNKNOWN_MEM_ZONE);
@@ -208,7 +207,7 @@ class BenchmarkThread : public arangodb::Thread {
       batchPayload.appendText(TRI_CHAR_LENGTH_PAIR("\r\n"));
       // append content-type, this will also begin the body
       batchPayload.appendText(TRI_CHAR_LENGTH_PAIR("Content-Type: "));
-      batchPayload.appendText(HttpRequest::BATCH_CONTENT_TYPE);
+      batchPayload.appendText(StaticStrings::BatchContentType);
       batchPayload.appendText(TRI_CHAR_LENGTH_PAIR("\r\n\r\n"));
 
       // everything else (i.e. part request header & body) will get into the
@@ -248,9 +247,8 @@ class BenchmarkThread : public arangodb::Thread {
     batchPayload.appendText(boundary, blen);
     batchPayload.appendText(TRI_CHAR_LENGTH_PAIR("--\r\n"));
 
-    _headers.erase("Content-Type");
-    _headers["Content-Type"] =
-        HttpRequest::MULTI_PART_CONTENT_TYPE + "; boundary=" + boundary;
+    _headers[StaticStrings::ContentTypeHeader] =
+        StaticStrings::MultiPartContentType + "; boundary=" + boundary;
 
     double start = TRI_microtime();
     httpclient::SimpleHttpResult* result = _httpClient->request(
@@ -388,7 +386,7 @@ class BenchmarkThread : public arangodb::Thread {
   /// @brief the operation to benchmark
   //////////////////////////////////////////////////////////////////////////////
 
-  arangob::BenchmarkOperation* _operation;
+  arangobench::BenchmarkOperation* _operation;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief condition variable
@@ -424,7 +422,7 @@ class BenchmarkThread : public arangodb::Thread {
   /// @brief benchmark counter
   //////////////////////////////////////////////////////////////////////////////
 
-  arangob::BenchmarkCounter<unsigned long>* _operationsCounter;
+  arangobench::BenchmarkCounter<unsigned long>* _operationsCounter;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief client feature
@@ -436,7 +434,7 @@ class BenchmarkThread : public arangodb::Thread {
   /// @brief extra request headers
   //////////////////////////////////////////////////////////////////////////////
 
-  std::map<std::string, std::string> _headers;
+  std::unordered_map<std::string, std::string> _headers;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief database name

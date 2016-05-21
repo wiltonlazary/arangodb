@@ -44,9 +44,8 @@ using namespace arangodb::aql;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-RestQueryHandler::RestQueryHandler(HttpRequest* request,
-                                   ApplicationV8* applicationV8)
-    : RestVocbaseBaseHandler(request), _applicationV8(applicationV8) {}
+RestQueryHandler::RestQueryHandler(HttpRequest* request)
+    : RestVocbaseBaseHandler(request) {}
 
 bool RestQueryHandler::isDirect() const {
   return _request->requestType() != GeneralRequest::RequestType::POST;
@@ -106,9 +105,8 @@ bool RestQueryHandler::readQueryProperties() {
     result.add("maxQueryStringLength",
                VPackValue(queryList->maxQueryStringLength()));
     result.close();
-    VPackSlice slice = result.slice();
 
-    generateResult(slice);
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } catch (Exception const& err) {
     handleError(err);
   } catch (std::exception const& ex) {
@@ -134,7 +132,7 @@ bool RestQueryHandler::readQuery(bool slow) {
     for (auto const& q : queries) {
       auto const& timeString = TRI_StringTimeStamp(q.started);
       auto const& queryString = q.queryString;
-      auto const& queryState = q.queryState.substr(8, q.queryState.size()-9);
+      auto const& queryState = q.queryState.substr(8, q.queryState.size() - 9);
 
       result.add(VPackValue(VPackValueType::Object));
       result.add("id", VPackValue(StringUtils::itoa(q.id)));
@@ -145,9 +143,8 @@ bool RestQueryHandler::readQuery(bool slow) {
       result.close();
     }
     result.close();
-    VPackSlice s = result.slice();
-
-    generateResult(s);
+    
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } catch (Exception const& err) {
     handleError(err);
   } catch (std::exception const& ex) {
@@ -200,8 +197,8 @@ bool RestQueryHandler::deleteQuerySlow() {
   result.add("error", VPackValue(false));
   result.add("code", VPackValue((int)GeneralResponse::ResponseCode::OK));
   result.close();
-  VPackSlice slice = result.slice();
-  generateResult(slice);
+    
+  generateResult(GeneralResponse::ResponseCode::OK, result.slice());
 
   return true;
 }
@@ -219,8 +216,8 @@ bool RestQueryHandler::deleteQuery(std::string const& name) {
     result.add("error", VPackValue(false));
     result.add("code", VPackValue((int)GeneralResponse::ResponseCode::OK));
     result.close();
-    VPackSlice slice = result.slice();
-    generateResult(slice);
+  
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } else {
     generateError(GeneralResponse::ResponseCode::BAD, res, "cannot kill query '" + name + "'");
   }
@@ -259,9 +256,8 @@ bool RestQueryHandler::replaceProperties() {
   }
 
   bool parseSuccess = true;
-  VPackOptions options;
   std::shared_ptr<VPackBuilder> parsedBody =
-      parseVelocyPackBody(&options, parseSuccess);
+      parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
   if (!parseSuccess) {
     // error message generated in parseVelocyPackBody
     return true;
@@ -339,9 +335,8 @@ bool RestQueryHandler::parseQuery() {
   }
 
   bool parseSuccess = true;
-  VPackOptions options;
   std::shared_ptr<VPackBuilder> parsedBody =
-      parseVelocyPackBody(&options, parseSuccess);
+      parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
   if (!parseSuccess) {
     // error message generated in parseVelocyPackBody
     return true;
@@ -358,8 +353,8 @@ bool RestQueryHandler::parseQuery() {
     std::string const&& queryString =
         VelocyPackHelper::checkAndGetStringValue(body, "query");
 
-    Query query(_applicationV8, true, _vocbase, queryString.c_str(),
-                queryString.size(), nullptr, nullptr, PART_MAIN);
+    Query query(true, _vocbase, queryString.c_str(), queryString.size(),
+                nullptr, nullptr, PART_MAIN);
 
     auto parseResult = query.parse();
 
@@ -387,19 +382,14 @@ bool RestQueryHandler::parseQuery() {
       }
       result.close();  // bindVars
 
-      auto tmp = VPackParser::fromJson(
-          arangodb::basics::JsonHelper::toString(parseResult.json));
-      result.add("ast", tmp->slice());
+      result.add("ast", parseResult.result->slice());
 
       if (parseResult.warnings != nullptr) {
-        auto tmp = VPackParser::fromJson(
-            arangodb::basics::JsonHelper::toString(parseResult.warnings));
-        result.add("warnings", tmp->slice());
+        result.add("warnings", parseResult.warnings->slice());
       }
     }
 
-    VPackSlice slice = result.slice();
-    generateResult(slice);
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } catch (Exception const& err) {
     handleError(err);
   } catch (std::exception const& ex) {

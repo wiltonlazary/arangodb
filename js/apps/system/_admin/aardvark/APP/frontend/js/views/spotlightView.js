@@ -28,13 +28,16 @@
       "keyup #spotlight .typeahead" : "listenKey"
     },
 
+    aqlKeywordsArray: [],
+    aqlBuiltinFunctionsArray: [],
+
     aqlKeywords: 
       "for|return|filter|sort|limit|let|collect|asc|desc|in|into|" + 
       "insert|update|remove|replace|upsert|options|with|and|or|not|" + 
-      "distinct|graph|outbound|inbound|any|all|none|aggregate",
+      "distinct|graph|outbound|inbound|any|all|none|aggregate|like|count",
 
     aqlBuiltinFunctions: 
-"to_bool|to_number|to_string|to_list|is_null|is_bool|is_number|is_string|is_list|is_document|" +
+"to_bool|to_number|to_string|to_list|is_null|is_bool|is_number|is_string|is_list|is_document|typename|" +
 "concat|concat_separator|char_length|lower|upper|substring|left|right|trim|reverse|contains|" +
 "like|floor|ceil|round|abs|rand|sqrt|pow|length|min|max|average|sum|median|variance_population|" +
 "variance_sample|first|last|unique|matches|merge|merge_recursive|has|attributes|values|unset|unset_recursive|keep|" +
@@ -49,7 +52,7 @@
 "date_add|date_subtract|date_diff|date_compare|date_format|fail|passthru|sleep|not_null|" +
 "first_list|first_document|parse_identifier|current_user|current_database|" +
 "collections|document|union|union_distinct|intersection|flatten|" +
-"ltrim|rtrim|find_first|find_last|split|substitute|md5|sha1|random_token|AQL_LAST_ENTRY",
+"ltrim|rtrim|find_first|find_last|split|substitute|md5|sha1|hash|random_token|AQL_LAST_ENTRY",
 
     listenKey: function(e) {
       if (e.keyCode === 27) {
@@ -106,8 +109,19 @@
     },
 
     stringToArray: function() {
-      this.aqlKeywordsArray = this.aqlKeywords.split('|');
-      this.aqlBuiltinFunctionsArray = this.aqlBuiltinFunctions.split('|');
+      var self = this;
+
+      _.each(this.aqlKeywords.split('|'), function(value) {
+        self.aqlKeywordsArray.push(value.toUpperCase());
+      });
+      _.each(this.aqlBuiltinFunctions.split('|'), function(value) {
+        self.aqlBuiltinFunctionsArray.push(value.toUpperCase());
+      });
+
+      //special case for keywords
+      self.aqlKeywordsArray.push(true);
+      self.aqlKeywordsArray.push(false);
+      self.aqlKeywordsArray.push(null);
     },
 
     show: function(callbackSuccess, callbackCancel, type) {
@@ -222,6 +236,7 @@
 
     hide: function() {
       $(this.el).hide();
+      this.typeahead = $('#spotlight .typeahead').typeahead('destroy');
     }
 
   });

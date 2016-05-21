@@ -1,6 +1,6 @@
 /*jshint strict: false, unused: false, bitwise: false, esnext: true */
 /*global COMPARE_STRING, AQL_TO_BOOL, AQL_TO_NUMBER, AQL_TO_STRING, AQL_WARNING, AQL_QUERY_SLEEP */
-/*global CPP_SHORTEST_PATH, CPP_NEIGHBORS, Set */
+/*global CPP_SHORTEST_PATH, CPP_NEIGHBORS, Set, OBJECT_HASH */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Aql, internal query functions
@@ -32,11 +32,9 @@
 var INTERNAL = require("internal");
 var TRAVERSAL = require("@arangodb/graph/traversal");
 var ArangoError = require("@arangodb").ArangoError;
-var ShapedJson = INTERNAL.ShapedJson;
 var isCoordinator = require("@arangodb/cluster").isCoordinator();
 var underscore = require("lodash");
 var graphModule = require("@arangodb/general-graph");
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief cache for compiled regexes
@@ -603,7 +601,7 @@ function GET_EXPANDFILTER (name, config) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief normalise a function name
+/// @brief normalize a function name
 ////////////////////////////////////////////////////////////////////////////////
 
 function NORMALIZE_FNAME (functionName) {
@@ -734,7 +732,7 @@ function TO_LIST (param, isStringHash) {
 function CLONE (obj) {
   'use strict';
 
-  if (obj === null || typeof(obj) !== "object" || obj instanceof ShapedJson) {
+  if (obj === null || typeof(obj) !== "object") {
     return obj;
   }
 
@@ -761,10 +759,6 @@ function CLONE (obj) {
 
 function FIX_VALUE (value) {
   'use strict';
-
-  if (value instanceof ShapedJson) {
-    return value;
-  }
 
   var type = typeof(value);
 
@@ -904,7 +898,7 @@ function COMPILE_REGEX (regex, modifiers) {
         }
         else {
           // wildcard
-          pattern += '.*';
+          pattern += '(.|[\r\n])*';
         }
       }
       else if (c === '_') {
@@ -914,7 +908,7 @@ function COMPILE_REGEX (regex, modifiers) {
         }
         else {
           // wildcard character
-          pattern += '.';
+          pattern += '(.|[\r\n])';
         }
       }
       else if (c.match(specialChar)) {
@@ -1052,7 +1046,7 @@ function NUMERIC_VALUE (value) {
   'use strict';
 
   if (isNaN(value) || ! isFinite(value)) {
-    return null;
+    return 0;
   }
 
   return value;
@@ -2037,9 +2031,6 @@ function UNARY_PLUS (value) {
   'use strict';
 
   value = AQL_TO_NUMBER(value);
-  if (value === null) {
-    return null;
-  } 
   return AQL_TO_NUMBER(+ value);
 }
 
@@ -2051,10 +2042,6 @@ function UNARY_MINUS (value) {
   'use strict';
 
   value = AQL_TO_NUMBER(value);
-  if (value === null) {
-    return null;
-  }
-
   return AQL_TO_NUMBER(- value);
 }
 
@@ -2066,15 +2053,7 @@ function ARITHMETIC_PLUS (lhs, rhs) {
   'use strict';
 
   lhs = AQL_TO_NUMBER(lhs);
-  if (lhs === null) {
-    return null;
-  }
-
   rhs = AQL_TO_NUMBER(rhs);
-  if (rhs === null) {
-    return null;
-  }
-
   return AQL_TO_NUMBER(lhs + rhs);
 }
 
@@ -2086,15 +2065,7 @@ function ARITHMETIC_MINUS (lhs, rhs) {
   'use strict';
   
   lhs = AQL_TO_NUMBER(lhs);
-  if (lhs === null) {
-    return null;
-  }
-
   rhs = AQL_TO_NUMBER(rhs);
-  if (rhs === null) {
-    return null;
-  }
-
   return AQL_TO_NUMBER(lhs - rhs);
 }
 
@@ -2106,15 +2077,7 @@ function ARITHMETIC_TIMES (lhs, rhs) {
   'use strict';
   
   lhs = AQL_TO_NUMBER(lhs);
-  if (lhs === null) {
-    return null;
-  }
-
   rhs = AQL_TO_NUMBER(rhs);
-  if (rhs === null) {
-    return null;
-  }
-
   return AQL_TO_NUMBER(lhs * rhs);
 }
 
@@ -2126,14 +2089,10 @@ function ARITHMETIC_DIVIDE (lhs, rhs) {
   'use strict';
 
   lhs = AQL_TO_NUMBER(lhs);
-  if (lhs === null) {
-    return null;
-  }
-
   rhs = AQL_TO_NUMBER(rhs);
   if (rhs === 0 || rhs === null) {
     WARN(null, INTERNAL.errors.ERROR_QUERY_DIVISION_BY_ZERO);
-    return null;
+    return 0;
   }
 
   return AQL_TO_NUMBER(lhs / rhs);
@@ -2147,19 +2106,14 @@ function ARITHMETIC_MODULUS (lhs, rhs) {
   'use strict';
 
   lhs = AQL_TO_NUMBER(lhs);
-  if (lhs === null) {
-    return null;
-  }
-
   rhs = AQL_TO_NUMBER(rhs);
   if (rhs === 0 || rhs === null) {
     WARN(null, INTERNAL.errors.ERROR_QUERY_DIVISION_BY_ZERO);
-    return null;
+    return 0;
   }
 
   return AQL_TO_NUMBER(lhs % rhs);
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief perform string concatenation
@@ -2274,7 +2228,7 @@ function AQL_UPPER (value) {
 function AQL_SUBSTRING (value, offset, count) {
   'use strict';
 
-  if (count !== undefined) {
+  if (TYPEWEIGHT(count) !== TYPEWEIGHT_NULL) {
     count = AQL_TO_NUMBER(count);
   }
 
@@ -2426,7 +2380,7 @@ function AQL_SPLIT (value, separator, limit) {
     return [ AQL_TO_STRING(value) ];
   }
 
-  if (limit === null || limit === undefined) {
+  if (TYPEWEIGHT(limit) === TYPEWEIGHT_NULL) {
     limit = undefined;
   }
   else {
@@ -2521,7 +2475,7 @@ function AQL_SUBSTITUTE (value, search, replace, limit) {
     return value;
   }
   
-  if (limit === null || limit === undefined) {
+  if (TYPEWEIGHT(limit) === TYPEWEIGHT_NULL) {
     limit = undefined;
   }
   else {
@@ -2566,6 +2520,39 @@ function AQL_SHA1 (value) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief generates a hash value for an object
+////////////////////////////////////////////////////////////////////////////////
+
+function AQL_HASH (value) {
+  'use strict';
+
+  return OBJECT_HASH(value);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief returns the typename for an object
+////////////////////////////////////////////////////////////////////////////////
+
+function AQL_TYPENAME (value) {
+  'use strict';
+
+  switch (TYPEWEIGHT(value)) {
+    case TYPEWEIGHT_BOOL:
+      return "bool";
+    case TYPEWEIGHT_NUMBER:
+      return "number";
+    case TYPEWEIGHT_STRING:
+      return "string";
+    case TYPEWEIGHT_ARRAY:
+      return "array";
+    case TYPEWEIGHT_OBJECT:
+      return "object";
+  }
+    
+  return "null";
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief generates a random token of the specified length
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -2578,7 +2565,7 @@ function AQL_RANDOM_TOKEN (length) {
     THROW("RANDOM_TOKEN", INTERNAL.errors.ERROR_QUERY_FUNCTION_ARGUMENT_TYPE_MISMATCH, "RANDOM_TOKEN");
   }
 
-  return INTERNAL.genRandomAlphaNumbers(AQL_TO_NUMBER(length));
+  return INTERNAL.genRandomAlphaNumbers(length);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2588,7 +2575,7 @@ function AQL_RANDOM_TOKEN (length) {
 function AQL_FIND_FIRST (value, search, start, end) {
   'use strict';
 
-  if (start !== undefined && start !== null) {
+  if (TYPEWEIGHT(start) !== TYPEWEIGHT_NULL) {
     start = AQL_TO_NUMBER(start);
     if (start < 0) {
       return -1;
@@ -2598,7 +2585,7 @@ function AQL_FIND_FIRST (value, search, start, end) {
     start = 0;
   }
 
-  if (end !== undefined && end !== null) {
+  if (TYPEWEIGHT(end) !== TYPEWEIGHT_NULL) {
     end = AQL_TO_NUMBER(end);
     if (end < start || end < 0) {
       return -1;
@@ -2622,14 +2609,14 @@ function AQL_FIND_FIRST (value, search, start, end) {
 function AQL_FIND_LAST (value, search, start, end) {
   'use strict';
 
-  if (start !== undefined && start !== null) {
+  if (TYPEWEIGHT(start) !== TYPEWEIGHT_NULL) {
     start = AQL_TO_NUMBER(start);
   }
   else {
     start = undefined;
   }
 
-  if (end !== undefined && end !== null) {
+  if (TYPEWEIGHT(end) !== TYPEWEIGHT_NULL) {
     end = AQL_TO_NUMBER(end);
     if (end < start || end < 0) {
       return -1;
@@ -2691,17 +2678,10 @@ function AQL_TO_BOOL (value) {
 function AQL_TO_NUMBER (value) {
   'use strict';
 
-  if (value === undefined) {
-    return null;
-  }
-  if (value === null) {
-    return 0;
-  }
-
   switch (TYPEWEIGHT(value)) {
     case TYPEWEIGHT_NULL:
       // this covers Infinity and NaN
-      return null;
+      return 0;
     case TYPEWEIGHT_BOOL:
       return (value ? 1 : 0);
     case TYPEWEIGHT_NUMBER:
@@ -2718,7 +2698,7 @@ function AQL_TO_NUMBER (value) {
       }
       // fallthrough intentional
   }
-  return null;
+  return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2732,7 +2712,7 @@ function AQL_TO_STRING (value) {
 
   switch (TYPEWEIGHT(value)) {
     case TYPEWEIGHT_NULL:
-      return 'null';
+      return '';
     case TYPEWEIGHT_BOOL:
       return (value ? 'true' : 'false');
     case TYPEWEIGHT_STRING:
@@ -2876,7 +2856,6 @@ function AQL_IS_DATESTRING (value) {
   return true;
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief integer closest to value, not greater than value
 ////////////////////////////////////////////////////////////////////////////////
@@ -2946,7 +2925,6 @@ function AQL_POW (base, exp) {
 
   return NUMERIC_VALUE(Math.pow(AQL_TO_NUMBER(base), AQL_TO_NUMBER(exp)));
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief get the length of a list, document or string
@@ -3541,7 +3519,16 @@ function AQL_SLICE (value, from, to, nonNegative) {
   }
 
   from = AQL_TO_NUMBER(from);
-  to   = AQL_TO_NUMBER(to);
+  if (from < 0) {
+    from = value.length + from;
+    if (from < 0) {
+      from = 0;
+    }
+  }
+
+  if (TYPEWEIGHT(to) !== TYPEWEIGHT_NULL) {
+    to = AQL_TO_NUMBER(to);
+  }
 
   if (nonNegative && (from < 0 || to < 0)) {
     return [ ];
@@ -3553,6 +3540,11 @@ function AQL_SLICE (value, from, to, nonNegative) {
   else {
     if (to >= 0) {
       to += from;
+    } else {
+      to = value.length + to;
+      if (to < 0) {
+        to = 0;
+      }
     }
   }
 
@@ -4064,7 +4056,7 @@ function AQL_STDDEV_POPULATION (values) {
 function AQL_NEAR (collection, latitude, longitude, limit, distanceAttribute) {
   'use strict';
 
-  if (limit === null || limit === undefined) {
+  if (TYPEWEIGHT(limit) === TYPEWEIGHT_NULL) {
     // use default value
     limit = 100;
   }
@@ -4092,23 +4084,7 @@ function AQL_NEAR (collection, latitude, longitude, limit, distanceAttribute) {
     THROW("NEAR", INTERNAL.errors.ERROR_QUERY_GEO_INDEX_MISSING, collection);
   }
 
-  var result = COLLECTION(collection, "NEAR").NEAR(idx.id, latitude, longitude, limit);
-
-  if (distanceAttribute === null || distanceAttribute === undefined) {
-    return result.documents;
-  }
-
-  distanceAttribute = AQL_TO_STRING(distanceAttribute);
-
-  // inject distances
-  var documents = result.documents;
-  var distances = result.distances;
-  var n = documents.length, i;
-  for (i = 0; i < n; ++i) {
-    documents[i][distanceAttribute] = distances[i];
-  }
-
-  return documents;
+  return COLLECTION(collection, "NEAR").NEAR(idx.id, latitude, longitude, limit, distanceAttribute);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4141,21 +4117,7 @@ function AQL_WITHIN (collection, latitude, longitude, radius, distanceAttribute)
     THROW("WITHIN", INTERNAL.errors.ERROR_QUERY_GEO_INDEX_MISSING, collection);
   }
 
-  var result = COLLECTION(collection, "WITHIN").WITHIN(idx.id, latitude, longitude, radius);
-
-  if (distanceAttribute === null || distanceAttribute === undefined) {
-    return result.documents;
-  }
-
-  // inject distances
-  var documents = result.documents;
-  var distances = result.distances;
-  var n = documents.length, i;
-  for (i = 0; i < n; ++i) {
-    documents[i][distanceAttribute] = distances[i];
-  }
-
-  return documents;
+  return COLLECTION(collection, "WITHIN").WITHIN(idx.id, latitude, longitude, radius, distanceAttribute);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -6918,7 +6880,7 @@ function AQL_GRAPH_SHORTEST_PATH (graphName,
     if (!Array.isArray(options.edgeCollectionRestriction)) {
       if (typeof options.edgeCollectionRestriction === "string") {
         if (!underscore.contains(edgeCollections, options.edgeCollectionRestriction)) {
-          // Short circut collection not in graph, cannot find results.
+          // Short circuit collection not in graph, cannot find results.
           return [];
         }
         edgeCollections = [options.edgeCollectionRestriction];
@@ -7491,7 +7453,7 @@ function AQL_GRAPH_NEIGHBORS (graphName,
     if (!Array.isArray(options.edgeCollectionRestriction)) {
       if (typeof options.edgeCollectionRestriction === "string") {
         if (!underscore.contains(edgeCollections, options.edgeCollectionRestriction)) {
-          // Short circut collection not in graph, cannot find results.
+          // Short circuit collection not in graph, cannot find results.
           return [];
         }
         edgeCollections = [options.edgeCollectionRestriction];
@@ -7509,7 +7471,7 @@ function AQL_GRAPH_NEIGHBORS (graphName,
     if (!Array.isArray(options.vertexCollectionRestriction)) {
       if (typeof options.vertexCollectionRestriction === "string") {
         if (!underscore.contains(vertexCollections, options.vertexCollectionRestriction)) {
-          // Short circut collection not in graph, cannot find results.
+          // Short circuit collection not in graph, cannot find results.
           return [];
         }
         vertexCollections = [options.vertexCollectionRestriction];
@@ -8048,7 +8010,11 @@ function AQL_GRAPH_CLOSENESS (graphName, options) {
 function AQL_GRAPH_ABSOLUTE_BETWEENNESS (graphName, options) {
   'use strict';
 
-  options = CLONE(options) || {};
+  if (typeof options !== "object" || Array.isArray(options)) {
+    options = {};
+  } else {
+    options = CLONE(options);
+  }
   if (! options.direction) {
     options.direction =  'any';
   }
@@ -8212,6 +8178,8 @@ exports.AQL_SPLIT = AQL_SPLIT;
 exports.AQL_SUBSTITUTE = AQL_SUBSTITUTE;
 exports.AQL_MD5 = AQL_MD5;
 exports.AQL_SHA1 = AQL_SHA1;
+exports.AQL_HASH = AQL_HASH;
+exports.AQL_TYPENAME = AQL_TYPENAME;
 exports.AQL_RANDOM_TOKEN = AQL_RANDOM_TOKEN;
 exports.AQL_FIND_FIRST = AQL_FIND_FIRST;
 exports.AQL_FIND_LAST = AQL_FIND_LAST;
@@ -8347,6 +8315,9 @@ exports.AQL_DATE_FORMAT = AQL_DATE_FORMAT;
 
 exports.reload = reloadUserFunctions;
 exports.clearCaches = clearCaches;
+exports.lookupFunction = GET_USERFUNCTION;
+exports.warnFromFunction = WARN;
+exports.fixValue = FIX_VALUE;
 
 // initialize the query engine
 exports.clearCaches();

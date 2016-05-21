@@ -36,7 +36,6 @@ var cluster = require("@arangodb/cluster");
 var internal = require("internal");
 var _ = require("lodash");
 
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief was docuBlock JSF_cluster_test_GET
 ////////////////////////////////////////////////////////////////////////////////
@@ -169,7 +168,6 @@ function parseAuthorization (authorization) {
   return { username: auth.substr(0, pos),
            passwd: auth.substr(pos+1) || "" };
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief was docuBlock JSF_cluster_statistics_GET
@@ -534,6 +532,7 @@ actions.defineHttp({
       var oldValue;
       try {
         oldValue = ArangoAgency.get("Plan/DBServers/" + primary, false, false);
+        oldValue = oldValue.arango.Plan.DBServers[primary];
       }
       catch (e1) {
         actions.resultError(req, res, actions.HTTP_NOT_FOUND, 0,
@@ -651,13 +650,13 @@ actions.defineHttp({
       try {
         oldValue = ArangoAgency.get("Plan/DBServers/" + body.primary, false,
                                     false);
+        oldValue = oldValue.arango.Plan.DBServers[body.primary];
       }
       catch (e1) {
         actions.resultError(req, res, actions.HTTP_NOT_FOUND, 0,
                   "Primary with the given ID is not configured in Agency.");
         return;
       }
-      oldValue = oldValue["Plan/DBServers/"+body.primary];
       if (oldValue !== body.oldSecondary) {
         actions.resultError(req, res, actions.HTTP_PRECONDITION_FAILED, 0,
                             "Primary does not have the given oldSecondary as "+
@@ -700,6 +699,7 @@ function changeAllShardReponsibilities (oldServer, newServer) {
   // This is only called when we have the write lock and we "only" have to
   // make sure that either all or none of the shards are moved.
   var collections = ArangoAgency.get("Plan/Collections", true, false);
+  collections = collections.arango.Plan.Collections;
   var done = {};
   try {
   Object.keys(collections).forEach(function(collectionKey) {
@@ -831,6 +831,7 @@ actions.defineHttp({
       try {
         oldValue = ArangoAgency.get("Plan/DBServers/" + body.primary, false,
                                     false);
+        oldValue = oldValue.arango.Plan.DBservers[body.primary];
       }
       catch (e1) {
         actions.resultError(req, res, actions.HTTP_NOT_FOUND, 0,
@@ -911,6 +912,3 @@ actions.defineHttp({
     }
   }
 });
-
-    
-

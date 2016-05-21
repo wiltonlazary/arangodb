@@ -21,12 +21,22 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_REST_GENERAL_RESPONSE_H
-#define LIB_REST_GENERAL_RESPONSE_H 1
+#ifndef ARANGODB_REST_GENERAL_RESPONSE_H
+#define ARANGODB_REST_GENERAL_RESPONSE_H 1
 
 #include "Basics/Common.h"
 
+#include "Basics/StaticStrings.h"
+#include "Basics/StringUtils.h"
+
 namespace arangodb {
+namespace velocypack {
+struct Options;
+class Slice;
+}
+
+class GeneralRequest;
+
 class GeneralResponse {
   GeneralResponse() = delete;
   GeneralResponse(GeneralResponse const&) = delete;
@@ -98,7 +108,7 @@ class GeneralResponse {
   static ResponseCode responseCode(int);
 
  public:
-  GeneralResponse(ResponseCode, uint32_t);
+  explicit GeneralResponse(ResponseCode);
   virtual ~GeneralResponse() {}
 
  public:
@@ -107,29 +117,35 @@ class GeneralResponse {
     _responseCode = responseCode;
   }
 
-  void setContentType(std::string const& contentType) {
-    _headers["content-type"] = contentType;
+  std::unordered_map<std::string, std::string> headers() const {
+    return _headers;
   }
 
-  // Returns the value of a header field with given name. If no header field
-  // with the given name was specified by the client, the empty string is
-  // returned.
-  std::string const& header(std::string const& field) const;
-  std::string const& header(std::string const&, bool& found) const;
-  void setHeader(std::string const& key, std::string const& value);
-  std::map<std::string, std::string> headers() const { return _headers; }
+  // adds a header. the header field name will be lower-cased
+  void setHeader(std::string const& key, std::string const& value) {
+    _headers[basics::StringUtils::tolower(key)] = value;
+  }
 
-  // the header field name must already be trimmed and lower-cased
-  void setHeaderNC(std::string const& key, std::string const& value);
+  // adds a header. the header field name must be lower-cased
+  void setHeaderNC(std::string const& key, std::string const& value) {
+    _headers[key] = value;
+  }
 
- private:
-  // checks for special headers
-  virtual void checkHeader(std::string const& key, std::string const& value) {}
+  // adds a header. the header field name must be lower-cased
+  void setHeaderNC(std::string const& key, std::string&& value) {
+    _headers[key] = std::move(value);
+  }
+
+ public:
+  // generates the response body, sets the content type; this might
+  // throw an error
+  virtual void fillBody(GeneralRequest const*,
+                        arangodb::velocypack::Slice const&, bool generateBody,
+                        arangodb::velocypack::Options const&) = 0;
 
  protected:
   ResponseCode _responseCode;
-  uint32_t const _apiCompatibility;
-  std::map<std::string, std::string> _headers;
+  std::unordered_map<std::string, std::string> _headers;
 };
 }
 

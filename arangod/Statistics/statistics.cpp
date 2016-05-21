@@ -22,14 +22,22 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "statistics.h"
+
+#include <boost/lockfree/queue.hpp>
+
 #include "Logger/Logger.h"
 #include "Basics/Mutex.h"
 #include "Basics/MutexLocker.h"
 #include "Basics/threads.h"
+#include "Statistics/StatisticsFeature.h"
 
-#include <boost/lockfree/queue.hpp>
-
+using namespace arangodb;
 using namespace arangodb::basics;
+
+#ifdef USE_DEV_TIMERS
+thread_local TRI_request_statistics_t* TRI_request_statistics_t::STATS =
+    nullptr;
+#endif
 
 static size_t const QUEUE_SIZE = 1000;
 
@@ -72,8 +80,16 @@ static void ProcessRequestStatistics(TRI_request_statistics_t* statistics) {
     TRI_MethodRequestsStatistics[(int)statistics->_requestType].incCounter();
 
     // check that the request was completely received and transmitted
-    if (statistics->_readStart != 0.0 && statistics->_writeEnd != 0.0) {
-      double totalTime = statistics->_writeEnd - statistics->_readStart;
+    if (statistics->_readStart != 0.0 &&
+        (statistics->_async || statistics->_writeEnd != 0.0)) {
+      double totalTime;
+
+      if (statistics->_async) {
+        totalTime = statistics->_requestEnd - statistics->_readStart;
+      } else {
+        totalTime = statistics->_writeEnd - statistics->_readStart;
+      }
+
       TRI_TotalTimeDistributionStatistics->addFigure(totalTime);
 
       double requestTime = statistics->_requestEnd - statistics->_requestStart;
@@ -95,6 +111,16 @@ static void ProcessRequestStatistics(TRI_request_statistics_t* statistics) {
       TRI_BytesSentDistributionStatistics->addFigure(statistics->_sentBytes);
       TRI_BytesReceivedDistributionStatistics->addFigure(
           statistics->_receivedBytes);
+
+#ifdef USE_DEV_TIMERS
+      LOG_TOPIC(INFO, Logger::REQUESTS)
+          << "\"http-request-timing\",\"" << statistics->_id << "\","
+          << (statistics->_async ? "async" : "sync") << ",total(us),"
+          << Logger::FIXED(totalTime) << ",io," << Logger::FIXED(ioTime)
+          << ",queue," << Logger::FIXED(queueTime) << ",request,"
+          << Logger::FIXED(requestTime) << ",received,"
+          << statistics->_receivedBytes << ",sent," << statistics->_sentBytes;
+#endif
     }
   }
 
@@ -135,7 +161,7 @@ static size_t ProcessAllRequestStatistics() {
 TRI_request_statistics_t* TRI_AcquireRequestStatistics() {
   TRI_request_statistics_t* statistics = nullptr;
 
-  if (TRI_ENABLE_STATISTICS && RequestFreeList.pop(statistics)) {
+  if (StatisticsFeature::enabled() && RequestFreeList.pop(statistics)) {
     return statistics;
   }
 
@@ -182,6 +208,11 @@ void TRI_FillRequestStatistics(StatisticsDistribution& totalTime,
                                StatisticsDistribution& ioTime,
                                StatisticsDistribution& bytesSent,
                                StatisticsDistribution& bytesReceived) {
+  if (!StatisticsFeature::enabled()) {
+    // all the below objects may be deleted if we don't have statistics enabled
+    return;
+  }
+
   MUTEX_LOCKER(mutexLocker, RequestDataLock);
 
   totalTime = *TRI_TotalTimeDistributionStatistics;
@@ -213,7 +244,7 @@ static boost::lockfree::queue<TRI_connection_statistics_t*,
 TRI_connection_statistics_t* TRI_AcquireConnectionStatistics() {
   TRI_connection_statistics_t* statistics = nullptr;
 
-  if (TRI_ENABLE_STATISTICS && ConnectionFreeList.pop(statistics)) {
+  if (StatisticsFeature::enabled() && ConnectionFreeList.pop(statistics)) {
     return statistics;
   }
 
@@ -233,16 +264,12 @@ void TRI_ReleaseConnectionStatistics(TRI_connection_statistics_t* statistics) {
     MUTEX_LOCKER(mutexLocker, ConnectionDataLock);
 
     if (statistics->_http) {
-      if (statistics->_connStart != 0.0) {
-        if (statistics->_connEnd == 0.0) {
-          TRI_HttpConnectionsStatistics.incCounter();
-        } else {
-          TRI_HttpConnectionsStatistics.decCounter();
+      TRI_HttpConnectionsStatistics.decCounter();
+    }
 
-          double totalTime = statistics->_connEnd - statistics->_connStart;
-          TRI_ConnectionTimeDistributionStatistics->addFigure(totalTime);
-        }
-      }
+    if (statistics->_connStart != 0.0 && statistics->_connEnd != 0.0) {
+      double totalTime = statistics->_connEnd - statistics->_connStart;
+      TRI_ConnectionTimeDistributionStatistics->addFigure(totalTime);
     }
   }
 
@@ -266,6 +293,15 @@ void TRI_FillConnectionStatistics(
     StatisticsCounter& httpConnections, StatisticsCounter& totalRequests,
     std::vector<StatisticsCounter>& methodRequests,
     StatisticsCounter& asyncRequests, StatisticsDistribution& connectionTime) {
+  if (!StatisticsFeature::enabled()) {
+    // all the below objects may be deleted if we don't have statistics enabled
+    for (int i = 0;
+         i < ((int)arangodb::GeneralRequest::RequestType::ILLEGAL) + 1; ++i) {
+      methodRequests.emplace_back(StatisticsCounter());
+    }
+    return;
+  }
+
   MUTEX_LOCKER(mutexLocker, ConnectionDataLock);
 
   httpConnections = TRI_HttpConnectionsStatistics;
@@ -309,7 +345,8 @@ static void StatisticsQueueWorker(void* data) {
   uint64_t const MaxSleepTime = 250 * 1000;
   int nothingHappened = 0;
 
-  while (!Shutdown.load(std::memory_order_relaxed) && TRI_ENABLE_STATISTICS) {
+  while (!Shutdown.load(std::memory_order_relaxed) &&
+         StatisticsFeature::enabled()) {
     size_t count = ProcessAllRequestStatistics();
 
     if (count == 0) {
@@ -317,6 +354,7 @@ static void StatisticsQueueWorker(void* data) {
         // increase sleep time every 30 seconds
         nothingHappened = 0;
         sleepTime += 50 * 1000;
+
         if (sleepTime > MaxSleepTime) {
           sleepTime = MaxSleepTime;
         }
@@ -338,12 +376,25 @@ static void StatisticsQueueWorker(void* data) {
   }
 
   delete TRI_ConnectionTimeDistributionStatistics;
+  TRI_ConnectionTimeDistributionStatistics = nullptr;
+
   delete TRI_TotalTimeDistributionStatistics;
+  TRI_TotalTimeDistributionStatistics = nullptr;
+
   delete TRI_RequestTimeDistributionStatistics;
+  TRI_RequestTimeDistributionStatistics = nullptr;
+
   delete TRI_QueueTimeDistributionStatistics;
+  TRI_QueueTimeDistributionStatistics = nullptr;
+
   delete TRI_IoTimeDistributionStatistics;
+  TRI_IoTimeDistributionStatistics = nullptr;
+
   delete TRI_BytesSentDistributionStatistics;
+  TRI_BytesSentDistributionStatistics = nullptr;
+
   delete TRI_BytesReceivedDistributionStatistics;
+  TRI_BytesReceivedDistributionStatistics = nullptr;
 
   {
     TRI_request_statistics_t* entry = nullptr;
@@ -366,12 +417,6 @@ static void StatisticsQueueWorker(void* data) {
     }
   }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief statistics enabled flags
-////////////////////////////////////////////////////////////////////////////////
-
-bool TRI_ENABLE_STATISTICS = true;
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief number of http connections
@@ -468,12 +513,6 @@ StatisticsDistribution* TRI_BytesReceivedDistributionStatistics;
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_server_statistics_t TRI_ServerStatistics;
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief gets the current wallclock time
-////////////////////////////////////////////////////////////////////////////////
-
-double TRI_StatisticsTime() { return TRI_microtime(); }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief module init function

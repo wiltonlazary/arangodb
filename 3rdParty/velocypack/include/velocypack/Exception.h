@@ -55,7 +55,7 @@ struct Exception : std::exception {
     NeedCustomTypeHandler = 19,
     NeedAttributeTranslator = 20,
     CannotTranslateKey = 21,
-    KeyNotFound = 22,
+    KeyNotFound = 22, // not used anymore
 
     BuilderNotSealed = 30,
     BuilderNeedOpenObject = 31,
@@ -83,7 +83,7 @@ struct Exception : std::exception {
 
   explicit Exception(ExceptionType type) : Exception(type, message(type)) {}
 
-  char const* what() const throw() override final { return _msg.c_str(); }
+  char const* what() const throw() { return _msg.c_str(); }
 
   ExceptionType errorCode() const throw() { return _type; }
 

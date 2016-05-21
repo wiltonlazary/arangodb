@@ -47,8 +47,8 @@ class SliceContainer {
     VELOCYPACK_ASSERT(data != nullptr);
     VELOCYPACK_ASSERT(length > 0);
 
-    _data = new uint8_t[length];
-    memcpy(_data, data, length);
+    _data = new uint8_t[checkOverflow(length)];
+    memcpy(_data, data, checkOverflow(length));
   }
 
   SliceContainer(char const* data, ValueLength length) 
@@ -68,8 +68,8 @@ class SliceContainer {
     VELOCYPACK_ASSERT(that._data != nullptr);
 
     ValueLength const length = that.length();
-    _data = new uint8_t[length];
-    memcpy(_data, that._data, length);
+    _data = new uint8_t[checkOverflow(length)];
+    memcpy(_data, that._data, checkOverflow(length));
   }
 
   // copy-assign a slim buffer
@@ -78,8 +78,8 @@ class SliceContainer {
       VELOCYPACK_ASSERT(that._data != nullptr);
 
       ValueLength const length = that.length();
-      auto data = new uint8_t[length];
-      memcpy(data, that._data, length);
+      auto data = new uint8_t[checkOverflow(length)];
+      memcpy(data, that._data, checkOverflow(length));
 
       delete[] _data;
       _data = data;
@@ -118,7 +118,7 @@ class SliceContainer {
     if (_data == nullptr) {
       return Slice();
     }
-    return Slice(_data, &Options::Defaults);
+    return Slice(_data);
   } 
   
   inline uint8_t const* begin() const { return _data; }

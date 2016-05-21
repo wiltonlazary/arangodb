@@ -47,8 +47,6 @@ var SimpleQueryWithin = simple.SimpleQueryWithin;
 var SimpleQueryWithinRectangle = simple.SimpleQueryWithinRectangle;
 var SimpleQueryFulltext = simple.SimpleQueryFulltext;
 
-
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief collection is corrupted
 ////////////////////////////////////////////////////////////////////////////////
@@ -105,6 +103,8 @@ ArangoCollection.TYPE_DOCUMENT = 2;
 ArangoCollection.TYPE_EDGE = 3;
 
 
+ArangoCollection.prototype.isArangoCollection = true;
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief prints a collection
 ////////////////////////////////////////////////////////////////////////////////
@@ -150,7 +150,6 @@ ArangoCollection.prototype.toString = function () {
   return "[ArangoCollection: " + this._id + "]";
 };
 
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief was docuBlock collectionAll
 ////////////////////////////////////////////////////////////////////////////////
@@ -183,42 +182,6 @@ ArangoCollection.prototype.byExample = function (example) {
   }
 
   return new SimpleQueryByExample(this, e);
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock collectionByExampleHash
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.byExampleHash = function (index, example) {
-  var sq = this.byExample(example);
-  sq._index = index;
-  sq._type = "hash";
-
-  return sq;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock collectionByExampleSkiplist
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.byExampleSkiplist = function (index, example) {
-  var sq = this.byExample(example);
-  sq._index = index;
-  sq._type = "skiplist";
-
-  return sq;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief constructs a query-by-condition using a skiplist index
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.byConditionSkiplist = function (index, condition) {
-  var sq = new SimpleQueryByCondition(this, condition);
-  sq._index = index;
-  sq._type = "skiplist";
-
-  return sq;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -402,7 +365,6 @@ ArangoCollection.prototype.iterate = function (iterator, options) {
   }
 };
 
-
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief was docuBlock documentsCollectionRemoveByExample
 ////////////////////////////////////////////////////////////////////////////////
@@ -426,5 +388,3 @@ ArangoCollection.prototype.replaceByExample = function (example, newValue, waitF
 ArangoCollection.prototype.updateByExample = function (example, newValue, keepNull, waitForSync, limit) {
   throw "cannot call abstract updateExample function";
 };
-
-

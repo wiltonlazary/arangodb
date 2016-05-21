@@ -15,7 +15,7 @@
     lastQuery: {},
     sortAttribute: "",
 
-    url: '/_api/documents',
+    url: arangoHelper.databaseUrl('/_api/documents'),
     model: window.arangoDocumentModel,
 
     loadTotal: function(callback) {
@@ -23,7 +23,7 @@
       $.ajax({
         cache: false,
         type: "GET",
-        url: "/_api/collection/" + this.collectionID + "/count",
+        url: arangoHelper.databaseUrl("/_api/collection/" + this.collectionID + "/count"),
         contentType: "application/json",
         processData: false,
         success: function(data) {
@@ -147,7 +147,7 @@
       $.ajax({
         cache: false,
         type: 'POST',
-        url: '/_api/cursor',
+        url: arangoHelper.databaseUrl('/_api/cursor'),
         data: JSON.stringify(queryObj1),
         contentType: "application/json",
         success: function() {
@@ -155,7 +155,7 @@
           $.ajax({
             cache: false,
             type: 'POST',
-            url: '/_api/cursor',
+            url: arangoHelper.databaseUrl('/_api/cursor'),
             data: JSON.stringify(queryObj2),
             contentType: "application/json",
             success: function() {
@@ -221,17 +221,18 @@
         query: query,
         bindVars: bindVars
       };
+      /*
       if (this.getTotal() < 10000 || this.filters.length > 0) {
         queryObj.options = {
           fullCount: true,
         };
-      }
+      }*/
 
       var checkCursorStatus = function(jobid) {
         $.ajax({
           cache: false,
           type: 'PUT',
-          url: '/_api/job/' + encodeURIComponent(jobid),
+          url: arangoHelper.databaseUrl('/_api/job/' + encodeURIComponent(jobid)),
           contentType: 'application/json',
           success: function(data, textStatus, xhr) {
             if (xhr.status === 201) {
@@ -270,7 +271,7 @@
       $.ajax({
         cache: false,
         type: 'POST',
-        url: '/_api/cursor',
+        url: arangoHelper.databaseUrl('/_api/cursor'),
         data: JSON.stringify(queryObj),
         headers: {
           'x-arango-async': 'store'
@@ -283,7 +284,7 @@
 
             var cancelRunningCursor = function() {
               $.ajax({
-                url: '/_api/job/'+ encodeURIComponent(jobid) + "/cancel",
+                url: arangoHelper.databaseUrl('/_api/job/'+ encodeURIComponent(jobid) + "/cancel"),
                 type: 'PUT',
                 success: function() {
                   window.clearTimeout(self.checkCursorTimer);
@@ -340,9 +341,9 @@
       $.ajax({
         type: "POST",
         url:
-        '/_api/import?type=auto&collection='+
+        arangoHelper.databaseUrl('/_api/import?type=auto&collection='+
         encodeURIComponent(this.collectionID)+
-        '&createCollection=false',
+        '&createCollection=false'),
         data: file,
         processData: false,
         contentType: 'json',

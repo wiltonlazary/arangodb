@@ -25,12 +25,18 @@
 /// @author Copyright 2014, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "Basics/Common.h"
+
+#define BOOST_TEST_INCLUDED
 #include <boost/test/unit_test.hpp>
 
 #include "Basics/SkipList.h"
 #include "Basics/voc-errors.h"
+#include "Random/RandomGenerator.h"
 
 #include <vector>
+
+static bool Initialized = false;
 
 using namespace std;
 
@@ -67,6 +73,11 @@ static void FreeElm (void* e) {
 struct CSkipListSetup {
   CSkipListSetup () {
     BOOST_TEST_MESSAGE("setup SkipList");
+    if (!Initialized) {
+      Initialized = true;
+      arangodb::RandomGenerator::initialize(arangodb::RandomGenerator::RandomType::MERSENNE);
+    }
+
   }
 
   ~CSkipListSetup () {

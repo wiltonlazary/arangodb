@@ -22,12 +22,13 @@
 
 #include "ImportFeature.h"
 
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "ApplicationFeatures/ClientFeature.h"
 #include "Basics/StringUtils.h"
 #include "Basics/FileUtils.h"
 #include "Import/ImportHelper.h"
 #include "Logger/Logger.h"
-#include "ProgramOptions2/ProgramOptions.h"
+#include "ProgramOptions/ProgramOptions.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 
@@ -36,13 +37,15 @@ using namespace arangodb::basics;
 using namespace arangodb::httpclient;
 using namespace arangodb::options;
 
-ImportFeature::ImportFeature(
-    application_features::ApplicationServer* server, int* result)
+ImportFeature::ImportFeature(application_features::ApplicationServer* server,
+                             int* result)
     : ApplicationFeature(server, "Import"),
       _filename(""),
       _useBackslash(false),
       _chunkSize(1024 * 1024 * 16),
       _collectionName(""),
+      _fromCollectionPrefix(""),
+      _toCollectionPrefix(""),
       _createCollection(false),
       _createCollectionType("document"),
       _typeImport("json"),
@@ -61,11 +64,6 @@ ImportFeature::ImportFeature(
 
 void ImportFeature::collectOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addOption("--file", "file name (\"-\" for STDIN)",
                      new StringParameter(&_filename));
 
@@ -80,6 +78,12 @@ void ImportFeature::collectOptions(
 
   options->addOption("--collection", "collection name",
                      new StringParameter(&_collectionName));
+
+  options->addOption("--from-collection-prefix", "_from collection name prefix (will be prepended to all values in '_from')",
+                     new StringParameter(&_fromCollectionPrefix));
+
+  options->addOption("--to-collection-prefix", "_to collection name prefix (will be prepended to all values in '_to')",
+                     new StringParameter(&_toCollectionPrefix));
 
   options->addOption("--create-collection",
                      "create collection if it does not yet exist",
@@ -107,7 +111,7 @@ void ImportFeature::collectOptions(
       "--overwrite",
       "overwrite collection if it exist (WARNING: this will remove any data "
       "from the collection)",
-      new BooleanParameter(&_overwrite, false));
+      new BooleanParameter(&_overwrite));
 
   options->addOption("--quote", "quote character(s), used for csv",
                      new StringParameter(&_quote));
@@ -133,25 +137,24 @@ void ImportFeature::collectOptions(
 
 void ImportFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::validateOptions";
-
   auto const& positionals = options->processingResult()._positionals;
   size_t n = positionals.size();
 
   if (1 == n) {
-    _filename = positionals[0];
+    // only take positional file name attribute into account if user
+    // did not specify the --file option as well
+    if (!options->processingResult().touched("--file")) {
+      _filename = positionals[0];
+    }
   } else if (1 < n) {
-    LOG(ERR) << "expecting at most one filename, got " +
-                    StringUtils::join(positionals, ", ");
-    abortInvalidParameters();
+    LOG(FATAL) << "expecting at most one filename, got " +
+                      StringUtils::join(positionals, ", ");
+    FATAL_ERROR_EXIT();
   }
 }
 
 void ImportFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
-  ClientFeature* client =
-      dynamic_cast<ClientFeature*>(server()->feature("Client"));
+  ClientFeature* client = application_features::ApplicationServer::getFeature<ClientFeature>("Client");
 
   int ret = EXIT_SUCCESS;
   *_result = ret;
@@ -165,9 +168,7 @@ void ImportFeature::start() {
     FATAL_ERROR_EXIT();
   }
 
-  std::string dbName = client->databaseName();
-
-  httpClient->setLocationRewriter((void*)client, &rewriteLocation);
+  httpClient->setLocationRewriter(static_cast<void*>(client), &rewriteLocation);
   httpClient->setUserNamePassword("/", client->username(), client->password());
 
   // must stay here in order to establish the connection
@@ -189,20 +190,26 @@ void ImportFeature::start() {
             << "'" << std::endl;
 
   std::cout << "----------------------------------------" << std::endl;
-  std::cout << "database:         " << client->databaseName() << std::endl;
-  std::cout << "collection:       " << _collectionName << std::endl;
-  std::cout << "create:           " << (_createCollection ? "yes" : "no")
+  std::cout << "database:               " << client->databaseName() << std::endl;
+  std::cout << "collection:             " << _collectionName << std::endl;
+  if (!_fromCollectionPrefix.empty()) {
+    std::cout << "from collection prefix: " << _fromCollectionPrefix << std::endl;
+  }
+  if (!_toCollectionPrefix.empty()) {
+    std::cout << "to collection prefix:   " << _toCollectionPrefix << std::endl;
+  }
+  std::cout << "create:                 " << (_createCollection ? "yes" : "no")
             << std::endl;
-  std::cout << "file:             " << _filename << std::endl;
-  std::cout << "type:             " << _typeImport << std::endl;
+  std::cout << "source filename:        " << _filename << std::endl;
+  std::cout << "file type:              " << _typeImport << std::endl;
 
   if (_typeImport == "csv") {
-    std::cout << "quote:            " << _quote << std::endl;
-    std::cout << "separator:        " << _separator << std::endl;
+    std::cout << "quote:                  " << _quote << std::endl;
+    std::cout << "separator:              " << _separator << std::endl;
   }
 
-  std::cout << "connect timeout:  " << client->connectionTimeout() << std::endl;
-  std::cout << "request timeout:  " << client->requestTimeout() << std::endl;
+  std::cout << "connect timeout:        " << client->connectionTimeout() << std::endl;
+  std::cout << "request timeout:        " << client->requestTimeout() << std::endl;
   std::cout << "----------------------------------------" << std::endl;
 
   arangodb::import::ImportHelper ih(httpClient.get(), _chunkSize);
@@ -277,6 +284,9 @@ void ImportFeature::start() {
 
   try {
     bool ok = false;
+    // set prefixes
+    ih.setFrom(_fromCollectionPrefix);
+    ih.setTo(_toCollectionPrefix);
 
     // import type
     if (_typeImport == "csv") {

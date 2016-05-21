@@ -38,9 +38,45 @@
 #include "Basics/Utf8Helper.h"
 #include "Basics/build-date.h"
 #include "Basics/conversions.h"
-#include "Basics/json.h"
 
 using namespace arangodb::rest;
+
+std::map<std::string, std::string> Version::Values;
+  
+////////////////////////////////////////////////////////////////////////////////
+/// @brief parse a version string into major, minor
+/// returns -1, -1 when the version string has an invalid format
+/// returns major, -1 when only the major version can be determined
+////////////////////////////////////////////////////////////////////////////////
+  
+std::pair<int, int> Version::parseVersionString(std::string const& str) {
+  std::pair<int, int> result{ -1, -1 };
+
+  if (!str.empty()) {
+    char const* p = str.c_str();
+    char const* q = p;
+    while (*q >= '0' && *q <= '9') {
+      ++q;
+    }
+    if (p != q) {
+      result.first = std::stoi(std::string(p, q - p));
+      result.second = 0;
+
+      if (*q == '.') {
+        ++q;
+      }
+      p = q;
+      while (*q >= '0' && *q <= '9') {
+        ++q;
+      }
+      if (p != q) {
+        result.second = std::stoi(std::string(p, q - p));
+      }
+    }
+  } 
+
+  return result;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief initialize
@@ -52,13 +88,16 @@ void Version::initialize() {
   }
 
   Values["architecture"] = (sizeof(void*) == 4 ? "32" : "64") + std::string("bit");
+
+  Values["asm-crc32"] = (ENABLE_ASM_CRC32) ? "true" : "false";
   Values["boost-version"] = getBoostVersion();
   Values["build-date"] = getBuildDate();
+  Values["compiler"] = getCompiler();
+  Values["endianness"] = getEndianness();
   Values["fd-setsize"] = arangodb::basics::StringUtils::itoa(FD_SETSIZE);
   Values["icu-version"] = getICUVersion();
   Values["libev-version"] = getLibevVersion();
   Values["openssl-version"] = getOpenSSLVersion();
-  Values["repository-version"] = getRepositoryVersion();
   Values["server-version"] = getServerVersion();
   Values["sizeof int"] = arangodb::basics::StringUtils::itoa(sizeof(int));
   Values["sizeof void*"] = arangodb::basics::StringUtils::itoa(sizeof(void*));
@@ -66,16 +105,40 @@ void Version::initialize() {
   Values["vpack-version"] = getVPackVersion();
   Values["zlib-version"] = getZLibVersion();
 
+#ifdef __cplusplus
+  Values["cplusplus"] = std::to_string(__cplusplus);
+#else
+  Values["cplusplus"] = "unknown";
+#endif
+
+#ifdef __SANITIZE_ADDRESS__
+  Values["asan"] = "true";
+#else
+  Values["asan"] = "false";
+#endif
+
+#if defined(__SSE4_2__) && !defined(NO_SSE42)
+  Values["sse42"] = "true";
+#else
+  Values["sse42"] = "false";
+#endif
+
 #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
   Values["maintainer-mode"] = "true";
 #else
   Values["maintainer-mode"] = "false";
 #endif
 
-#ifdef TRI_HAVE_TCMALLOC
+#ifdef ARANGODB_HAVE_TCMALLOC
   Values["tcmalloc"] = "true";
 #else
   Values["tcmalloc"] = "false";
+#endif
+
+#ifdef ARANGODB_HAVE_JEMALLOC
+  Values["jemalloc"] = "true";
+#else
+  Values["jemalloc"] = "false";
 #endif
 
 #ifdef TRI_HAVE_POLL_H
@@ -208,15 +271,37 @@ std::string Version::getICUVersion() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief get repository version
+/// @brief get compiler
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string Version::getRepositoryVersion() {
-#ifdef TRI_REPOSITORY_VERSION
-  return std::string(TRI_REPOSITORY_VERSION);
-#else
-  return std::string("");
+std::string Version::getCompiler() {
+#if defined(__clang__)
+  return "clang";
+#elif defined(__GNUC__) || defined(__GNUG__)
+  return "gcc";
+#elif defined(_MSC_VER)
+  return "msvc";
 #endif
+  return "unknown";
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief get endianness
+////////////////////////////////////////////////////////////////////////////////
+
+std::string Version::getEndianness() {
+  uint64_t value = 0x12345678abcdef99;
+  static_assert(sizeof(value) == 8, "unexpected uint64_t size");
+
+  unsigned char const* p = reinterpret_cast<unsigned char const*>(&value);
+  if (p[0] == 0x12 && p[1] == 0x34 && p[2] == 0x56 && p[3] == 0x78 && p[4] == 0xab && p[5] == 0xcd && p[6] == 0xef && p[7] == 0x99) {
+    return "big";
+  }
+  
+  if (p[0] == 0x99 && p[1] == 0xef && p[2] == 0xcd && p[3] == 0xab && p[4] == 0x78 && p[5] == 0x56 && p[6] == 0x34 && p[7] == 0x12) {
+    return "little";
+  }
+  return "unknown";
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -244,9 +329,15 @@ std::string Version::getVerboseVersionString() {
 #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
           << " maintainer mode"
 #endif
+#ifdef __SANITIZE_ADDRESS__
+          << " with ASAN"
+#endif
           << ", using "
 #ifdef TRI_HAVE_TCMALLOC
           << "tcmalloc, "
+#endif
+#ifdef TRI_HAVE_JEMALLOC
+          << "jemalloc, "
 #endif
           << "VPack " << getVPackVersion() << ", "
           << "ICU " << getICUVersion() << ", "
@@ -281,24 +372,6 @@ std::string Version::getDetailed() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief JSONize all data
-////////////////////////////////////////////////////////////////////////////////
-
-void Version::getJson(TRI_memory_zone_t* zone, TRI_json_t* dst) {
-  for (auto const& it : Values) {
-    std::string const& value = it.second;
-
-    if (!value.empty()) {
-      std::string const& key = it.first;
-
-      TRI_Insert3ObjectJson(
-          zone, dst, key.c_str(),
-          TRI_CreateStringCopyJson(zone, value.c_str(), value.size()));
-    }
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief VelocyPack all data
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -312,4 +385,3 @@ void Version::getVPack(VPackBuilder& dst) {
   }
 }
 
-std::map<std::string, std::string> Version::Values;

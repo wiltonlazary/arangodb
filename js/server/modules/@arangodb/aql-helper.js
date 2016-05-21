@@ -29,13 +29,8 @@
 /// @author Copyright 2013, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-var internal = require("internal");
-var ShapedJson = internal.ShapedJson;
-var printYaml = function (plan) { require("internal").print(require("js-yaml").safeDump(plan));};
-
-
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief normalise a single row result
+/// @brief normalize a single row result
 ////////////////////////////////////////////////////////////////////////////////
 
 function normalizeRow (row, recursive) {
@@ -129,7 +124,7 @@ function getRawQueryResults (query, bindVars) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief return the results of a query in a normalised way
+/// @brief return the results of a query in a normalized way
 ////////////////////////////////////////////////////////////////////////////////
 
 function getQueryResults (query, bindVars, recursive) {
@@ -150,9 +145,6 @@ function typeName (value) {
   }
   if (value === undefined) {
     return "undefined";
-  }
-  if (value instanceof ShapedJson) {
-    return "object";
   }
   if (Array.isArray(value)) {
     return "array";
@@ -383,6 +375,9 @@ function findReferencedNodes(plan, testNode) {
 }
 
 function getQueryMultiplePlansAndExecutions (query, bindVars, testObject, debug) {
+  var printYaml = function (plan) { 
+    require("internal").print(require("js-yaml").safeDump(plan));
+  };
   var i;
   var plans = [];
   var allPlans = [];

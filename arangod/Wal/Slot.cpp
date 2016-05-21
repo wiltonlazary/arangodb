@@ -21,15 +21,13 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "Wal/Slot.h"
+#include "Slot.h"
 #include "Basics/hashes.h"
+#include "Wal/Marker.h"
 
 using namespace arangodb::wal;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief create a slot
-////////////////////////////////////////////////////////////////////////////////
-
 Slot::Slot()
     : _tick(0),
       _logfileId(0),
@@ -37,10 +35,7 @@ Slot::Slot()
       _size(0),
       _status(StatusType::UNUSED) {}
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief return the slot status as a string
-////////////////////////////////////////////////////////////////////////////////
-
 std::string Slot::statusText() const {
   switch (_status) {
     case StatusType::UNUSED:
@@ -62,11 +57,41 @@ std::string Slot::statusText() const {
   return "unknown";
 }
 
-////////////////////////////////////////////////////////////////////////////////
+/// @brief calculate the CRC and length values for the slot and
+/// store them in the marker
+void Slot::finalize(Marker const* marker) {
+  TRI_ASSERT(marker != nullptr);
+  uint32_t const size = marker->size();
+
+  TRI_ASSERT(_mem != nullptr);
+  TRI_ASSERT(size == _size);
+  TRI_ASSERT(size >= sizeof(TRI_df_marker_t));
+
+  TRI_df_marker_t* dfm = static_cast<TRI_df_marker_t*>(_mem);
+
+  // set type and tick
+  dfm->setTypeAndTick(marker->type(), _tick);
+
+  // set size
+  dfm->setSize(static_cast<TRI_voc_size_t>(size));
+
+  // calculate the crc
+  dfm->setCrc(0);
+  TRI_voc_crc_t crc = TRI_InitialCrc32();
+  crc = TRI_BlockCrc32(crc, static_cast<char const*>(_mem),
+                       static_cast<TRI_voc_size_t>(size));
+  dfm->setCrc(TRI_FinalCrc32(crc));
+
+  TRI_IF_FAILURE("WalSlotCrc") {
+    // intentionally corrupt the marker
+    LOG(WARN) << "intentionally writing corrupt marker into datafile";
+    dfm->setCrc(0xdeadbeef);
+  }
+}
+
 /// @brief calculate the CRC value for the source region (this will modify
 /// the source region) and copy the calculated marker data into the slot
-////////////////////////////////////////////////////////////////////////////////
-
+/// note that marker type has to be set already in the src 
 void Slot::fill(void* src, size_t size) {
   TRI_ASSERT(size == _size);
   TRI_ASSERT(src != nullptr);
@@ -74,32 +99,29 @@ void Slot::fill(void* src, size_t size) {
   TRI_df_marker_t* marker = static_cast<TRI_df_marker_t*>(src);
 
   // set tick
-  marker->_tick = _tick;
+  marker->setTick(_tick);
 
   // set size
-  marker->_size = static_cast<TRI_voc_size_t>(size);
+  marker->setSize(static_cast<TRI_voc_size_t>(size));
 
   // calculate the crc
-  marker->_crc = 0;
+  marker->setCrc(0);
   TRI_voc_crc_t crc = TRI_InitialCrc32();
   crc = TRI_BlockCrc32(crc, (char const*)marker,
                        static_cast<TRI_voc_size_t>(size));
-  marker->_crc = TRI_FinalCrc32(crc);
+  marker->setCrc(TRI_FinalCrc32(crc));
 
   TRI_IF_FAILURE("WalSlotCrc") {
     // intentionally corrupt the marker
     LOG(WARN) << "intentionally writing corrupt marker into datafile";
-    marker->_crc = 0xdeadbeef;
+    marker->setCrc(0xdeadbeef);
   }
 
   // copy data into marker
   memcpy(_mem, src, size);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief mark as slot as used
-////////////////////////////////////////////////////////////////////////////////
-
 void Slot::setUnused() {
   TRI_ASSERT(isReturned());
   _tick = 0;
@@ -109,10 +131,7 @@ void Slot::setUnused() {
   _status = StatusType::UNUSED;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief mark as slot as used
-////////////////////////////////////////////////////////////////////////////////
-
 void Slot::setUsed(void* mem, uint32_t size, Logfile::IdType logfileId,
                    Slot::TickType tick) {
   TRI_ASSERT(isUnused());
@@ -123,10 +142,7 @@ void Slot::setUsed(void* mem, uint32_t size, Logfile::IdType logfileId,
   _status = StatusType::USED;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief mark as slot as returned
-////////////////////////////////////////////////////////////////////////////////
-
 void Slot::setReturned(bool waitForSync) {
   TRI_ASSERT(isUsed());
   if (waitForSync) {

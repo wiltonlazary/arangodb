@@ -31,12 +31,9 @@
 /// @author Copyright 2010-2013, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-
-
 var exports = require('internal');
 var console = require('console');
 var fs = require('fs');
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief db
@@ -60,10 +57,10 @@ exports.ArangoDatabase = global.ArangoDatabase;
 delete global.ArangoDatabase;
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief ShapedJson
+/// @brief ShapedJson stub object - only here for compatibility with 2.8
 ////////////////////////////////////////////////////////////////////////////////
 
-exports.ShapedJson = global.ShapedJson;
+exports.ShapedJson = function() {};
 delete global.ShapedJson;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -328,7 +325,11 @@ exports.loadStartup = function (path) {
 ////////////////////////////////////////////////////////////////////////////////
 
 if (global.SYS_RAW_REQUEST_BODY) {
-  exports.rawRequestBody = global.SYS_RAW_REQUEST_BODY;
+  const $_RAW_BODY_BUFFER = Symbol.for('@arangodb/request.rawBodyBuffer');
+  const getRawBodyBuffer = global.SYS_RAW_REQUEST_BODY;
+  exports.rawRequestBody = function (req) {
+    return req[$_RAW_BODY_BUFFER] || getRawBodyBuffer(req);
+  };
   delete global.SYS_RAW_REQUEST_BODY;
 }
 

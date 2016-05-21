@@ -27,10 +27,11 @@
 #include "Basics/Common.h"
 
 #include "Basics/ConditionVariable.h"
+#include "Logger/Logger.h"
 #include "Basics/ReadWriteLock.h"
 #include "Basics/Thread.h"
 #include "Cluster/AgencyComm.h"
-#include "Logger/Logger.h"
+#include "Cluster/ClusterInfo.h"
 #include "Rest/HttpRequest.h"
 #include "Rest/HttpResponse.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
@@ -73,7 +74,10 @@ enum ClusterCommOpStatus {
   CL_COMM_DROPPED = 7,    // operation was dropped, not known
                           // this is only used to report an error
                           // in the wait or enquire methods
-  CL_COMM_BACKEND_UNAVAILABLE = 8 // mop: communication problem with the backend
+  CL_COMM_BACKEND_UNAVAILABLE = 8 // communication problem with the backend
+                                  // note that in this case result and answer
+                                  // are not set and one can assume that
+                                  // already the connection could not be opened
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -110,13 +114,14 @@ struct ClusterCommResult {
   GeneralResponse::ResponseCode answer_code;
 
   ClusterCommResult()
-      : dropped(false),
+      : status(CL_COMM_ERROR),
+        dropped(false),
         single(false),
         answer_code(GeneralResponse::ResponseCode::PROCESSING) {}
 
-  ////////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
   /// @brief routine to set the destination
-  ////////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
 
   void setDestination(std::string const& dest, bool logConnectionErrors);
 };
@@ -162,7 +167,7 @@ struct ClusterCommOperation {
   GeneralRequest::RequestType reqtype;
   std::string path;
   std::shared_ptr<std::string const> body;
-  std::unique_ptr<std::map<std::string, std::string>> headerFields;
+  std::unique_ptr<std::unordered_map<std::string, std::string>> headerFields;
   std::shared_ptr<ClusterCommCallback> callback;
   ClusterCommTimeout endTime;
 };
@@ -173,6 +178,35 @@ struct ClusterCommOperation {
 
 void ClusterCommRestCallback(std::string& coordinator,
                              HttpResponse* response);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief used to let ClusterComm send a set of requests and look after them
+////////////////////////////////////////////////////////////////////////////////
+
+struct ClusterCommRequest {
+  std::string                                         destination;
+  GeneralRequest::RequestType                         requestType;
+  std::string                                         path;
+  std::shared_ptr<std::string const>                  body;
+  std::unique_ptr<std::unordered_map<std::string, std::string>> headerFields;
+  ClusterCommResult                                   result;
+  bool                                                done;
+
+  ClusterCommRequest() : done(false) {
+  }
+
+  ClusterCommRequest(std::string dest,
+                     GeneralRequest::RequestType type,
+                     std::string path,
+                     std::shared_ptr<std::string const> body)
+    : destination(dest), requestType(type), path(path), body(body), done(false)
+  {
+  }
+
+  void setHeaders(std::unique_ptr<std::unordered_map<std::string, std::string>>& headers) {
+    headerFields = std::move(headers);
+  }
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief the class for the cluster communications library
@@ -251,7 +285,7 @@ class ClusterComm {
       std::string const& destination,
       GeneralRequest::RequestType reqtype, std::string const& path,
       std::shared_ptr<std::string const> body,
-      std::unique_ptr<std::map<std::string, std::string>>& headerFields,
+      std::unique_ptr<std::unordered_map<std::string, std::string>>& headerFields,
       std::shared_ptr<ClusterCommCallback> callback, ClusterCommTimeout timeout,
       bool singleRequest = false);
 
@@ -265,7 +299,7 @@ class ClusterComm {
       std::string const& destination,
       GeneralRequest::RequestType reqtype, std::string const& path,
       std::string const& body,
-      std::map<std::string, std::string> const& headerFields,
+      std::unordered_map<std::string, std::string> const& headerFields,
       ClusterCommTimeout timeout);
 
   //////////////////////////////////////////////////////////////////////////////
@@ -305,6 +339,26 @@ class ClusterComm {
 
   void asyncAnswer(std::string& coordinatorHeader,
                    HttpResponse* responseToSend);
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief this method performs the given requests described by the vector
+  /// of ClusterCommRequest structs in the following way: all requests are
+  /// tried and the result is stored in the result component. Each request is
+  /// done with asyncRequest and the given timeout. If a request times out
+  /// it is considered to be a failure. If a connection cannot be created,
+  /// a retry is done with exponential backoff, that is, first after 1 second,
+  /// then after another 2 seconds, 4 seconds and so on, until the overall
+  /// timeout has been reached. A request that can connect and produces a
+  /// result is simply reported back with no retry, even in an error case.
+  /// The method returns the number of successful requests and puts the
+  /// number of finished ones in nrDone. Thus, the timeout was triggered
+  /// if and only if nrDone < requests.size().
+  //////////////////////////////////////////////////////////////////////////////
+
+  size_t performRequests(std::vector<ClusterCommRequest>& requests,
+                         ClusterCommTimeout timeout,
+                         size_t& nrDone,
+                         arangodb::LogTopic const& logTopic);
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -403,6 +457,7 @@ class ClusterCommThread : public Thread {
 
  public:
   void beginShutdown() override;
+  bool isSystem() override final { return true; }
 
  protected:
   void run() override final;

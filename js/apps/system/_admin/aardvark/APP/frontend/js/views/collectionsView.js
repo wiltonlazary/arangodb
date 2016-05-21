@@ -9,7 +9,7 @@
     el2: '#collectionsThumbnailsIn',
 
     searchTimeout: null,
-    refreshRate: 2000,
+    refreshRate: 10000,
 
     template: templateEngine.createTemplate("collectionsView.ejs"),
 
@@ -27,7 +27,7 @@
         var callback = function(error, lockedCollections) {
           var self = this;
           if (error) {
-            arangoHelper.arangoError("Collections", "Could not check locked collections");
+            console.log("Could not check locked collections");
           }
           else {
             this.collection.each(function(model) {
@@ -53,6 +53,8 @@
               if (model.get("locked") || model.get("status") === 'loading') {
                 $('#collection_' + model.get("name")).addClass('locked');
                 if (model.get("locked")) {
+                  $('#collection_' + model.get("name")).find('.corneredBadge').removeClass('loaded unloaded');
+                  $('#collection_' + model.get("name")).find('.corneredBadge').addClass('inProgress');
                   $('#collection_' + model.get("name") + ' .corneredBadge').text(model.get("desc"));
                 }
                 else {
@@ -325,10 +327,15 @@
         else {
           var collName = $('#new-collection-name').val(),
           collSize = $('#new-collection-size').val(),
+          replicationFactor = $('#new-replication-factor').val(),
           collType = $('#new-collection-type').val(),
           collSync = $('#new-collection-sync').val(),
           shards = 1,
           shardBy = [];
+
+          if (replicationFactor === '') {
+            replicationFactor = 1;
+          }
 
           if (isCoordinator) {
             shards = $('#new-collection-shards').val();
@@ -391,6 +398,7 @@
             wfs: wfs,
             isSystem: isSystem,
             collSize: collSize,
+            replicationFactor: replicationFactor,
             collType: collType,
             shards: shards,
             shardBy: shardBy
@@ -494,10 +502,28 @@
               ]
             )
           );
+          if (window.App.isCluster) {
+            advancedTableContent.push(
+              window.modalView.createTextEntry(
+                "new-replication-factor",
+                "Replication factor",
+                "",
+                "Numeric value. Must be at least 1. Description: TODO",
+                "",
+                false,
+                [
+                  {
+                    rule: Joi.string().allow('').optional().regex(/^[0-9]*$/),
+                    msg: "Must be a number."
+                  }
+                ]
+              )
+            );
+          }
           advancedTableContent.push(
             window.modalView.createSelectEntry(
               "new-collection-sync",
-              "Sync",
+              "Wait for sync",
               "",
               "Synchronize to disk before returning from a create or update of a document.",
               [{value: false, label: "No"}, {value: true, label: "Yes"}]

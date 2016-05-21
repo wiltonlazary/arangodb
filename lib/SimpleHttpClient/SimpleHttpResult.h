@@ -22,8 +22,8 @@
 /// @author Achim Brandt
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_RESULT_H
-#define LIB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_RESULT_H 1
+#ifndef ARANGODB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_RESULT_H
+#define ARANGODB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_RESULT_H 1
 
 #include "Basics/Common.h"
 #include "Basics/StringBuffer.h"
@@ -206,7 +206,7 @@ class SimpleHttpResult {
   /// @brief get all header fields
   //////////////////////////////////////////////////////////////////////////////
 
-  std::map<std::string, std::string> const& getHeaderFields() const {
+  std::unordered_map<std::string, std::string> const& getHeaderFields() const {
     return _headerFields;
   }
 
@@ -214,7 +214,7 @@ class SimpleHttpResult {
   /// @brief returns whether the result is JSON-encoded
   //////////////////////////////////////////////////////////////////////////////
 
-  bool isJson() const;
+  bool isJson() const { return _isJson; }
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -229,6 +229,7 @@ class SimpleHttpResult {
   size_t _contentLength;
   int _returnCode;
   bool _foundHeader;
+  bool _isJson;
   bool _hasContentLength;
   bool _chunked;
   bool _deflated;
@@ -240,7 +241,7 @@ class SimpleHttpResult {
   enum resultTypes _requestResultType;
 
   // header fields
-  std::map<std::string, std::string> _headerFields;
+  std::unordered_map<std::string, std::string> _headerFields;
 };
 }
 }

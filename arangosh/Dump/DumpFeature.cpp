@@ -21,12 +21,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "DumpFeature.h"
-
-#include <iostream>
-
-#include <velocypack/Iterator.h>
-#include <velocypack/velocypack-aliases.h>
-
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "ApplicationFeatures/ClientFeature.h"
 #include "Basics/FileUtils.h"
 #include "Basics/StringUtils.h"
@@ -34,12 +29,18 @@
 #include "Basics/files.h"
 #include "Basics/tri-strings.h"
 #include "Endpoint/Endpoint.h"
-#include "ProgramOptions2/ProgramOptions.h"
+#include "ProgramOptions/ProgramOptions.h"
 #include "Rest/HttpResponse.h"
-#include "Rest/SslInterface.h"
+#include "Rest/Version.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
+#include "Ssl/SslInterface.h"
+
+#include <velocypack/Iterator.h>
+#include <velocypack/velocypack-aliases.h>
+
+#include <iostream>
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -47,8 +48,8 @@ using namespace arangodb::httpclient;
 using namespace arangodb::options;
 using namespace arangodb::rest;
 
-DumpFeature::DumpFeature(
-    application_features::ApplicationServer* server, int* result)
+DumpFeature::DumpFeature(application_features::ApplicationServer* server,
+                         int* result)
     : ApplicationFeature(server, "Dump"),
       _collections(),
       _chunkSize(1024 * 1024 * 2),
@@ -63,7 +64,8 @@ DumpFeature::DumpFeature(
       _tickEnd(0),
       _result(result),
       _batchId(0),
-      _clusterMode(false) {
+      _clusterMode(false),
+      _stats{ 0, 0, 0 } {
   requiresElevatedPrivileges(false);
   setOptional(false);
   startsAfter("Client");
@@ -75,11 +77,6 @@ DumpFeature::DumpFeature(
 
 void DumpFeature::collectOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addOption(
       "--collection",
       "restrict to collection name (can be specified multiple times)",
@@ -98,7 +95,7 @@ void DumpFeature::collectOptions(
 
   options->addOption(
       "--force", "continue dumping even in the face of some server-side errors",
-      new BooleanParameter(&_force, false));
+      new BooleanParameter(&_force));
 
   options->addOption("--include-system-collections",
                      "include system collections",
@@ -108,7 +105,7 @@ void DumpFeature::collectOptions(
                      new StringParameter(&_outputDirectory));
 
   options->addOption("--overwrite", "overwrite data in output directory",
-                     new BooleanParameter(&_overwrite, false));
+                     new BooleanParameter(&_overwrite));
 
   options->addOption("--progress", "show progress",
                      new BooleanParameter(&_progress));
@@ -122,17 +119,15 @@ void DumpFeature::collectOptions(
 
 void DumpFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::validateOptions";
-
   auto const& positionals = options->processingResult()._positionals;
   size_t n = positionals.size();
 
   if (1 == n) {
     _outputDirectory = positionals[0];
   } else if (1 < n) {
-    LOG(ERR) << "expecting at most one directory, got " +
-                    StringUtils::join(positionals, ", ");
-    abortInvalidParameters();
+    LOG(FATAL) << "expecting at most one directory, got " +
+                      StringUtils::join(positionals, ", ");
+    FATAL_ERROR_EXIT();
   }
 
   if (_chunkSize < 1024 * 128) {
@@ -144,8 +139,8 @@ void DumpFeature::validateOptions(
   }
 
   if (_tickStart < _tickEnd) {
-    LOG(ERR) << "invalid values for --tick-start or --tick-end";
-    abortInvalidParameters();
+    LOG(FATAL) << "invalid values for --tick-start or --tick-end";
+    FATAL_ERROR_EXIT();
   }
 
   // trim trailing slash from path because it may cause problems on ...
@@ -158,8 +153,6 @@ void DumpFeature::validateOptions(
 }
 
 void DumpFeature::prepare() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::prepare";
-
   bool isDirectory = false;
   bool isEmptyDirectory = false;
 
@@ -167,11 +160,9 @@ void DumpFeature::prepare() {
     isDirectory = TRI_IsDirectory(_outputDirectory.c_str());
 
     if (isDirectory) {
-      TRI_vector_string_t files =
-          TRI_FullTreeDirectory(_outputDirectory.c_str());
+      std::vector<std::string> files(TRI_FullTreeDirectory(_outputDirectory.c_str()));
       // we don't care if the target directory is empty
-      isEmptyDirectory = (files._length == 0);
-      TRI_DestroyVectorString(&files);
+      isEmptyDirectory = (files.empty()); // TODO: TRI_FullTreeDirectory always returns at least one element (""), even if directory is empty?
     }
   }
 
@@ -213,8 +204,9 @@ int DumpFeature::startBatch(std::string DBserver, std::string& errorMsg) {
     urlExt = "?DBserver=" + DBserver;
   }
 
-  std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
-      GeneralRequest::RequestType::POST, url + urlExt, body.c_str(), body.size()));
+  std::unique_ptr<SimpleHttpResult> response(
+      _httpClient->request(GeneralRequest::RequestType::POST, url + urlExt,
+                           body.c_str(), body.size()));
 
   if (response == nullptr || !response->isComplete()) {
     errorMsg =
@@ -265,8 +257,9 @@ void DumpFeature::extendBatch(std::string DBserver) {
     urlExt = "?DBserver=" + DBserver;
   }
 
-  std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
-      GeneralRequest::RequestType::PUT, url + urlExt, body.c_str(), body.size()));
+  std::unique_ptr<SimpleHttpResult> response(
+      _httpClient->request(GeneralRequest::RequestType::PUT, url + urlExt,
+                           body.c_str(), body.size()));
 
   // ignore any return value
 }
@@ -292,12 +285,12 @@ void DumpFeature::endBatch(std::string DBserver) {
 
 /// @brief dump a single collection
 int DumpFeature::dumpCollection(int fd, std::string const& cid,
-                                      std::string const& name, uint64_t maxTick,
-                                      std::string& errorMsg) {
+                                std::string const& name, uint64_t maxTick,
+                                std::string& errorMsg) {
   uint64_t chunkSize = _chunkSize;
 
   std::string const baseUrl = "/_api/replication/dump?collection=" + cid +
-                              "&ticks=false&translateIds=true&flush=false";
+                              "&ticks=false&flush=false";
 
   uint64_t fromTick = _tickStart;
 
@@ -317,8 +310,8 @@ int DumpFeature::dumpCollection(int fd, std::string const& cid,
 
     _stats._totalBatches++;
 
-    std::unique_ptr<SimpleHttpResult> response(
-        _httpClient->request(GeneralRequest::RequestType::GET, url, nullptr, 0));
+    std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
+        GeneralRequest::RequestType::GET, url, nullptr, 0));
 
     if (response == nullptr || !response->isComplete()) {
       errorMsg =
@@ -666,12 +659,11 @@ int DumpFeature::runDump(std::string& dbName, std::string& errorMsg) {
 
 /// @brief dump a single shard, that is a collection on a DBserver
 int DumpFeature::dumpShard(int fd, std::string const& DBserver,
-                                 std::string const& name,
-                                 std::string& errorMsg) {
+                           std::string const& name, std::string& errorMsg) {
   std::string const baseUrl = "/_api/replication/dump?DBserver=" + DBserver +
                               "&collection=" + name + "&chunkSize=" +
                               StringUtils::itoa(_chunkSize) +
-                              "&ticks=false&translateIds=true";
+                              "&ticks=false";
 
   uint64_t fromTick = 0;
   uint64_t maxTick = UINT64_MAX;
@@ -685,8 +677,8 @@ int DumpFeature::dumpShard(int fd, std::string const& DBserver,
 
     _stats._totalBatches++;
 
-    std::unique_ptr<SimpleHttpResult> response(
-        _httpClient->request(GeneralRequest::RequestType::GET, url, nullptr, 0));
+    std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
+        GeneralRequest::RequestType::GET, url, nullptr, 0));
 
     if (response == nullptr || !response->isComplete()) {
       errorMsg =
@@ -974,10 +966,7 @@ int DumpFeature::runClusterDump(std::string& errorMsg) {
 }
 
 void DumpFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
-  ClientFeature* client =
-      dynamic_cast<ClientFeature*>(server()->feature("Client"));
+  ClientFeature* client = application_features::ApplicationServer::getFeature<ClientFeature>("Client");
 
   int ret = EXIT_SUCCESS;
   *_result = ret;
@@ -991,10 +980,10 @@ void DumpFeature::start() {
 
   std::string dbName = client->databaseName();
 
-  _httpClient->setLocationRewriter((void*)client, &rewriteLocation);
+  _httpClient->setLocationRewriter(static_cast<void*>(client), &rewriteLocation);
   _httpClient->setUserNamePassword("/", client->username(), client->password());
 
-  std::string const versionString = getArangoVersion(nullptr);
+  std::string const versionString = _httpClient->getServerVersion();
 
   if (!_httpClient->isConnected()) {
     LOG(ERR) << "Could not connect to endpoint '" << client->endpoint()
@@ -1009,15 +998,9 @@ void DumpFeature::start() {
   std::cout << "Server version: " << versionString << std::endl;
 
   // validate server version
-  int major = 0;
-  int minor = 0;
+  std::pair<int, int> version = Version::parseVersionString(versionString);
 
-  if (sscanf(versionString.c_str(), "%d.%d", &major, &minor) != 2) {
-    LOG(FATAL) << "invalid server version '" << versionString << "'";
-    FATAL_ERROR_EXIT();
-  }
-
-  if (major != 3) {
+  if (version.first < 3) {
     // we can connect to 3.x
     LOG(ERR) << "Error: got incompatible server version '" << versionString
              << "'";
@@ -1027,15 +1010,12 @@ void DumpFeature::start() {
     }
   }
 
-  if (major >= 2) {
-    // Version 1.4 did not yet have a cluster mode
-    _clusterMode = getArangoIsCluster(nullptr);
+  _clusterMode = getArangoIsCluster(nullptr);
 
-    if (_clusterMode) {
-      if (_tickStart != 0 || _tickEnd != 0) {
-        LOG(ERR) << "Error: cannot use tick-start or tick-end on a cluster";
-        FATAL_ERROR_EXIT();
-      }
+  if (_clusterMode) {
+    if (_tickStart != 0 || _tickEnd != 0) {
+      LOG(ERR) << "Error: cannot use tick-start or tick-end on a cluster";
+      FATAL_ERROR_EXIT();
     }
   }
 
@@ -1055,8 +1035,6 @@ void DumpFeature::start() {
     std::cout << "Writing dump to output directory '" << _outputDirectory << "'"
               << std::endl;
   }
-
-  memset(&_stats, 0, sizeof(_stats));
 
   std::string errorMsg = "";
 

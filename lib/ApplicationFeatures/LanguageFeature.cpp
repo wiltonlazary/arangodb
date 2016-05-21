@@ -24,8 +24,8 @@
 
 #include "Basics/Utf8Helper.h"
 #include "Logger/Logger.h"
-#include "ProgramOptions2/ProgramOptions.h"
-#include "ProgramOptions2/Section.h"
+#include "ProgramOptions/ProgramOptions.h"
+#include "ProgramOptions/Section.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -41,18 +41,11 @@ LanguageFeature::LanguageFeature(
 
 void LanguageFeature::collectOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addHiddenOption("--default-language", "ISO-639 language code",
                            new StringParameter(&_language));
 }
 
 void LanguageFeature::prepare() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::prepare";
-
   if (!Utf8Helper::DefaultUtf8Helper.setCollatorLanguage(_language)) {
     std::string msg =
         "cannot initialize ICU; please make sure ICU*dat is available; "
@@ -65,4 +58,19 @@ void LanguageFeature::prepare() {
     LOG(FATAL) << msg;
     FATAL_ERROR_EXIT();
   }
+
+}
+
+void LanguageFeature::start() {
+  std::string languageName;
+
+  if (Utf8Helper::DefaultUtf8Helper.getCollatorCountry() != "") {
+    languageName =
+        std::string(Utf8Helper::DefaultUtf8Helper.getCollatorLanguage() + "_" +
+                    Utf8Helper::DefaultUtf8Helper.getCollatorCountry());
+  } else {
+    languageName = Utf8Helper::DefaultUtf8Helper.getCollatorLanguage();
+  }
+
+  LOG(DEBUG) << "using default language '" << languageName << "'";
 }

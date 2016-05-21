@@ -57,19 +57,19 @@ function get_api_database (req, res) {
   var result;
   if (req.suffix.length === 0) {
     // list of all databases
-    result = arangodb.db._listDatabases();
+    result = arangodb.db._databases();
   }
   else {
     if (req.suffix[0] === 'user') {
       // fetch all databases for the current user
       // note: req.user may be null if authentication is turned off
-      result = arangodb.db._listDatabases(req.user);
+      result = arangodb.db._databases(req.user);
     }
     else if (req.suffix[0] === 'current') {
       if (cluster.isCoordinator()) {
         // fetch database information from Agency
         var values = ArangoAgency.get("Plan/Databases/" + encodeURIComponent(req.database), false);
-        var dbEntry = values["Plan/Databases/" + encodeURIComponent(req.database)];
+        var dbEntry = values.arango.Plan.Databases[encodeURIComponent(req.database)];
         result = {
           name: dbEntry.name,
           id: dbEntry.id,
@@ -162,8 +162,7 @@ function post_api_database (req, res) {
 
   var result = arangodb.db._createDatabase(json.name || "", options, users);
 
-  var returnCode = (req.compatibility <= 10400 ? actions.HTTP_OK : actions.HTTP_CREATED);
-  actions.resultOk(req, res, returnCode, { result : result });
+  actions.resultOk(req, res, actions.HTTP_CREATED, { result : result });
 }
 
 ////////////////////////////////////////////////////////////////////////////////

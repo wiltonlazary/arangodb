@@ -23,6 +23,7 @@
 
 #include "HttpHandlerFactory.h"
 
+#include "Cluster/ServerState.h"
 #include "HttpServer/HttpHandler.h"
 #include "Logger/Logger.h"
 #include "Rest/HttpRequest.h"
@@ -31,6 +32,8 @@
 using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
+  
+static std::string const ROOT_PATH = "/";
 
 namespace {
 sig_atomic_t MaintenanceMode = 0;
@@ -60,52 +63,14 @@ class MaintenanceHandler : public HttpHandler {
 ////////////////////////////////////////////////////////////////////////////////
 
 HttpHandlerFactory::HttpHandlerFactory(std::string const& authenticationRealm,
-                                       int32_t minCompatibility,
                                        bool allowMethodOverride,
                                        context_fptr setContext,
                                        void* setContextData)
     : _authenticationRealm(authenticationRealm),
-      _minCompatibility(minCompatibility),
       _allowMethodOverride(allowMethodOverride),
       _setContext(setContext),
       _setContextData(setContextData),
       _notFound(nullptr) {}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief clones a handler factory
-////////////////////////////////////////////////////////////////////////////////
-
-HttpHandlerFactory::HttpHandlerFactory(HttpHandlerFactory const& that)
-    : _authenticationRealm(that._authenticationRealm),
-      _minCompatibility(that._minCompatibility),
-      _allowMethodOverride(that._allowMethodOverride),
-      _setContext(that._setContext),
-      _setContextData(that._setContextData),
-      _constructors(that._constructors),
-      _datas(that._datas),
-      _prefixes(that._prefixes),
-      _notFound(that._notFound) {}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief copies a handler factory
-////////////////////////////////////////////////////////////////////////////////
-
-HttpHandlerFactory& HttpHandlerFactory::operator=(
-    HttpHandlerFactory const& that) {
-  if (this != &that) {
-    _authenticationRealm = that._authenticationRealm;
-    _minCompatibility = that._minCompatibility;
-    _allowMethodOverride = that._allowMethodOverride;
-    _setContext = that._setContext;
-    _setContextData = that._setContextData;
-    _constructors = that._constructors;
-    _datas = that._datas;
-    _prefixes = that._prefixes;
-    _notFound = that._notFound;
-  }
-
-  return *this;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief destructs a handler factory
@@ -176,8 +141,7 @@ std::string HttpHandlerFactory::authenticationRealm(
 
 HttpRequest* HttpHandlerFactory::createRequest(ConnectionInfo const& info,
                                                char const* ptr, size_t length) {
-  HttpRequest* request = new HttpRequest(info, ptr, length, _minCompatibility,
-                                         _allowMethodOverride);
+  HttpRequest* request = new HttpRequest(info, ptr, length, _allowMethodOverride);
 
   if (request != nullptr) {
     setRequestContext(request);
@@ -191,14 +155,21 @@ HttpRequest* HttpHandlerFactory::createRequest(ConnectionInfo const& info,
 ////////////////////////////////////////////////////////////////////////////////
 
 HttpHandler* HttpHandlerFactory::createHandler(HttpRequest* request) {
-  static std::string const ROOT_PATH = "/";
+  std::string const& path = request->requestPath();
 
-  if (MaintenanceMode) {
+  // In the bootstrap phase, we would like that coordinators answer the 
+  // following to endpoints, but not yet others:
+  if (MaintenanceMode &&
+      (!ServerState::instance()->isCoordinator() ||
+       (path != "/_api/shard-comm" && 
+        path.find("/_api/agency/agency-callbacks") == std::string::npos &&
+        path.find("/_api/aql") == std::string::npos))) { 
+    LOG(DEBUG) << "Maintenance mode: refused path: "
+               << path;
     return new MaintenanceHandler(request);
   }
 
   std::unordered_map<std::string, create_fptr> const& ii = _constructors;
-  std::string const& path = request->requestPath();
   std::string const* modifiedPath = &path;
   std::string prefix;
 
@@ -265,9 +236,9 @@ HttpHandler* HttpHandlerFactory::createHandler(HttpRequest* request) {
       }
 
       modifiedPath = &prefix;
-      request->setPrefix(prefix);
-
+      
       i = ii.find(prefix);
+      request->setPrefix(prefix);
     }
   }
 
@@ -280,10 +251,10 @@ HttpHandler* HttpHandlerFactory::createHandler(HttpRequest* request) {
       notFoundHandler->setServer(this);
 
       return notFoundHandler;
-    } else {
-      LOG(TRACE) << "no not-found handler, giving up";
-      return nullptr;
     }
+
+    LOG(TRACE) << "no not-found handler, giving up";
+    return nullptr;
   }
 
   // look up data

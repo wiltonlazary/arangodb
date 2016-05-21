@@ -2,13 +2,10 @@
 'use strict';
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief Foxx queues workers
-///
-/// @file
-///
 /// DISCLAIMER
 ///
-/// Copyright 2014-2015 triAGENS GmbH, Cologne, Germany
+/// Copyright 2014 triAGENS GmbH, Cologne, Germany
+/// Copyright 2015 ArangoDB GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -22,18 +19,16 @@
 /// See the License for the specific language governing permissions and
 /// limitations under the License.
 ///
-/// Copyright holder is triAGENS GmbH, Cologne, Germany
+/// Copyright holder is ArangoDB GmbH, Cologne, Germany
 ///
 /// @author Alan Plum
-/// @author Copyright 2015, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-var _ = require('lodash');
 var db = require('@arangodb').db;
 var flatten = require('internal').flatten;
 var exponentialBackOff = require('internal').exponentialBackOff;
 var console = require('console');
-var queues = require('@arangodb/foxx').queues;
+var queues = require('@arangodb/foxx/queues');
 var fm = require('@arangodb/foxx/manager');
 var util = require('util');
 var internal = require('internal');
@@ -158,7 +153,7 @@ exports.work = function (job) {
         data.runFailures = 0;
       }
       db._jobs.update(job._key, data);
-      job = _.extend(job, data);
+      job = Object.assign(job, data);
     }
   });
 

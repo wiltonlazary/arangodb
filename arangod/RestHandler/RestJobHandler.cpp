@@ -25,6 +25,7 @@
 #include "Basics/conversions.h"
 #include "Basics/StringUtils.h"
 #include "Dispatcher/Dispatcher.h"
+#include "Dispatcher/DispatcherFeature.h"
 #include "HttpServer/AsyncJobManager.h"
 #include "Rest/HttpRequest.h"
 #include "Rest/HttpResponse.h"
@@ -37,10 +38,10 @@ using namespace arangodb::basics;
 using namespace arangodb::rest;
 
 RestJobHandler::RestJobHandler(HttpRequest* request,
-                               std::pair<Dispatcher*, AsyncJobManager*>* data)
-    : RestBaseHandler(request),
-      _dispatcher(data->first),
-      _jobManager(data->second) {}
+                               AsyncJobManager* jobManager)
+    : RestBaseHandler(request), _jobManager(jobManager) {
+  TRI_ASSERT(jobManager != nullptr);
+}
 
 bool RestJobHandler::isDirect() const { return true; }
 
@@ -58,7 +59,8 @@ HttpHandler::status_t RestJobHandler::execute() {
     } else if (suffix.size() == 2) {
       putJobMethod();
     } else {
-      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_HTTP_BAD_PARAMETER);
+      generateError(GeneralResponse::ResponseCode::BAD,
+                    TRI_ERROR_HTTP_BAD_PARAMETER);
     }
   } else if (type == GeneralRequest::RequestType::DELETE_REQ) {
     deleteJob();
@@ -107,7 +109,7 @@ void RestJobHandler::putJob() {
   _response = response;
 
   // plus a new header
-  static std::string xArango = "x-arango-async-id";
+  static std::string const xArango = "x-arango-async-id";
   _response->setHeaderNC(xArango, value);
 }
 
@@ -122,7 +124,12 @@ void RestJobHandler::putJobMethod() {
   uint64_t jobId = StringUtils::uint64(value);
 
   if (method == "cancel") {
-    bool status = _dispatcher->cancelJob(jobId);
+    if (DispatcherFeature::DISPATCHER == nullptr) {
+      generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
+                    TRI_ERROR_HTTP_NOT_FOUND);
+    }
+    
+    bool status = DispatcherFeature::DISPATCHER->cancelJob(jobId);
 
     // unknown or already fetched job
     if (!status) {
@@ -136,7 +143,7 @@ void RestJobHandler::putJobMethod() {
         json.close();
 
         VPackSlice slice(json.start());
-        generateResult(slice);
+        generateResult(GeneralResponse::ResponseCode::OK, slice);
       } catch (...) {
         // Ignore the error
       }
@@ -179,6 +186,7 @@ void RestJobHandler::getJobById(std::string const& value) {
 
   // numeric job id, just pull the job status and return it
   AsyncJobResult::Status status;
+  TRI_ASSERT(_jobManager != nullptr);
   _jobManager->getJobResult(jobId, status, false);
 
   if (status == AsyncJobResult::JOB_UNDEFINED) {
@@ -230,18 +238,14 @@ void RestJobHandler::getJobByType(std::string const& type) {
   }
 
   try {
-    VPackBuilder json;
-    json.add(VPackValue(VPackValueType::Array));
+    VPackBuilder result;
+    result.openArray();
     size_t const n = ids.size();
     for (size_t i = 0; i < n; ++i) {
-      char* idString = TRI_StringUInt64(ids[i]);
-      if (idString != nullptr) {
-        json.add(VPackValue(idString));
-      }
+      result.add(VPackValue(std::to_string(ids[i])));
     }
-    json.close();
-    VPackSlice slice(json.start());
-    generateResult(slice);
+    result.close();
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } catch (...) {
     generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
                   TRI_ERROR_OUT_OF_MEMORY);
@@ -295,7 +299,7 @@ void RestJobHandler::deleteJob() {
     json.add("result", VPackValue(true));
     json.close();
     VPackSlice slice(json.start());
-    generateResult(slice);
+    generateResult(GeneralResponse::ResponseCode::OK, slice);
   } catch (...) {
     generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
                   TRI_ERROR_OUT_OF_MEMORY);

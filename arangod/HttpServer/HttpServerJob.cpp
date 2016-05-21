@@ -25,13 +25,14 @@
 #include "HttpServerJob.h"
 
 #include "Basics/WorkMonitor.h"
-#include "Logger/Logger.h"
 #include "Dispatcher/DispatcherQueue.h"
 #include "HttpServer/AsyncJobManager.h"
 #include "HttpServer/HttpCommTask.h"
 #include "HttpServer/HttpHandler.h"
 #include "HttpServer/HttpServer.h"
+#include "Logger/Logger.h"
 #include "Scheduler/Scheduler.h"
+#include "Scheduler/SchedulerFeature.h"
 
 using namespace arangodb;
 using namespace arangodb::rest;
@@ -63,6 +64,7 @@ size_t HttpServerJob::queue() const { return _handler->queue(); }
 
 void HttpServerJob::work() {
   TRI_ASSERT(_handler.get() != nullptr);
+  RequestStatisticsAgent::transferTo(_handler.get());
 
   LOG(TRACE) << "beginning job " << (void*)this;
 
@@ -77,6 +79,7 @@ void HttpServerJob::work() {
     _handler->executeFull();
 
     if (_isAsync) {
+      _handler->RequestStatisticsAgent::release();
       _server->jobManager()->finishAsyncJob(_jobId, _handler->stealResponse());
     } else {
       auto data = std::make_unique<TaskData>();
@@ -86,13 +89,14 @@ void HttpServerJob::work() {
       data->_type = TaskData::TASK_DATA_RESPONSE;
       data->_response.reset(_handler->stealResponse());
 
-      _handler->RequestStatisticsAgent::transfer(data.get());
+      _handler->RequestStatisticsAgent::transferTo(data.get());
 
-      Scheduler::SCHEDULER->signalTask(data);
+      SchedulerFeature::SCHEDULER->signalTask(data);
     }
 
     LOG(TRACE) << "finished job " << (void*)this;
   } catch (...) {
+    _handler->requestStatisticsAgentSetExecuteError();
     _workDesc = WorkMonitor::popHandler(_handler.release(), false);
     throw;
   }

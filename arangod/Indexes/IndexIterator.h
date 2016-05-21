@@ -25,7 +25,6 @@
 #define ARANGOD_INDEXES_INDEX_ITERATOR_H 1
 
 #include "Basics/Common.h"
-#include "VocBase/document-collection.h"
 #include "VocBase/vocbase.h"
 
 namespace arangodb {
@@ -36,8 +35,11 @@ class CollectionNameResolver;
 ////////////////////////////////////////////////////////////////////////////////
 
 struct IndexIteratorContext {
-  IndexIteratorContext(TRI_vocbase_t*, CollectionNameResolver*);
-
+  IndexIteratorContext(IndexIteratorContext const&) = delete;
+  IndexIteratorContext& operator=(IndexIteratorContext const&) = delete;
+  
+  IndexIteratorContext() = delete;
+  IndexIteratorContext(TRI_vocbase_t*, CollectionNameResolver const*);
   explicit IndexIteratorContext(TRI_vocbase_t*);
 
   ~IndexIteratorContext();
@@ -64,13 +66,69 @@ class IndexIterator {
   IndexIterator& operator=(IndexIterator const&) = delete;
 
   IndexIterator() {}
-
   virtual ~IndexIterator();
 
   virtual TRI_doc_mptr_t* next();
 
+  virtual void nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t);
+
   virtual void reset();
+
+  virtual void skip(uint64_t count, uint64_t& skipped);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief a wrapper class to iterate over several IndexIterators.
+///        Each iterator is requested at the index itself.
+///        This iterator does NOT check for uniqueness.
+///        Will always start with the first iterator in the vector. Reverse them
+///        Outside if necessary.
+////////////////////////////////////////////////////////////////////////////////
+
+class MultiIndexIterator : public IndexIterator {
+
+  public:
+   explicit MultiIndexIterator(std::vector<IndexIterator*> const& iterators)
+     : _iterators(iterators), _currentIdx(0), _current(nullptr) {
+       if (!_iterators.empty()) {
+         _current = _iterators.at(0);
+       }
+     };
+
+    ~MultiIndexIterator () {
+      // Free all iterators
+      for (auto& it : _iterators) {
+        delete it;
+      }
+    };
+
+    ////////////////////////////////////////////////////////////////////////////////
+    /// @brief Get the next element
+    ///        If one iterator is exhausted, the next one is used.
+    ///        A nullptr indicates that all iterators are exhausted
+    ////////////////////////////////////////////////////////////////////////////////
+
+    TRI_doc_mptr_t* next() override;
+
+    ////////////////////////////////////////////////////////////////////////////////
+    /// @brief Get at most the next limit many elements
+    ///        If one iterator is exhausted, the next one will be used.
+    ///        An empty result vector indicates that all iterators are exhausted
+    ////////////////////////////////////////////////////////////////////////////////
+    
+    void nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t) override;
+
+    ////////////////////////////////////////////////////////////////////////////////
+    /// @brief Reset the cursor
+    ///        This will reset ALL internal iterators and start all over again
+    ////////////////////////////////////////////////////////////////////////////////
+
+    void reset() override;
+
+  private:
+   std::vector<IndexIterator*> _iterators;
+   size_t _currentIdx;
+   IndexIterator* _current;
 };
 }
-
 #endif

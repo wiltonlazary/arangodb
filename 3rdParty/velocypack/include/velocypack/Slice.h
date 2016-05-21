@@ -33,6 +33,7 @@
 #include <vector>
 #include <iosfwd>
 #include <algorithm>
+#include <functional>
 #include <type_traits>
 
 #include "velocypack/velocypack-common.h"
@@ -41,11 +42,16 @@
 #include "velocypack/Value.h"
 #include "velocypack/ValueType.h"
 
+#ifndef VELOCYPACK_HASH
+// forward for XXH64 function declared elsewhere
+extern "C" unsigned long long XXH64(void const*, size_t, unsigned long long);
+
+#define VELOCYPACK_HASH(mem, size, seed) XXH64(mem, size, seed)
+
+#endif
+
 namespace arangodb {
 namespace velocypack {
-
-// forward for fasthash64 function declared elsewhere
-uint64_t fasthash64(void const*, size_t, uint64_t);
 
 class SliceScope;
 
@@ -55,55 +61,61 @@ class Slice {
   // it can easily be used to traverse larger VPack values.
 
   friend class Builder;
+  friend class ArrayIterator;
+  friend class ObjectIterator;
 
   uint8_t const* _start;
 
  public:
-  Options const* options;
 
   // constructor for an empty Value of type None
-  Slice() : Slice("\x00", &Options::Defaults) {}
+  Slice() noexcept : Slice("\x00") {}
 
-  explicit Slice(uint8_t const* start,
-                 Options const* options = &Options::Defaults)
-      : _start(start), options(options) {
-    VELOCYPACK_ASSERT(options != nullptr);
-  }
+  // creates a slice of type None
+  static Slice noneSlice() noexcept { return Slice("\x00"); }
+  
+  // creates a slice of type Illegal
+  static Slice illegalSlice() noexcept { return Slice("\x17"); }
 
-  explicit Slice(char const* start, Options const* options = &Options::Defaults)
-      : _start(reinterpret_cast<uint8_t const*>(start)), options(options) {
-    VELOCYPACK_ASSERT(options != nullptr);
-  }
+  // creates a slice of type Null
+  static Slice nullSlice() noexcept { return Slice("\x18"); }
+  
+  // creates a slice of type Boolean with false value
+  static Slice falseSlice() noexcept { return Slice("\x19"); }
 
-  Slice(Slice const& other) : _start(other._start), options(other.options) {
-    VELOCYPACK_ASSERT(options != nullptr);
-  }
+  // creates a slice of type Boolean with true value
+  static Slice trueSlice() noexcept { return Slice("\x1a"); }
+  
+  // creates a slice of type Smallint(0)
+  static Slice zeroSlice() noexcept { return Slice("\x30"); }
+  
+  // creates a slice of type Array, empty
+  static Slice emptyArraySlice() noexcept { return Slice("\x01"); }
+  
+  // creates a slice of type Object, empty
+  static Slice emptyObjectSlice() noexcept { return Slice("\x0a"); }
+  
+  // creates a slice of type MinKey
+  static Slice minKeySlice() noexcept { return Slice("\x1e"); }
 
-  Slice(Slice&& other) : _start(other._start), options(other.options) {
-    VELOCYPACK_ASSERT(options != nullptr);
-  }
-
-  Slice& operator=(Slice const& other) {
-    _start = other._start;
-    options = other.options;
-    VELOCYPACK_ASSERT(options != nullptr);
-    return *this;
-  }
-
-  Slice& operator=(Slice&& other) {
-    _start = other._start;
-    options = other.options;
-    VELOCYPACK_ASSERT(options != nullptr);
-    return *this;
-  }
+  // creates a slice of type MaxKey
+  static Slice maxKeySlice() noexcept { return Slice("\x1f"); }
 
   // creates a Slice from Json and adds it to a scope
   static Slice fromJson(SliceScope& scope, std::string const& json,
                         Options const* options = &Options::Defaults);
+  
+  // creates a Slice from a pointer to a uint8_t array
+  explicit Slice(uint8_t const* start) noexcept
+      : _start(start) {}
 
-  uint8_t const* begin() { return _start; }
+  // creates a Slice from a pointer to a char array
+  explicit Slice(char const* start) noexcept
+      : _start(reinterpret_cast<uint8_t const*>(start)) {}
 
-  uint8_t const* begin() const { return _start; }
+  uint8_t const* begin() noexcept { return _start; }
+
+  uint8_t const* begin() const noexcept { return _start; }
 
   uint8_t const* end() { return _start + byteSize(); }
 
@@ -112,12 +124,15 @@ class Slice {
   // No destructor, does not take part in memory management,
 
   // get the type for the slice
-  inline ValueType type() const { return TypeMap[head()]; }
+  inline ValueType type() const noexcept { return TypeMap[head()]; }
 
   char const* typeName() const { return valueTypeName(type()); }
 
   // pointer to the head byte
-  uint8_t const* start() const { return _start; }
+  uint8_t const* start() const noexcept { return _start; }
+
+  // Set new memory position
+  void set(uint8_t const* s) { _start = s; }
 
   // pointer to the head byte
   template <typename T>
@@ -126,95 +141,109 @@ class Slice {
   }
 
   // value of the head byte
-  inline uint8_t head() const { return *_start; }
+  inline uint8_t head() const noexcept { return *_start; }
 
-  inline uint64_t hash() const {
-    return fasthash64(start(), checkOverflow(byteSize()), 0xdeadbeef);
+  // hashes the binary representation of a value
+  inline uint64_t hash(uint64_t seed = 0xdeadbeef) const {
+    return VELOCYPACK_HASH(start(), checkOverflow(byteSize()), seed);
+  }
+
+  // hashes the value, normalizing different representations of
+  // arrays, objects and numbers. this function may produce different
+  // hash values than the binary hash() function
+  uint64_t normalizedHash(uint64_t seed = 0xdeadbeef) const;
+
+  // hashes the binary representation of a String slice. No check
+  // is done if the Slice value is actually of type String
+  inline uint64_t hashString(uint64_t seed = 0xdeadbeef) const noexcept {
+    return VELOCYPACK_HASH(start(), static_cast<size_t>(stringSliceLength()), seed);
   }
 
   // check if slice is of the specified type
-  inline bool isType(ValueType t) const { return type() == t; }
+  inline bool isType(ValueType t) const noexcept { return TypeMap[*_start] == t; }
 
   // check if slice is a None object
-  bool isNone() const { return isType(ValueType::None); }
+  bool isNone() const noexcept { return isType(ValueType::None); }
+  
+  // check if slice is an Illegal object
+  bool isIllegal() const noexcept { return isType(ValueType::Illegal); }
 
   // check if slice is a Null object
-  bool isNull() const { return isType(ValueType::Null); }
+  bool isNull() const noexcept { return isType(ValueType::Null); }
 
   // check if slice is a Bool object
-  bool isBool() const { return isType(ValueType::Bool); }
+  bool isBool() const noexcept { return isType(ValueType::Bool); }
 
   // check if slice is a Bool object - this is an alias for isBool()
-  bool isBoolean() const { return isBool(); }
+  bool isBoolean() const noexcept { return isBool(); }
 
   // check if slice is the Boolean value true
-  bool isTrue() const { return head() == 0x1a; }
+  bool isTrue() const noexcept { return head() == 0x1a; }
 
   // check if slice is the Boolean value false
-  bool isFalse() const { return head() == 0x19; }
+  bool isFalse() const noexcept { return head() == 0x19; }
 
   // check if slice is an Array object
-  bool isArray() const { return isType(ValueType::Array); }
+  bool isArray() const noexcept { return isType(ValueType::Array); }
 
   // check if slice is an Object object
-  bool isObject() const { return isType(ValueType::Object); }
+  bool isObject() const noexcept { return isType(ValueType::Object); }
 
   // check if slice is a Double object
-  bool isDouble() const { return isType(ValueType::Double); }
+  bool isDouble() const noexcept { return isType(ValueType::Double); }
 
   // check if slice is a UTCDate object
-  bool isUTCDate() const { return isType(ValueType::UTCDate); }
+  bool isUTCDate() const noexcept { return isType(ValueType::UTCDate); }
 
   // check if slice is an External object
-  bool isExternal() const { return isType(ValueType::External); }
+  bool isExternal() const noexcept { return isType(ValueType::External); }
 
   // check if slice is a MinKey object
-  bool isMinKey() const { return isType(ValueType::MinKey); }
+  bool isMinKey() const noexcept { return isType(ValueType::MinKey); }
 
   // check if slice is a MaxKey object
-  bool isMaxKey() const { return isType(ValueType::MaxKey); }
+  bool isMaxKey() const noexcept { return isType(ValueType::MaxKey); }
 
   // check if slice is an Int object
-  bool isInt() const { return isType(ValueType::Int); }
+  bool isInt() const noexcept { return isType(ValueType::Int); }
 
   // check if slice is a UInt object
-  bool isUInt() const { return isType(ValueType::UInt); }
+  bool isUInt() const noexcept { return isType(ValueType::UInt); }
 
   // check if slice is a SmallInt object
-  bool isSmallInt() const { return isType(ValueType::SmallInt); }
+  bool isSmallInt() const noexcept { return isType(ValueType::SmallInt); }
 
   // check if slice is a String object
-  bool isString() const { return isType(ValueType::String); }
+  bool isString() const noexcept { return isType(ValueType::String); }
 
   // check if slice is a Binary object
-  bool isBinary() const { return isType(ValueType::Binary); }
+  bool isBinary() const noexcept { return isType(ValueType::Binary); }
 
   // check if slice is a BCD
-  bool isBCD() const { return isType(ValueType::BCD); }
+  bool isBCD() const noexcept { return isType(ValueType::BCD); }
 
   // check if slice is a Custom type
-  bool isCustom() const { return isType(ValueType::Custom); }
+  bool isCustom() const noexcept { return isType(ValueType::Custom); }
 
   // check if a slice is any number type
-  bool isInteger() const {
-    return isType(ValueType::Int) || isType(ValueType::UInt) ||
-           isType(ValueType::SmallInt);
+  bool isInteger() const noexcept {
+    return (isInt() || isUInt() || isSmallInt());
   }
 
   // check if slice is any Number-type object
-  bool isNumber() const { return isInteger() || isDouble(); }
+  bool isNumber() const noexcept { return isInteger() || isDouble(); }
 
-  bool isSorted() const {
+  bool isSorted() const noexcept {
     auto const h = head();
     return (h >= 0x0b && h <= 0x0e);
   }
 
   // return the value for a Bool object
   bool getBool() const {
-    if (type() != ValueType::Bool) {
+    if (!isBool()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Bool");
     }
-    return (head() == 0x1a);  // 0x19 == false, 0x1a == true
+    return isTrue();
   }
 
   // return the value for a Bool object - this is an alias for getBool()
@@ -222,7 +251,7 @@ class Slice {
 
   // return the value for a Double object
   double getDouble() const {
-    if (type() != ValueType::Double) {
+    if (!isDouble()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Double");
     }
     union {
@@ -247,7 +276,7 @@ class Slice {
   // - 0x08      : array with 4-byte index table entries
   // - 0x09      : array with 8-byte index table entries
   Slice at(ValueLength index) const {
-    if (!isType(ValueType::Array)) {
+    if (!isArray()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Array");
     }
 
@@ -258,7 +287,7 @@ class Slice {
 
   // return the number of members for an Array or Object object
   ValueLength length() const {
-    if (type() != ValueType::Array && type() != ValueType::Object) {
+    if (!isArray() && !isObject()) {
       throw Exception(Exception::InvalidValueType,
                       "Expecting type Array or Object");
     }
@@ -281,7 +310,7 @@ class Slice {
     // find number of items
     if (h <= 0x05) {  // No offset table or length, need to compute:
       ValueLength firstSubOffset = findDataOffset(h);
-      Slice first(_start + firstSubOffset, options);
+      Slice first(_start + firstSubOffset);
       return (end - firstSubOffset) / first.byteSize();
     } else if (offsetSize < 8) {
       return readInteger<ValueLength>(_start + offsetSize + 1, offsetSize);
@@ -308,33 +337,73 @@ class Slice {
   // attribute name
   // - 0x12      : object with 8-byte index table entries, not sorted by
   // attribute name
-  Slice keyAt(ValueLength index) const {
-    if (!isType(ValueType::Object)) {
+  Slice keyAt(ValueLength index, bool translate = true) const {
+    if (!isObject()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Object");
     }
 
-    return getNthKey(index, true);
+    return getNthKey(index, translate);
   }
 
   Slice valueAt(ValueLength index) const {
-    if (!isType(ValueType::Object)) {
+    if (!isObject()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Object");
     }
 
     Slice key = getNthKey(index, false);
-    return Slice(key.start() + key.byteSize(), options);
+    return Slice(key.start() + key.byteSize());
+  }
+  
+  // extract the nth key from an Object
+  Slice getNthKey(ValueLength index, bool) const;
+  
+  // extract the nth value from an Object
+  Slice getNthValue(ValueLength index) const {
+    Slice key = getNthKey(index, false);
+    return Slice(key.start() + key.byteSize());
   }
 
   // look for the specified attribute path inside an Object
   // returns a Slice(ValueType::None) if not found
-  Slice get(std::vector<std::string> const& attributes) const {
+  Slice get(std::vector<std::string> const& attributes, 
+            bool resolveExternals = false) const {
     size_t const n = attributes.size();
     if (n == 0) {
       throw Exception(Exception::InvalidAttributePath);
     }
 
     // use ourselves as the starting point
-    Slice last = Slice(start(), options);
+    Slice last = Slice(start());
+    if (resolveExternals) {
+      last = last.resolveExternal();
+    }
+    for (size_t i = 0; i < attributes.size(); ++i) {
+      // fetch subattribute
+      last = last.get(attributes[i]);
+
+      // abort as early as possible
+      if (last.isExternal()) {
+        last = last.resolveExternal();
+      }
+
+      if (last.isNone() || (i + 1 < n && !last.isObject())) {
+        return Slice();
+      }
+    }
+
+    return last;
+  }
+  
+  // look for the specified attribute path inside an Object
+  // returns a Slice(ValueType::None) if not found
+  Slice get(std::vector<char const*> const& attributes) const {
+    size_t const n = attributes.size();
+    if (n == 0) {
+      throw Exception(Exception::InvalidAttributePath);
+    }
+
+    // use ourselves as the starting point
+    Slice last = Slice(start());
     for (size_t i = 0; i < attributes.size(); ++i) {
       // fetch subattribute
       last = last.get(attributes[i]);
@@ -351,6 +420,12 @@ class Slice {
   // look for the specified attribute inside an Object
   // returns a Slice(ValueType::None) if not found
   Slice get(std::string const& attribute) const;
+  
+  // look for the specified attribute inside an Object
+  // returns a Slice(ValueType::None) if not found
+  Slice get(char const* attribute) const {
+    return get(std::string(attribute));
+  }
 
   Slice operator[](std::string const& attribute) const {
     return get(attribute);
@@ -368,15 +443,34 @@ class Slice {
 
   // return the pointer to the data for an External object
   char const* getExternal() const {
-    if (type() != ValueType::External) {
+    if (!isExternal()) {
       throw Exception(Exception::InvalidValueType, "Expecting type External");
     }
     return extractValue<char const*>();
   }
+  
+  // returns the Slice managed by an External or the Slice itself if it's not
+  // an External
+  Slice resolveExternal() const {
+    if (*_start == 0x1d) {
+      return Slice(extractValue<char const*>());
+    }
+    return *this;
+  }
+ 
+  // returns the Slice managed by an External or the Slice itself if it's not
+  // an External, recursive version
+  Slice resolveExternals() const {
+    char const* current = reinterpret_cast<char const*>(_start);
+    while (*current == 0x1d) {
+      current = Slice(current).extractValue<char const*>();
+    }
+    return Slice(current);
+  }
 
   // translates an integer key into a string
   Slice translate() const;
-
+ 
   // return the value for an Int object
   int64_t getInt() const;
 
@@ -448,10 +542,9 @@ class Slice {
 
   // return the value for a UTCDate object
   int64_t getUTCDate() const {
-    if (type() != ValueType::UTCDate) {
+    if (!isUTCDate()) {
       throw Exception(Exception::InvalidValueType, "Expecting type UTCDate");
     }
-    assertType(ValueType::UTCDate);
     uint64_t v = readInteger<uint64_t>(_start + 1, sizeof(uint64_t));
     return toInt64(v);
   }
@@ -513,7 +606,7 @@ class Slice {
 
   // return the value for a Binary object
   uint8_t const* getBinary(ValueLength& length) const {
-    if (type() != ValueType::Binary) {
+    if (!isBinary()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Binary");
     }
 
@@ -527,7 +620,7 @@ class Slice {
 
   // return the length of the Binary slice
   ValueLength getBinaryLength() const {
-    if (type() != ValueType::Binary) {
+    if (!isBinary()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Binary");
     }
 
@@ -539,7 +632,7 @@ class Slice {
 
   // return a copy of the value for a Binary object
   std::vector<uint8_t> copyBinary() const {
-    if (type() != ValueType::Binary) {
+    if (!isBinary()) {
       throw Exception(Exception::InvalidValueType, "Expecting type Binary");
     }
 
@@ -557,27 +650,18 @@ class Slice {
 
   // get the total byte size for the slice, including the head byte
   ValueLength byteSize() const {
+    // check if the type has a fixed length first
+    ValueLength l = FixedTypeLengths[head()];
+    if (l != 0) {
+      // return fixed length
+      return l;
+    }
+
+    // types with dynamic lengths need special treatment:
     switch (type()) {
-      case ValueType::None:
-      case ValueType::Null:
-      case ValueType::Bool:
-      case ValueType::MinKey:
-      case ValueType::MaxKey:
-      case ValueType::SmallInt: {
-        return 1;
-      }
-
-      case ValueType::Double: {
-        return 1 + sizeof(double);
-      }
-
       case ValueType::Array:
       case ValueType::Object: {
         auto const h = head();
-        if (h == 0x01 || h == 0x0a) {
-          // empty Array or Object
-          return 1;
-        }
 
         if (h == 0x13 || h == 0x14) {
           // compact Array or Object
@@ -585,35 +669,18 @@ class Slice {
         }
 
         VELOCYPACK_ASSERT(h <= 0x12);
-        return readInteger<ValueLength>(_start + 1, WidthMap[h]);
-      }
-
-      case ValueType::External: {
-        return 1 + sizeof(char*);
-      }
-
-      case ValueType::UTCDate: {
-        return 1 + sizeof(int64_t);
-      }
-
-      case ValueType::Int: {
-        return static_cast<ValueLength>(1 + (head() - 0x1f));
-      }
-
-      case ValueType::UInt: {
-        return static_cast<ValueLength>(1 + (head() - 0x27));
+        if (h <= 0x14) {
+          return readInteger<ValueLength>(_start + 1, WidthMap[h]);
+        }
+        // fallthrough to exception
+        break;
       }
 
       case ValueType::String: {
-        auto const h = head();
-        if (h == 0xbf) {
-          // long UTF-8 String
-          return static_cast<ValueLength>(
-              1 + 8 + readInteger<ValueLength>(_start + 1, 8));
-        }
-
-        // short UTF-8 String
-        return static_cast<ValueLength>(1 + h - 0x40);
+        VELOCYPACK_ASSERT(head() == 0xbf);
+        // long UTF-8 String
+        return static_cast<ValueLength>(
+            1 + 8 + readInteger<ValueLength>(_start + 1, 8));
       }
 
       case ValueType::Binary: {
@@ -636,33 +703,47 @@ class Slice {
       }
 
       case ValueType::Custom: {
-        if (options->customTypeHandler == nullptr) {
-          throw Exception(Exception::NeedCustomTypeHandler);
-        }
+        auto const h = head();
+        VELOCYPACK_ASSERT(h >= 0xf4);
+        switch (h) {
+          case 0xf4: 
+          case 0xf5: 
+          case 0xf6: {
+            return 2 + readInteger<ValueLength>(_start + 1, 1);
+          }
 
-        return options->customTypeHandler->byteSize(*this);
+          case 0xf7: 
+          case 0xf8: 
+          case 0xf9:  {
+            return 3 + readInteger<ValueLength>(_start + 1, 2);
+          }
+          
+          case 0xfa: 
+          case 0xfb: 
+          case 0xfc: {
+            return 5 + readInteger<ValueLength>(_start + 1, 4);
+          }
+          
+          case 0xfd: 
+          case 0xfe: 
+          case 0xff: {
+            return 9 + readInteger<ValueLength>(_start + 1, 8);
+          }
+
+          default: {
+            // fallthrough intentional
+          }
+        }
+      }
+      default: {
+        // fallthrough intentional
       }
     }
 
     throw Exception(Exception::InternalError);
   }
-
-  Slice makeKey() const;
-
-  int compareString(std::string const& attribute) const;
-  bool isEqualString(std::string const& attribute) const;
-
-  // check if two Slices are equal on the binary level
-  bool equals(Slice const& other) const;
-
-  std::string toJson() const;
-  std::string toString() const;
-  std::string hexType() const;
-
- private:
-  Slice getFromCompactObject(std::string const& attribute) const;
-
-  ValueLength findDataOffset(uint8_t head) const {
+  
+  ValueLength findDataOffset(uint8_t head) const noexcept {
     // Must be called for a nonempty array or object at start():
     VELOCYPACK_ASSERT(head <= 0x12);
     unsigned int fsm = FirstSubMap[head];
@@ -678,19 +759,71 @@ class Slice {
     return 9;
   }
 
+  Slice makeKey() const;
+
+  int compareString(std::string const& attribute) const;
+  bool isEqualString(std::string const& attribute) const;
+
+  // check if two Slices are equal on the binary level
+  bool equals(Slice const& other) const {
+    if (head() != other.head()) {
+      return false;
+    }
+
+    ValueLength const size = byteSize();
+
+    if (size != other.byteSize()) {
+      return false;
+    }
+
+    return (memcmp(start(), other.start(),
+                  arangodb::velocypack::checkOverflow(size)) == 0);
+  }
+  
+  bool operator==(Slice const& other) const { return equals(other); }
+  bool operator!=(Slice const& other) const { return !equals(other); }
+
+  static bool equals(uint8_t const* left, uint8_t const* right) {
+    return Slice(left).equals(Slice(right));
+  }
+
+  std::string toJson(Options const* options = &Options::Defaults) const;
+  std::string toString(Options const* options = &Options::Defaults) const;
+  std::string hexType() const;
+  
+ private:
+  // get the total byte size for a String slice, including the head byte
+  // not check is done if the type of the slice is actually String 
+  ValueLength stringSliceLength() const noexcept {
+    // check if the type has a fixed length first
+    auto const h = head();
+    if (h == 0xbf) {
+      // long UTF-8 String
+      return static_cast<ValueLength>(
+        1 + 8 + readInteger<ValueLength>(_start + 1, 8));
+    }
+    return static_cast<ValueLength>(1 + h - 0x40);
+  }
+
+  // return the value for a UInt object, without checks
+  // returns 0 for invalid values/types
+  uint64_t getUIntUnchecked() const;
+
+  // translates an integer key into a string, without checks
+  Slice translateUnchecked() const;
+
+  Slice getFromCompactObject(std::string const& attribute) const;
+
   // get the offset for the nth member from an Array type
   ValueLength getNthOffset(ValueLength index) const;
 
   // extract the nth member from an Array
   Slice getNth(ValueLength index) const;
 
-  // extract the nth member from an Object
-  Slice getNthKey(ValueLength index, bool) const;
-
   // get the offset for the nth member from a compact Array or Object type
   ValueLength getNthOffsetFromCompact(ValueLength index) const;
 
-  ValueLength indexEntrySize(uint8_t head) const {
+  inline ValueLength indexEntrySize(uint8_t head) const noexcept {
     VELOCYPACK_ASSERT(head <= 0x12);
     return static_cast<ValueLength>(WidthMap[head]);
   }
@@ -726,10 +859,10 @@ class Slice {
   }
 
  private:
+  static ValueLength const FixedTypeLengths[256];
   static ValueType const TypeMap[256];
   static unsigned int const WidthMap[32];
   static unsigned int const FirstSubMap[32];
-  static char const* NullStr;
 };
 
 // a class for keeping Slice allocations in scope
@@ -740,8 +873,7 @@ class SliceScope {
   SliceScope();
   ~SliceScope();
 
-  Slice add(uint8_t const* data, ValueLength size,
-            Options const* options = &Options::Defaults);
+  Slice add(uint8_t const* data, ValueLength size);
 
  private:
   std::vector<uint8_t*> _allocations;
@@ -767,14 +899,6 @@ struct hash<arangodb::velocypack::Slice> {
   }
 };
 
-// implementation of std::equal_to for two Slice objects
-template <>
-struct equal_to<arangodb::velocypack::Slice> {
-  bool operator()(arangodb::velocypack::Slice const& left,
-                  arangodb::velocypack::Slice const& right) const {
-    return left.equals(right);
-  }
-};
 }
 
 std::ostream& operator<<(std::ostream&, arangodb::velocypack::Slice const*);

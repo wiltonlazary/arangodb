@@ -1,0 +1,10 @@
+[console]
+pretty-print = true
+
+[server]
+endpoint = tcp://127.0.0.1:8529
+authentication = false
+
+[javascript]
+startup-directory = @PKGDATADIR@/js
+execute-string = require("@arangodb/foxx/manager").run(ARGUMENTS);

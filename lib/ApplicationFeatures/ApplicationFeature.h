@@ -20,13 +20,14 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef APPLICATION_FEATURES_APPLICATION_FEATURE_H
-#define APPLICATION_FEATURES_APPLICATION_FEATURE_H 1
+#ifndef ARANGODB_APPLICATION_FEATURES_APPLICATION_FEATURE_H
+#define ARANGODB_APPLICATION_FEATURES_APPLICATION_FEATURE_H 1
 
 #include "Basics/Common.h"
 
 #include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/Exceptions.h"
+#include "Logger/Logger.h"
 
 namespace arangodb {
 namespace application_features {
@@ -50,6 +51,8 @@ class ApplicationFeature {
   bool isOptional() const { return _optional; }
   bool isRequired() const { return !_optional; }
 
+  ApplicationServer::FeatureState state() const { return _state; }
+
   // whether or not the feature is enabled
   bool isEnabled() const { return _enabled; }
 
@@ -60,6 +63,9 @@ class ApplicationFeature {
   // ignored and no methods apart from `collectOptions` will be called for the
   // feature
   void disable() { setEnabled(false); }
+
+  // disable the feature, and perform no checks if it's optional
+  void forceDisable() { _enabled = false; }
 
   // enable or disable a feature
   void setEnabled(bool value) {
@@ -102,8 +108,11 @@ class ApplicationFeature {
   // features, after the ApplicationServer has determined which features should
   // be turned off globally. in order to abort further processing in case of
   // invalid parameter values, the feature should bail out by calling
-  // `abortInvalidParameters()`
+  // FATAL_ERROR_EXIT.
   virtual void validateOptions(std::shared_ptr<options::ProgramOptions>);
+
+  // allows process control
+  virtual void daemonize();
 
   // preparation phase for feature in the preparation phase, the features must
   // not start any threads. furthermore, they must not write any files under
@@ -149,9 +158,15 @@ class ApplicationFeature {
   // determine all direct and indirect ancestors of a feature
   std::unordered_set<std::string> ancestors() const;
 
-  // abort program execution because of invalid parameters
-  // TODO: add default implementation
-  void abortInvalidParameters() { std::abort(); }
+ private:
+  // set a feature's state. this method should be called by the
+  // application server only
+  void state(ApplicationServer::FeatureState state) {
+    _state = state;
+  }
+
+  // determine all direct and indirect ancestors of a feature
+  void determineAncestors();
 
  private:
   // pointer to application server
@@ -170,6 +185,12 @@ class ApplicationFeature {
   // a list of start dependencies for the feature
   std::unordered_set<std::string> _startsAfter;
 
+  // list of direct and indirect ancestors of the feature
+  std::unordered_set<std::string> _ancestors;
+
+  // state of feature
+  ApplicationServer::FeatureState _state;
+
   // whether or not the feature is enabled
   bool _enabled;
 
@@ -178,6 +199,8 @@ class ApplicationFeature {
 
   // whether or not the feature requires elevated privileges
   bool _requiresElevatedPrivileges;
+
+  bool _ancestorsDetermined;
 };
 }
 }

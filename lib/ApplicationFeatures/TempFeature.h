@@ -20,8 +20,8 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef APPLICATION_FEATURES_TEMP_FEATURE_H
-#define APPLICATION_FEATURES_TEMP_FEATURE_H 1
+#ifndef ARANGODB_APPLICATION_FEATURES_TEMP_FEATURE_H
+#define ARANGODB_APPLICATION_FEATURES_TEMP_FEATURE_H 1
 
 #include "ApplicationFeatures/ApplicationFeature.h"
 
@@ -32,9 +32,9 @@ class TempFeature final : public application_features::ApplicationFeature {
               std::string const& appname);
 
  public:
-  void collectOptions(std::shared_ptr<options::ProgramOptions>) override;
-  void prepare() override;
-  void start() override;
+  void collectOptions(std::shared_ptr<options::ProgramOptions>) override final;
+  void prepare() override final;
+  void start() override final;
 
  public:
   std::string _path;

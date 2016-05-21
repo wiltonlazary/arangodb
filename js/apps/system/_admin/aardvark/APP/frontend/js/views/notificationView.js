@@ -1,6 +1,6 @@
 /*jshint browser: true */
 /*jshint unused: false */
-/*global Backbone, templateEngine, $, window, noty */
+/*global frontendConfig, Backbone, templateEngine, $, window, noty */
 (function () {
   "use strict";
 
@@ -16,6 +16,15 @@
       this.collection.bind("add", this.renderNotifications.bind(this));
       this.collection.bind("remove", this.renderNotifications.bind(this));
       this.collection.bind("reset", this.renderNotifications.bind(this));
+
+      // TODO save user property if check should be enabled/disabled
+      window.setTimeout(function() {
+        if (frontendConfig.authenticationEnabled === false) {
+          window.arangoHelper.arangoWarning(
+            "Warning", "Authentication is disabled. Do not use this setup in production mode."
+          );
+        }
+      }, 2000);
     },
 
     notificationItem: templateEngine.createTemplate("notificationItem.ejs"),
@@ -49,7 +58,9 @@
         if (event.add) {
           var latestModel = this.collection.at(this.collection.length - 1),
           message = latestModel.get('title'),
-          time = 3000;
+          time = 3000,
+          closeWidth = ['click'],
+          buttons;
 
           if (latestModel.get('content')) {
             message = message + ": " + latestModel.get('content');
@@ -57,7 +68,17 @@
 
           if (latestModel.get('type') === 'error') {
             time = false;
+            closeWidth = ['button'];
+            buttons = [{
+              addClass: 'button-danger', text: 'Close', onClick: function($noty) {
+                $noty.close();
+              }
+            }];
           }
+          else if (latestModel.get('type') === 'warning') {
+            time = 20000;
+          }
+
           $.noty.clearQueue();
           $.noty.closeAll();
 
@@ -73,11 +94,13 @@
             type: latestModel.get('type'),
             layout: 'bottom',
             timeout: time,
+            buttons: buttons,
             animation: {
               open: {height: 'show'},
               close: {height: 'hide'},
               easing: 'swing',
-              speed: 200
+              speed: 200,
+              closeWith: closeWidth
             }
           });
 

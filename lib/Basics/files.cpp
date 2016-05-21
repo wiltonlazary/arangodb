@@ -23,32 +23,22 @@
 
 #include "files.h"
 
-#ifdef TRI_HAVE_DIRENT_H
-#include <dirent.h>
-#endif
-
-#ifdef TRI_HAVE_DIRECT_H
-#include <direct.h>
-#endif
-
-#ifdef TRI_HAVE_SYS_FILE_H
-#include <sys/file.h>
-#endif
-
-#include "Basics/Mutex.h"
-#include "Basics/MutexLocker.h"
-#include "Basics/conversions.h"
-#include "Basics/hashes.h"
-#include "Basics/locks.h"
-#include "Logger/Logger.h"
-#include "Basics/random.h"
-#include "Basics/StringBuffer.h"
-#include "Basics/Thread.h"
-#include "Basics/tri-strings.h"
-
 #ifdef _WIN32
 #include <tchar.h>
 #endif
+
+#include "Basics/FileUtils.h"
+#include "Basics/Mutex.h"
+#include "Basics/MutexLocker.h"
+#include "Basics/StringBuffer.h"
+#include "Basics/Thread.h"
+#include "Basics/conversions.h"
+#include "Basics/hashes.h"
+#include "Basics/locks.h"
+#include "Basics/tri-strings.h"
+#include "Basics/vector.h"
+#include "Logger/Logger.h"
+#include "Random/RandomGenerator.h"
 
 using namespace arangodb::basics;
 using namespace arangodb;
@@ -215,40 +205,33 @@ static void InitializeLockFiles(void) {
 ////////////////////////////////////////////////////////////////////////////////
 
 static void ListTreeRecursively(char const* full, char const* path,
-                                TRI_vector_string_t* result) {
-  size_t j;
+                                std::vector<std::string>& result) {
   std::vector<std::string> dirs = TRI_FilesDirectory(full);
 
-  for (j = 0; j < 2; ++j) {
+  for (size_t j = 0; j < 2; ++j) {
     for (auto const& filename : dirs) {
-      char* newfull = TRI_Concatenate2File(full, filename.c_str());
-      char* newpath;
+      std::string const newFull = arangodb::basics::FileUtils::buildFilename(full, filename);
+      std::string newPath;
 
       if (*path) {
-        newpath = TRI_Concatenate2File(path, filename.c_str());
+        newPath = arangodb::basics::FileUtils::buildFilename(path, filename);
       } else {
-        newpath = TRI_DuplicateString(filename.c_str());
+        newPath = filename;
       }
 
       if (j == 0) {
-        if (TRI_IsDirectory(newfull)) {
-          TRI_PushBackVectorString(result, newpath);
+        if (TRI_IsDirectory(newFull.c_str())) {
+          result.push_back(newPath);
 
-          if (!TRI_IsSymbolicLink(newfull)) {
-            ListTreeRecursively(newfull, newpath, result);
+          if (!TRI_IsSymbolicLink(newFull.c_str())) {
+            ListTreeRecursively(newFull.c_str(), newPath.c_str(), result);
           }
-        } else {
-          TRI_FreeString(TRI_CORE_MEM_ZONE, newpath);
         }
       } else {
-        if (!TRI_IsDirectory(newfull)) {
-          TRI_PushBackVectorString(result, newpath);
-        } else {
-          TRI_FreeString(TRI_CORE_MEM_ZONE, newpath);
+        if (!TRI_IsDirectory(newFull.c_str())) {
+          result.push_back(newPath);
         }
       }
-
-      TRI_FreeString(TRI_CORE_MEM_ZONE, newfull);
     }
   }
 }
@@ -463,8 +446,8 @@ int TRI_MTimeFile(char const* path, int64_t* mtime) {
 /// @brief creates a directory, recursively
 ////////////////////////////////////////////////////////////////////////////////
 
-bool TRI_CreateRecursiveDirectory(char const* path, long& systemError,
-                                  std::string& systemErrorStr) {
+int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
+                                 std::string& systemErrorStr) {
   char* copy;
   char* p;
   char* s;
@@ -485,6 +468,7 @@ bool TRI_CreateRecursiveDirectory(char const* path, long& systemError,
 #endif
         *p = '\0';
         res = TRI_CreateDirectory(copy, systemError, systemErrorStr);
+
         if ((res == TRI_ERROR_FILE_EXISTS) || (res == TRI_ERROR_NO_ERROR)) {
           res = TRI_ERROR_NO_ERROR;
           *p = TRI_DIR_SEPARATOR_CHAR;
@@ -494,6 +478,7 @@ bool TRI_CreateRecursiveDirectory(char const* path, long& systemError,
         }
       }
     }
+
     p++;
   }
 
@@ -507,7 +492,7 @@ bool TRI_CreateRecursiveDirectory(char const* path, long& systemError,
 
   TRI_Free(TRI_CORE_MEM_ZONE, copy);
 
-  return res == TRI_ERROR_NO_ERROR;
+  return res;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -811,13 +796,11 @@ std::vector<std::string> TRI_FilesDirectory(char const* path) {
 /// @brief lists the directory tree including files and directories
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_vector_string_t TRI_FullTreeDirectory(char const* path) {
-  TRI_vector_string_t result;
+std::vector<std::string> TRI_FullTreeDirectory(char const* path) {
+  std::vector<std::string> result;
 
-  TRI_InitVectorString(&result, TRI_CORE_MEM_ZONE);
-
-  TRI_PushBackVectorString(&result, TRI_DuplicateString(""));
-  ListTreeRecursively(path, "", &result);
+  result.push_back("");
+  ListTreeRecursively(path, "", result);
 
   return result;
 }
@@ -1157,7 +1140,7 @@ int TRI_CreateLockFile(char const* filename) {
   }
 
   TRI_FreeString(TRI_CORE_MEM_ZONE, buf);
-  
+
   struct flock lock;
 
   lock.l_start = 0;
@@ -1267,6 +1250,8 @@ int TRI_VerifyLockFile(char const* filename) {
     TRI_CLOSE(fd);
     return TRI_ERROR_NO_ERROR;
   }
+
+#ifdef TRU_HAVE_SETLK
   struct flock lock;
 
   lock.l_start = 0;
@@ -1290,6 +1275,7 @@ int TRI_VerifyLockFile(char const* filename) {
   TRI_CLOSE(fd);
 
   LOG(WARN) << "fcntl on lockfile '" << filename << "' failed: " << TRI_errno_string(canLock);
+#endif
 
   return TRI_ERROR_ARANGO_DATADIR_LOCKED;
 }
@@ -1430,7 +1416,7 @@ char* TRI_GetAbsolutePath(char const* fileName,
   }
 
   // ...........................................................................
-  // The fileName itself was not absolute, so we attempt to amalagmate the
+  // The fileName itself was not absolute, so we attempt to amalgamate the
   // currentWorkingDirectory with the fileName
   // ...........................................................................
 
@@ -1460,6 +1446,13 @@ char* TRI_GetAbsolutePath(char const* fileName,
   }
 
   if (!ok) {
+    // directory name can also start with a backslash
+    if (currentWorkingDirectory[0] == '/' || currentWorkingDirectory[0] == '\\') {
+      ok = true;
+    }
+  }
+
+  if (!ok) {
     return nullptr;
   }
 
@@ -1471,7 +1464,9 @@ char* TRI_GetAbsolutePath(char const* fileName,
   fileLength = strlen(fileName);
 
   if (currentWorkingDirectory[cwdLength - 1] == '\\' ||
-      currentWorkingDirectory[cwdLength - 1] == '/') {
+      currentWorkingDirectory[cwdLength - 1] == '/' ||
+      fileName[0] == '\\' ||
+      fileName[0] == '/') {
     // we do not require a backslash
     result = static_cast<char*>(
         TRI_Allocate(TRI_UNKNOWN_MEM_ZONE,
@@ -1990,11 +1985,10 @@ int TRI_Crc32File(char const* path, uint32_t* crc) {
 static std::string TRI_ApplicationName = "arangodb";
 
 void TRI_SetApplicationName(char const* name) {
+  TRI_ASSERT(name != nullptr);
   TRI_ASSERT(strlen(name) <= 13);
 
-  if (name != nullptr) {
-    TRI_ApplicationName = name;
-  }
+  TRI_ApplicationName = name;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2193,11 +2187,11 @@ int TRI_GetTempName(char const* directory, char** result, bool const createFile,
   // remove trailing PATH_SEPARATOR
   RemoveTrailingSeparator(dir);
 
-  bool res = TRI_CreateRecursiveDirectory(dir, systemError, errorMessage);
+  int res = TRI_CreateRecursiveDirectory(dir, systemError, errorMessage);
 
-  if (!res) {
+  if (res != TRI_ERROR_NO_ERROR) {
     TRI_Free(TRI_CORE_MEM_ZONE, dir);
-    return TRI_ERROR_SYS_ERROR;
+    return res;
   }
 
   if (!TRI_IsDirectory(dir)) {
@@ -2216,7 +2210,7 @@ int TRI_GetTempName(char const* directory, char** result, bool const createFile,
 
     pid = Thread::currentProcessId();
 
-    number = TRI_StringUInt32(TRI_UInt32Random());
+    number = TRI_StringUInt32(RandomGenerator::interval(UINT32_MAX));
     pidString = TRI_StringUInt32(pid);
     tempName = TRI_Concatenate4String("tmp-", pidString, "-", number);
     TRI_Free(TRI_CORE_MEM_ZONE, number);
@@ -2310,7 +2304,7 @@ char* TRI_LocateConfigDirectory() {
 #ifdef _SYSCONFDIR_
   r += _SYSCONFDIR_;
 #else
-  r += "etc\\arangodb";
+  r += "etc\\arangodb3";
 #endif
 
   r += std::string(1, TRI_DIR_SEPARATOR_CHAR);
@@ -2321,21 +2315,19 @@ char* TRI_LocateConfigDirectory() {
 #elif defined(_SYSCONFDIR_)
 
 char* TRI_LocateConfigDirectory() {
-  size_t len;
-  char const* dir = _SYSCONFDIR_;
-  char* v;
-
-  v = LocateConfigDirectoryEnv();
+  char* v = LocateConfigDirectoryEnv();
 
   if (v != nullptr) {
     return v;
   }
 
+  char const* dir = _SYSCONFDIR_;
+
   if (*dir == '\0') {
     return nullptr;
   }
 
-  len = strlen(dir);
+  size_t len = strlen(dir);
 
   if (dir[len - 1] != TRI_DIR_SEPARATOR_CHAR) {
     return TRI_Concatenate2String(dir, "/");
@@ -2367,6 +2359,7 @@ size_t TRI_GetNullBufferSizeFiles() { return sizeof(NullBuffer); }
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_InitializeFiles() {
+  // fill buffer with 0 bytes
   memset(TRI_GetNullBufferFiles(), 0, TRI_GetNullBufferSizeFiles());
 }
 

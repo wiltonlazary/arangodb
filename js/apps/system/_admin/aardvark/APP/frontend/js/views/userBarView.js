@@ -1,6 +1,6 @@
 /*jshint browser: true */
 /*jshint unused: false */
-/*global arangoHelper, Backbone, templateEngine, $, window*/
+/*global frontendConfig, arangoHelper, Backbone, templateEngine, $, window*/
 (function () {
   "use strict";
 
@@ -11,11 +11,12 @@
       "click .tab"                    : "navigateByTab",
       "mouseenter .dropdown"          : "showDropdown",
       "mouseleave .dropdown"          : "hideDropdown",
+      "click #userLogoutIcon"         : "userLogout",
       "click #userLogout"             : "userLogout"
     },
 
-    initialize: function () {
-      this.userCollection = this.options.userCollection;
+    initialize: function (options) {
+      this.userCollection = options.userCollection;
       this.userCollection.fetch({async: true});
       this.userCollection.bind("change:extra", this.render.bind(this));
     },
@@ -40,6 +41,10 @@
       e.preventDefault();
     },
 
+    toggleUserMenu: function() {
+      $('#userBar .subBarDropdown').toggle();
+    },
+
     showDropdown: function () {
       $("#user_dropdown").fadeIn(1);
     },
@@ -49,6 +54,12 @@
     },
 
     render: function () {
+
+      if (frontendConfig.authenticationEnabled === false) {
+        return;
+      }
+
+      var self = this;
 
       var callback = function(error, username) {
         if (error) {
@@ -69,7 +80,7 @@
               img = "img/default_user.png";
             } 
             else {
-              img = "https://s.gravatar.com/avatar/" + img + "?s=24";
+              img = "https://s.gravatar.com/avatar/" + img + "?s=80";
             }
             if (! name) {
               name = "";
@@ -88,6 +99,10 @@
           }
         }
       }.bind(this);
+
+      $('#userBar').on('click', function() {
+        self.toggleUserMenu();
+      });
 
       this.userCollection.whoAmI(callback);
     },

@@ -21,8 +21,8 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_V8_V8_CONV_H
-#define LIB_V8_V8_CONV_H 1
+#ifndef ARANGODB_V8_V8__CONV_H
+#define ARANGODB_V8_V8__CONV_H 1
 
 #include "Basics/Common.h"
 #include "Basics/json.h"
@@ -53,14 +53,6 @@ v8::Handle<v8::Value> TRI_ObjectJson(v8::Isolate* isolate, TRI_json_t const*);
 TRI_json_t* TRI_ObjectToJson(v8::Isolate*, v8::Handle<v8::Value> const);
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief convert a V8 value to a json_t value
-/// this function assumes that the V8 object does not contain any cycles and
-/// does not contain types such as Function, Date or RegExp
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_json_t* TRI_ObjectToJsonSimple(v8::Isolate*, v8::Handle<v8::Value> const);
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief converts an V8 object to a string
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -76,7 +68,7 @@ int64_t TRI_ObjectToInt64(v8::Handle<v8::Value> const);
 /// @brief converts an V8 object to a uint64_t
 ////////////////////////////////////////////////////////////////////////////////
 
-uint64_t TRI_ObjectToUInt64(v8::Handle<v8::Value> const, bool const);
+uint64_t TRI_ObjectToUInt64(v8::Handle<v8::Value> const, bool);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief converts a V8 object to a double

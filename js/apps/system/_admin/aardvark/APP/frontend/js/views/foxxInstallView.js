@@ -2,8 +2,12 @@
 /*global $, Joi, _, arangoHelper, templateEngine, window*/
 (function() {
   "use strict";
+  
+  // mop: copy paste from common/bootstrap/errors.js
+  var errors = {
+    "ERROR_APPLICATION_DOWNLOAD_FAILED" : { "code" : 1752, "message" : "application download failed" },
+  };
 
-  var errors = require("internal").errors;
   var appStoreTemplate = templateEngine.createTemplate("applicationListView.ejs");
 
   var FoxxInstallView = function(opts) {
@@ -261,7 +265,10 @@
       }
       var info = {
         name: window.arangoHelper.escapeHtml($("#new-app-name").val()),
-        collectionNames: _.map($('#new-app-collections').select2("data"), function(d) {
+        documentCollections: _.map($('#new-app-document-collections').select2("data"), function(d) {
+          return window.arangoHelper.escapeHtml(d.text);
+        }),
+        edgeCollections: _.map($('#new-app-edge-collections').select2("data"), function(d) {
           return window.arangoHelper.escapeHtml(d.text);
         }),
         //        authenticated: window.arangoHelper.escapeHtml($("#new-app-name").val()),
@@ -311,7 +318,13 @@
       undefined,
       modalEvents
     );
-    $("#new-app-collections").select2({
+    $("#new-app-document-collections").select2({
+      tags: [],
+      showSearchBox: false,
+      minimumResultsForSearch: -1,
+      width: "336px"
+    });
+    $("#new-app-edge-collections").select2({
       tags: [],
       showSearchBox: false,
       minimumResultsForSearch: -1,
@@ -333,7 +346,8 @@
       window.setTimeout(function() {
         if ($('.select2-drop').is(':visible')) {
           if (!$('#select2-search-field input').is(':focus')) {
-            $('#s2id_new-app-collections').select2('close');
+            $('#s2id_new-app-document-collections').select2('close');
+            $('#s2id_new-app-edge-collections').select2('close');
             checkButton();
           }
         }
@@ -346,7 +360,7 @@
       }
     });
     $("#upload-foxx-zip").uploadFile({
-      url: "/_api/upload?multipart=true",
+      url: arangoHelper.databaseUrl("/_api/upload?multipart=true"),
       allowedTypes: "zip",
       multiple: false,
       onSuccess: installFoxxFromZip.bind(scope)

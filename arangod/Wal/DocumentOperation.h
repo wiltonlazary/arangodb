@@ -4,7 +4,7 @@
 
 #include "Basics/Common.h"
 #include "VocBase/document-collection.h"
-#include "VocBase/headers.h"
+#include "VocBase/MasterPointers.h"
 #include "VocBase/voc-types.h"
 #include "Wal/Marker.h"
 
@@ -22,47 +22,39 @@ struct DocumentOperation {
     SWAPPED,
     REVERTED
   };
-
-  DocumentOperation(arangodb::Transaction* trx, Marker* marker, bool freeMarker,
+  
+  DocumentOperation(arangodb::Transaction* trx, Marker const* marker,
                     TRI_document_collection_t* document,
-                    TRI_voc_document_operation_e type, TRI_voc_rid_t rid)
+                    TRI_voc_document_operation_e type)
       : trx(trx),
         marker(marker),
         document(document),
         header(nullptr),
-        rid(rid),
         tick(0),
         type(type),
-        status(StatusType::CREATED),
-        freeMarker(freeMarker) {
+        status(StatusType::CREATED) {
     TRI_ASSERT(marker != nullptr);
   }
 
   ~DocumentOperation() {
     if (status == StatusType::HANDLED) {
       if (type == TRI_VOC_DOCUMENT_OPERATION_REMOVE) {
-        document->_headersPtr->release(header, false);  // PROTECTED by trx
+        document->_masterPointers.release(header); 
       }
     } else if (status != StatusType::REVERTED) {
       revert();
-    }
-
-    if (marker != nullptr && freeMarker) {
-      delete marker;
     }
   }
 
   DocumentOperation* swap() {
     DocumentOperation* copy =
-        new DocumentOperation(trx, marker, freeMarker, document, type, rid);
+        new DocumentOperation(trx, marker, document, type);
     copy->tick = tick;
     copy->header = header;
     copy->oldHeader = oldHeader;
     copy->status = status;
 
     type = TRI_VOC_DOCUMENT_OPERATION_UNKNOWN;
-    freeMarker = false;
-    marker = nullptr;
     header = nullptr;
     status = StatusType::SWAPPED;
 
@@ -71,6 +63,7 @@ struct DocumentOperation {
 
   void init() {
     if (type == TRI_VOC_DOCUMENT_OPERATION_UPDATE ||
+        type == TRI_VOC_DOCUMENT_OPERATION_REPLACE ||
         type == TRI_VOC_DOCUMENT_OPERATION_REMOVE) {
       // copy the old header into a safe area
       TRI_ASSERT(header != nullptr);
@@ -87,13 +80,6 @@ struct DocumentOperation {
     TRI_ASSERT(header != nullptr);
     TRI_ASSERT(status == StatusType::INDEXED);
 
-    if (type == TRI_VOC_DOCUMENT_OPERATION_UPDATE) {
-      // move header to the end of the list
-      document->_headersPtr->moveBack(header, &oldHeader);  // PROTECTED by trx
-    }
-
-    // free the local marker buffer
-    marker->freeBuffer();
     status = StatusType::HANDLED;
   }
 
@@ -104,36 +90,27 @@ struct DocumentOperation {
     }
 
     if (status == StatusType::INDEXED || status == StatusType::HANDLED) {
-      TRI_RollbackOperationDocumentCollection(trx, document, type, header,
-                                              &oldHeader);
+      document->rollbackOperation(trx, type, header, &oldHeader);
     }
 
     if (type == TRI_VOC_DOCUMENT_OPERATION_INSERT) {
-      document->_headersPtr->release(header, true);  // PROTECTED by trx
-    } else if (type == TRI_VOC_DOCUMENT_OPERATION_UPDATE) {
-      if (status != StatusType::CREATED && status != StatusType::INDEXED) {
-        document->_headersPtr->move(header, &oldHeader);  // PROTECTED by trx in trxCollection
-      }
+      document->_masterPointers.release(header);
+    } else if (type == TRI_VOC_DOCUMENT_OPERATION_UPDATE ||
+               type == TRI_VOC_DOCUMENT_OPERATION_REPLACE) {
       header->copy(oldHeader);
-    } else if (type == TRI_VOC_DOCUMENT_OPERATION_REMOVE) {
-      if (status != StatusType::CREATED) {
-        document->_headersPtr->relink(header, &oldHeader);  // PROTECTED by trx
-      }
     }
 
     status = StatusType::REVERTED;
   }
 
   arangodb::Transaction* trx;
-  Marker* marker;
+  Marker const* marker;
   TRI_document_collection_t* document;
   TRI_doc_mptr_t* header;
-  TRI_doc_mptr_copy_t oldHeader;
-  TRI_voc_rid_t const rid;
+  TRI_doc_mptr_t oldHeader;
   TRI_voc_tick_t tick;
   TRI_voc_document_operation_e type;
   StatusType status;
-  bool freeMarker;
 };
 }
 }

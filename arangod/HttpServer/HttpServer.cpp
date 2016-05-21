@@ -36,6 +36,7 @@
 #include "Logger/Logger.h"
 #include "Scheduler/ListenTask.h"
 #include "Scheduler/Scheduler.h"
+#include "Scheduler/SchedulerFeature.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -46,14 +47,14 @@ using namespace arangodb::rest;
 ////////////////////////////////////////////////////////////////////////////////
 
 int HttpServer::sendChunk(uint64_t taskId, std::string const& data) {
-  std::unique_ptr<TaskData> taskData(new TaskData());
+  auto taskData = std::make_unique<TaskData>();
 
   taskData->_taskId = taskId;
-  taskData->_loop = Scheduler::SCHEDULER->lookupLoopById(taskId);
+  taskData->_loop = SchedulerFeature::SCHEDULER->lookupLoopById(taskId);
   taskData->_type = TaskData::TASK_DATA_CHUNK;
   taskData->_data = data;
 
-  Scheduler::SCHEDULER->signalTask(taskData);
+  SchedulerFeature::SCHEDULER->signalTask(taskData);
 
   return TRI_ERROR_NO_ERROR;
 }
@@ -64,7 +65,8 @@ int HttpServer::sendChunk(uint64_t taskId, std::string const& data) {
 
 HttpServer::HttpServer(Scheduler* scheduler, Dispatcher* dispatcher,
                        HttpHandlerFactory* handlerFactory,
-                       AsyncJobManager* jobManager, double keepAliveTimeout)
+                       AsyncJobManager* jobManager, double keepAliveTimeout,
+                       std::vector<std::string> const& accessControlAllowOrigins)
     : _scheduler(scheduler),
       _dispatcher(dispatcher),
       _handlerFactory(handlerFactory),
@@ -72,7 +74,8 @@ HttpServer::HttpServer(Scheduler* scheduler, Dispatcher* dispatcher,
       _listenTasks(),
       _endpointList(nullptr),
       _commTasks(),
-      _keepAliveTimeout(keepAliveTimeout) {}
+      _keepAliveTimeout(keepAliveTimeout),
+      _accessControlAllowOrigins(accessControlAllowOrigins) {}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief destructs a general server
@@ -85,8 +88,8 @@ HttpServer::~HttpServer() { stopListening(); }
 ////////////////////////////////////////////////////////////////////////////////
 
 HttpCommTask* HttpServer::createCommTask(TRI_socket_t s,
-                                         ConnectionInfo const& info) {
-  return new HttpCommTask(this, s, info, _keepAliveTimeout);
+                                         ConnectionInfo&& info) {
+  return new HttpCommTask(this, s, std::move(info), _keepAliveTimeout);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -105,17 +108,17 @@ void HttpServer::startListening() {
   auto endpoints =
       _endpointList->matching(Endpoint::TransportType::HTTP, encryptionType());
 
-  for (auto&& i : endpoints) {
-    LOG(TRACE) << "trying to bind to endpoint '" << i.first << "' for requests";
+  for (auto& it : endpoints) {
+    LOG(TRACE) << "trying to bind to endpoint '" << it.first << "' for requests";
 
-    bool ok = openEndpoint(i.second);
+    bool ok = openEndpoint(it.second);
 
     if (ok) {
-      LOG(DEBUG) << "bound to endpoint '" << i.first << "'";
+      LOG(DEBUG) << "bound to endpoint '" << it.first << "'";
     } else {
-      LOG(FATAL) << "failed to bind to endpoint '" << i.first
+      LOG(FATAL) << "failed to bind to endpoint '" << it.first
                  << "'. Please check whether another instance is already "
-                    "running or review your endpoints configuration.";
+                    "running using this endpint and review your endpoints configuration.";
       FATAL_ERROR_EXIT();
     }
   }
@@ -160,8 +163,8 @@ void HttpServer::stop() {
 /// @brief handles connection request
 ////////////////////////////////////////////////////////////////////////////////
 
-void HttpServer::handleConnected(TRI_socket_t s, ConnectionInfo const& info) {
-  HttpCommTask* task = createCommTask(s, info);
+void HttpServer::handleConnected(TRI_socket_t s, ConnectionInfo&& info) {
+  HttpCommTask* task = createCommTask(s, std::move(info));
 
   try {
     MUTEX_LOCKER(mutexLocker, _commTasksLock);
@@ -199,16 +202,20 @@ void HttpServer::handleCommunicationFailure(HttpCommTask* task) {
 /// @brief create a job for asynchronous execution (using the dispatcher)
 ////////////////////////////////////////////////////////////////////////////////
 
-bool HttpServer::handleRequestAsync(WorkItem::uptr<HttpHandler>& handler,
+bool HttpServer::handleRequestAsync(HttpCommTask* task,
+                                    WorkItem::uptr<HttpHandler>& handler,
                                     uint64_t* jobId) {
+  bool startThread = task->startThread();
+
   // extract the coordinator flag
   bool found;
-  std::string const& hdrStr = handler->getRequest()->header("x-arango-coordinator", found);
+  std::string const& hdrStr = handler->getRequest()->header(StaticStrings::Coordinator, found);
   char const* hdr = found ? hdrStr.c_str() : nullptr;
 
   // execute the handler using the dispatcher
   std::unique_ptr<Job> job =
       std::make_unique<HttpServerJob>(this, handler, true);
+  task->RequestStatisticsAgent::transferTo(job.get());
 
   // register the job with the job manager
   if (jobId != nullptr) {
@@ -217,13 +224,16 @@ bool HttpServer::handleRequestAsync(WorkItem::uptr<HttpHandler>& handler,
   }
 
   // execute the handler using the dispatcher
-  int res = _dispatcher->addJob(job);
+  int res = _dispatcher->addJob(job, startThread);
 
   // could not add job to job queue
   if (res != TRI_ERROR_NO_ERROR) {
     job->requestStatisticsAgentSetExecuteError();
-    LOG(WARN) << "unable to add job to the job queue: "
-              << TRI_errno_string(res);
+    job->RequestStatisticsAgent::transferTo(task);
+    if (res != TRI_ERROR_DISPATCHER_IS_STOPPING) {
+      LOG(WARN) << "unable to add job to the job queue: "
+                << TRI_errno_string(res);
+    }
     // todo send info to async work manager?
     return false;
   }
@@ -246,14 +256,18 @@ bool HttpServer::handleRequest(HttpCommTask* task,
     return true;
   }
 
+  bool startThread = task->startThread();
+
   // use a dispatcher queue, handler belongs to the job
   std::unique_ptr<Job> job = std::make_unique<HttpServerJob>(this, handler);
+  task->RequestStatisticsAgent::transferTo(job.get());
 
   LOG(TRACE) << "HttpCommTask " << (void*)task << " created HttpServerJob "
              << (void*)job.get();
 
   // add the job to the dispatcher
-  int res = _dispatcher->addJob(job);
+
+  int res = _dispatcher->addJob(job, startThread);
 
   // job is in queue now
   return res == TRI_ERROR_NO_ERROR;
@@ -267,7 +281,7 @@ bool HttpServer::openEndpoint(Endpoint* endpoint) {
   ListenTask* task = new HttpListenTask(this, endpoint);
 
   // ...................................................................
-  // For some reason we have failed in our endeavour to bind to the socket -
+  // For some reason we have failed in our endeavor to bind to the socket -
   // this effectively terminates the server
   // ...................................................................
 
@@ -292,7 +306,9 @@ bool HttpServer::openEndpoint(Endpoint* endpoint) {
 
 void HttpServer::handleRequestDirectly(HttpCommTask* task,
                                        HttpHandler* handler) {
+  task->RequestStatisticsAgent::transferTo(handler);
   HttpHandler::status_t status = handler->executeFull();
+  handler->RequestStatisticsAgent::transferTo(task);
 
   switch (status._status) {
     case HttpHandler::HANDLER_FAILED:

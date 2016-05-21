@@ -214,75 +214,6 @@ ArangoCollection.prototype.index = function (id) {
 ////////////////////////////////////////////////////////////////////////////////
 
 function getEdges (collection, vertex, direction) {
-  var cluster = require("@arangodb/cluster");
-
-  if (cluster.isCoordinator()) {
-    var dbName = require("internal").db._name();
-    var shards = cluster.shardList(dbName, collection.name());
-    var coord = { coordTransactionID: ArangoClusterInfo.uniqid() };
-    var options = { coordTransactionID: coord.coordTransactionID, timeout: 360 };
-    var body;
-
-    if (vertex !== null &&
-        typeof vertex === "object" &&
-        vertex.hasOwnProperty("_id")) {
-      vertex = vertex._id;
-    }
-    if (Array.isArray(vertex)) {
-      var idList = vertex.map(function (v) {
-        if (v !== null) {
-          if (typeof v === "object" &&
-              v.hasOwnProperty("_id")) {
-            return v._id;
-          }
-          if (typeof v === "string") {
-            return v;
-          }
-        }
-      });
-      body = JSON.stringify(idList);
-      shards.forEach(function (shard) {
-        var url = "/_api/edges/" + encodeURIComponent(shard) +
-                  "?direction=" + encodeURIComponent(direction);
-
-        ArangoClusterComm.asyncRequest("post",
-                                       "shard:" + shard,
-                                       dbName,
-                                       url,
-                                       body,
-                                       { },
-                                       options);
-      });
-
-    }
-    else {
-      shards.forEach(function (shard) {
-        var url = "/_api/edges/" + encodeURIComponent(shard) +
-                  "?direction=" + encodeURIComponent(direction) +
-                  "&vertex=" + encodeURIComponent(vertex);
-
-        ArangoClusterComm.asyncRequest("get",
-                                       "shard:" + shard,
-                                       dbName,
-                                       url,
-                                       "",
-                                       { },
-                                       options);
-      });
-    }
-
-    var results = cluster.wait(coord, shards), i;
-    var edges = [ ];
-
-    for (i = 0; i < results.length; ++i) {
-      body = JSON.parse(results[i].body);
-
-      edges = edges.concat(body.edges);
-    }
-
-    return edges;
-  }
-
   if (direction === "in") {
     return collection.INEDGES(vertex);
   }
@@ -355,102 +286,6 @@ ArangoCollection.prototype.any = function () {
   }
 
   return this.ANY();
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock documentsCollectionFirst
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.first = function (count) {
-  var cluster = require("@arangodb/cluster");
-
-  if (cluster.isCoordinator()) {
-    var dbName = require("internal").db._name();
-    var shards = cluster.shardList(dbName, this.name());
-
-    if (shards.length !== 1) {
-      var err = new ArangoError();
-      err.errorNum = internal.errors.ERROR_CLUSTER_UNSUPPORTED.code;
-      err.errorMessage = "operation is not supported in sharded collections";
-
-      throw err;
-    }
-
-    var coord = { coordTransactionID: ArangoClusterInfo.uniqid() };
-    var options = { coordTransactionID: coord.coordTransactionID, timeout: 360 };
-    var shard = shards[0];
-
-    ArangoClusterComm.asyncRequest("put",
-                                   "shard:" + shard,
-                                   dbName,
-                                   "/_api/simple/first",
-                                   JSON.stringify({
-                                     collection: shard,
-                                     count: count
-                                   }),
-                                   { },
-                                   options);
-
-    var results = cluster.wait(coord, shards);
-
-    if (results.length) {
-      var body = JSON.parse(results[0].body);
-      return body.result || null;
-    }
-  }
-  else {
-    return this.FIRST(count);
-  }
-
-  return null;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock documentsCollectionLast
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.last = function (count) {
-  var cluster = require("@arangodb/cluster");
-
-  if (cluster.isCoordinator()) {
-    var dbName = require("internal").db._name();
-    var shards = cluster.shardList(dbName, this.name());
-
-    if (shards.length !== 1) {
-      var err = new ArangoError();
-      err.errorNum = internal.errors.ERROR_CLUSTER_UNSUPPORTED.code;
-      err.errorMessage = "operation is not supported in sharded collections";
-
-      throw err;
-    }
-
-    var coord = { coordTransactionID: ArangoClusterInfo.uniqid() };
-    var options = { coordTransactionID: coord.coordTransactionID, timeout: 360 };
-    var shard = shards[0];
-
-    ArangoClusterComm.asyncRequest("put",
-                                   "shard:" + shard,
-                                   dbName,
-                                   "/_api/simple/last",
-                                   JSON.stringify({
-                                     collection: shard,
-                                     count: count
-                                   }),
-                                   { },
-                                   options);
-
-    var results = cluster.wait(coord, shards);
-
-    if (results.length) {
-      var body = JSON.parse(results[0].body);
-      return body.result || null;
-    }
-  }
-  else {
-    return this.LAST(count);
-  }
-
-  return null;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -751,20 +586,6 @@ ArangoCollection.prototype.updateByExample = function (example,
   query.bindVars.newValue = newValue;
 
   return require("internal").db._query(query).getExtra().stats.writesExecuted; 
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock collectionEnsureCapConstraint
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoCollection.prototype.ensureCapConstraint = function (size, byteSize) {
-  'use strict';
-
-  return this.ensureIndex({
-    type: "cap",
-    size: size || undefined,
-    byteSize: byteSize || undefined
-  });
 };
 
 ////////////////////////////////////////////////////////////////////////////////

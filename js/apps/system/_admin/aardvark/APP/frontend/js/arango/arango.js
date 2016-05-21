@@ -1,5 +1,5 @@
 /*jshint unused: false */
-/*global window, $, document, arangoHelper, _ */
+/*global window, $, document, _, arangoHelper, frontendConfig */
 
 (function() {
   "use strict";
@@ -61,6 +61,23 @@
       };
     },
 
+    getCurrentSub: function() {
+      return window.App.naviView.activeSubMenu;
+    },
+
+    parseError: function(title, err) {
+      var msg;
+
+      try {
+        msg = JSON.parse(err.responseText).errorMessage;
+      }
+      catch (e) {
+        msg = e;
+      }
+
+      this.arangoError(title, msg);
+    },
+
     setCheckboxStatus: function(id) {
       _.each($(id).find('ul').find('li'), function(element) {
          if (!$(element).hasClass("nav-header")) {
@@ -115,22 +132,17 @@
     },
 
     currentDatabase: function (callback) {
-      $.ajax({
-        type: "GET",
-        cache: false,
-        url: "/_api/database/current",
-        contentType: "application/json",
-        processData: false,
-        success: function(data) {
-          callback(false, data.result.name);
-        },
-        error: function(data) {
-          callback(true, data);
-        }
-      });
+      if (frontendConfig.db) {
+        callback(false, frontendConfig.db);
+      }
+      else {
+        callback(true, undefined);
+      }
+      return frontendConfig.db;
     },
 
     allHotkeys: {
+      /*
       global: {
         name: "Site wide",
         content: [{
@@ -141,6 +153,7 @@
           letter: "k"
         }]
       },
+      */
       jsoneditor: {
         name: "AQL editor",
         content: [{
@@ -218,6 +231,94 @@
       }
     },
 
+    //object: {"name": "Menu 1", func: function(), active: true/false }
+    buildSubNavBar: function(menuItems) {
+      $('#subNavigationBar .bottom').html('');
+      var cssClass;
+
+      _.each(menuItems, function(menu, name) {
+        cssClass = '';
+
+        if (menu.active) {
+          cssClass += ' active';
+        }
+        if (menu.disabled) {
+          cssClass += ' disabled';
+        }
+
+        $('#subNavigationBar .bottom').append(
+          '<li class="subMenuEntry ' + cssClass + '"><a>' + name + '</a></li>'
+        );
+        if (!menu.disabled) {
+          $('#subNavigationBar .bottom').children().last().bind('click', function() {
+            window.App.navigate(menu.route, {trigger: true});
+          });
+        }
+      });
+    },
+
+    buildNodeSubNav: function(node, activeKey, disabled) {
+      var menus = {
+        Dashboard: {
+          route: '#node/' + encodeURIComponent(node)
+        },
+        Logs: {
+          route: '#nLogs/' + encodeURIComponent(node),
+          disabled: true
+        }
+      };
+
+      menus[activeKey].active = true;
+      menus[disabled].disabled = true;
+      this.buildSubNavBar(menus);
+    },
+
+    //nav for cluster/nodes view
+    buildNodesSubNav: function(type) {
+
+      var menus = {
+        Coordinators: {
+          route: '#cNodes'
+        },
+        DBServers: {
+          route: '#dNodes'
+        }
+      };
+
+      if (type === 'coordinator') {
+        menus.Coordinators.active = true;
+      }
+      else {
+        menus.DBServers.active = true;
+      }
+
+      this.buildSubNavBar(menus);
+    },
+
+    //nav for collection view
+    buildCollectionSubNav: function(collectionName, activeKey) {
+
+      var defaultRoute = '#collection/' + encodeURIComponent(collectionName);
+
+      var menus = {
+        Content: {
+          route: defaultRoute + '/documents/1'
+        },
+        Indices: {
+          route: '#cIndices/' + encodeURIComponent(collectionName)
+        },
+        Info: {
+          route: '#cInfo/' + encodeURIComponent(collectionName)
+        },
+        Settings: {
+          route: '#cSettings/' + encodeURIComponent(collectionName)
+        }
+      };
+
+      menus[activeKey].active = true;
+      this.buildSubNavBar(menus);
+    },
+
     enableKeyboardHotkeys: function (enable) {
       var hotkeys = window.arangoHelper.hotkeysFunctions;
       if (enable === true) {
@@ -236,7 +337,7 @@
           $.ajax({
             type: "GET",
             cache: false,
-            url: "/_db/"+ encodeURIComponent(db) + "/_api/database/",
+            url: this.databaseUrl("/_api/database/", db),
             contentType: "application/json",
             processData: false,
             success: function() {
@@ -258,6 +359,10 @@
 
     arangoError: function (title, content, info) {
       window.App.notificationList.add({title:title, content: content, info: info, type: 'error'});
+    },
+
+    arangoWarning: function (title, content, info) {
+      window.App.notificationList.add({title:title, content: content, info: info, type: 'warning'});
     },
 
     hideArangoNotifications: function() {
@@ -324,7 +429,7 @@
       $.ajax({
           cache: false,
           type: "POST",
-          url: "/_admin/aardvark/job",
+          url: this.databaseUrl("/_admin/aardvark/job"),
           data: JSON.stringify(object),
           contentType: "application/json",
           processData: false,
@@ -345,7 +450,7 @@
       $.ajax({
           cache: false,
           type: "DELETE",
-          url: "/_admin/aardvark/job/" + encodeURIComponent(id),
+          url: this.databaseUrl("/_admin/aardvark/job/" + encodeURIComponent(id)),
           contentType: "application/json",
           processData: false,
           success: function (data) {
@@ -365,7 +470,7 @@
       $.ajax({
           cache: false,
           type: "DELETE",
-          url: "/_admin/aardvark/job",
+          url: this.databaseUrl("/_admin/aardvark/job"),
           contentType: "application/json",
           processData: false,
           success: function (data) {
@@ -385,7 +490,7 @@
       $.ajax({
           cache: false,
           type: "GET",
-          url: "/_admin/aardvark/job",
+          url: this.databaseUrl("/_admin/aardvark/job"),
           contentType: "application/json",
           processData: false,
           success: function (data) {
@@ -394,6 +499,7 @@
             }
           },
           error: function(data) {
+            console.log("error");
             if (callback) {
               callback(true, data);
             }
@@ -406,7 +512,7 @@
       $.ajax({
           cache: false,
           type: "GET",
-          url: "/_api/job/pending",
+          url: this.databaseUrl("/_api/job/pending"),
           contentType: "application/json",
           processData: false,
           success: function (data) {
@@ -458,7 +564,9 @@
                 });
               }
               else {
-                this.deleteAllAardvarkJobs(); 
+                if (AaJobs.length > 0) {
+                  this.deleteAllAardvarkJobs(); 
+                }
               }
               callback(false, array);
             }
@@ -555,6 +663,24 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+    },
+
+    backendUrl: function(url) {
+      return frontendConfig.basePath + url;
+    },
+
+    databaseUrl: function(url, databaseName) {
+      if (url.substr(0, 5) === '/_db/') {
+        throw new Error("Calling databaseUrl with a databased url (" + url + ") doesn't make any sense");
+      }
+
+      if (!databaseName) {
+        databaseName = '_system';
+        if (frontendConfig.db) {
+          databaseName = frontendConfig.db;
+        }
+      }
+      return this.backendUrl("/_db/" + encodeURIComponent(databaseName) + url);
     }
 
   };

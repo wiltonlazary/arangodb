@@ -8,7 +8,7 @@
 ///
 /// DISCLAIMER
 ///
-/// Copyright 2014-2015 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2012-2014 triagens GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +26,8 @@
 /// Copyright holder is ArangoDB GmbH, Cologne, Germany
 ///
 /// @author Dr. Frank Celler
-/// @author Copyright 2014-2015, ArangoDB GmbH, Cologne, Germany
+/// @author Alan Plum
+/// @author Copyright 2014-2016, ArangoDB GmbH, Cologne, Germany
 /// @author Copyright 2012-2014, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -37,12 +38,15 @@ var Module = require("module");
 
 var fs = require("fs");
 var util = require("util");
+var mimeTypes = require("mime-types");
 var console = require("console");
-var _ = require("lodash");
 
 var arangodb = require("@arangodb");
 var foxxManager = require("@arangodb/foxx/manager");
+var shallowCopy = require("@arangodb/util").shallowCopy;
 var ErrorStackParser = require("error-stack-parser");
+
+const MIME_DEFAULT = 'text/plain; charset=utf-8';
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -95,7 +99,8 @@ var RoutingList = {};
 /// @brief all methods
 ////////////////////////////////////////////////////////////////////////////////
 
-var ALL_METHODS = [ "DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH" ];
+var ALL_METHODS = [ 'DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH' ];
+var BODYFREE_METHODS = [ 'CONNECT', 'DELETE', 'GET', 'HEAD', 'TRACE' ];
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -790,7 +795,7 @@ function analyseRoutes (storage, routes) {
   var urlPrefix = routes.urlPrefix || "";
 
   // use normal root module or app context
-  var appContext = routes.appContext || {
+  var foxxContext = routes.foxxContext || {
     module: new Module(routes.name || 'anonymous')
   };
 
@@ -807,7 +812,7 @@ function analyseRoutes (storage, routes) {
         installRoute(storage[key],
                      r[i],
                      urlPrefix,
-                     appContext);
+                     foxxContext);
       }
     }
   }
@@ -841,11 +846,11 @@ function buildRoutingTree (routes) {
       else {
 
         // use normal root module or app context
-        var appContext = routes.appContext || {
+        var foxxContext = routes.foxxContext || {
           module: new Module(route.name || 'anonymous')
         };
 
-        installRoute(storage.routes, route, "", appContext);
+        installRoute(storage.routes, route, "", foxxContext);
       }
     }
     catch (err) {
@@ -883,7 +888,7 @@ function flattenRouting (routes, path, rexpr, urlParameters, depth, prefix) {
           routes.exact[k],
           path + "/" + k,
           rexpr + "/" + k.replace(/([\.\+\*\?\^\$\(\)\[\]])/g, "\\$1"),
-          _.clone(urlParameters),
+          Object.assign({}, urlParameters),
           depth + 1,
           false));
       }
@@ -920,7 +925,7 @@ function flattenRouting (routes, path, rexpr, urlParameters, depth, prefix) {
         cur = rexpr + match;
       }
 
-      newUrlParameters = _.clone(urlParameters);
+      newUrlParameters = Object.assign({}, urlParameters);
       newUrlParameters[parameter.parameter] = depth;
 
       result = result.concat(flattenRouting(
@@ -938,9 +943,9 @@ function flattenRouting (routes, path, rexpr, urlParameters, depth, prefix) {
   // .............................................................................
 
   if (routes.hasOwnProperty('routes')) {
-    var sorted = _.clone(routes.routes.sort(function(a,b) {
+    var sorted = [...routes.routes.sort(function(a,b) {
       return b.priority - a.priority;
-    }));
+    })];
 
     for (i = 0;  i < sorted.length;  ++i) {
       sorted[i] = {
@@ -966,7 +971,7 @@ function flattenRouting (routes, path, rexpr, urlParameters, depth, prefix) {
       routes.prefix,
       path + "/*",
       rexpr + "(/[^/]+)*/?",
-      urlParameters._shallowCopy,
+      shallowCopy(urlParameters),
       depth + 1,
       true));
   }
@@ -1005,7 +1010,7 @@ function foxxRouting (req, res, options, next) {
   var mount = options.mount;
 
   try {
-    var app = foxxManager.lookupApp(mount);
+    var app = foxxManager.lookupService(mount);
     var devel = app.isDevelopment;
 
     if (devel || ! options.hasOwnProperty('routing')) {
@@ -1013,7 +1018,7 @@ function foxxRouting (req, res, options, next) {
 
       if (devel) {
         foxxManager.rescanFoxx(mount); // TODO can move this to somewhere else?
-        app = foxxManager.lookupApp(mount);
+        app = foxxManager.lookupService(mount);
       }
 
       if (app.isBroken) {
@@ -1027,7 +1032,7 @@ function foxxRouting (req, res, options, next) {
     options.error = {
       code: exports.HTTP_SERVER_ERROR,
       num: arangodb.ERROR_HTTP_SERVER_ERROR,
-      msg: "failed to load foxx mounted at '" + mount + "'",
+      msg: "failed to load Foxx service mounted at '" + mount + "'",
       info: { exception: String(err1) }
     };
 
@@ -1055,7 +1060,7 @@ function foxxRouting (req, res, options, next) {
         res,
         err2,
         {},
-        "failed to execute foxx mounted at '" + mount + "'");
+        "failed to execute Foxx service mounted at '" + mount + "'");
     }
   }
 }
@@ -1075,8 +1080,8 @@ function buildRouting (dbname) {
 
     while (i.hasNext()) {
       var n = i.next();
-      var c = _.extend({}, n);
-      
+      var c = Object.assign({}, n);
+
       c.name = '_routing.document("' + c._key + '")';
 
       routes.push(c);
@@ -1093,7 +1098,7 @@ function buildRouting (dbname) {
     var foxx = foxxes[i];
 
     routes.push({
-      name: "foxx app mounted at '" + foxx + "'",
+      name: "Foxx service mounted at '" + foxx + "'",
       url: { match: foxx + "/*" },
       action: { callback: foxxRouting, options: { mount: foxx } }
     });
@@ -1668,7 +1673,7 @@ function handleRedirect (req, res, options, headers) {
     + "</a>.</p></body></html>";
 
   if (headers !== undefined) {
-    res.headers = headers._shallowCopy;
+    res.headers = shallowCopy(headers);
   }
   else {
     res.headers = {};
@@ -1826,6 +1831,68 @@ function indexNotFound (req, res, collection, index, headers) {
   }
 }
 
+function arangoErrorToHttpCode(num) {
+  if (!num) {
+    return exports.HTTP_SERVER_ERROR;
+  }
+
+  switch (num) {
+    case arangodb.ERROR_INTERNAL:
+    case arangodb.ERROR_OUT_OF_MEMORY:
+    case arangodb.ERROR_GRAPH_TOO_MANY_ITERATIONS:
+    case arangodb.ERROR_ARANGO_DOCUMENT_KEY_BAD:
+      return exports.HTTP_SERVER_ERROR;
+
+    case arangodb.ERROR_FORBIDDEN:
+    case arangodb.ERROR_ARANGO_USE_SYSTEM_DATABASE:
+      return exports.HTTP_FORBIDDEN;
+
+    case arangodb.ERROR_ARANGO_COLLECTION_NOT_FOUND:
+    case arangodb.ERROR_ARANGO_DOCUMENT_NOT_FOUND:
+    case arangodb.ERROR_ARANGO_DATABASE_NOT_FOUND:
+    case arangodb.ERROR_ARANGO_ENDPOINT_NOT_FOUND:
+    case arangodb.ERROR_ARANGO_NO_INDEX:
+    case arangodb.ERROR_ARANGO_INDEX_NOT_FOUND:
+    case arangodb.ERROR_CURSOR_NOT_FOUND:
+    case arangodb.ERROR_USER_NOT_FOUND:
+    case arangodb.ERROR_TASK_NOT_FOUND:
+    case arangodb.ERROR_QUERY_NOT_FOUND:
+      return exports.HTTP_NOT_FOUND;
+
+    case arangodb.ERROR_REQUEST_CANCELED:
+      return exports.HTTP_REQUEST_TIMEOUT;
+
+    case arangodb.ERROR_ARANGO_DUPLICATE_NAME:
+    case arangodb.ERROR_ARANGO_DUPLICATE_IDENTIFIER:
+      return exports.HTTP_CONFLICT;
+
+    case arangodb.ERROR_CLUSTER_UNSUPPORTED:
+      return exports.HTTP_NOT_IMPLEMENTED;
+
+    case arangodb.ERROR_ARANGO_ILLEGAL_NAME:
+    case arangodb.ERROR_ARANGO_UNIQUE_CONSTRAINT_VIOLATED:
+    case arangodb.ERROR_ARANGO_CROSS_COLLECTION_REQUEST:
+    case arangodb.ERROR_ARANGO_INDEX_HANDLE_BAD:
+    case arangodb.ERROR_ARANGO_DOCUMENT_TOO_LARGE:
+    case arangodb.ERROR_ARANGO_COLLECTION_NOT_UNLOADED:
+    case arangodb.ERROR_ARANGO_COLLECTION_TYPE_INVALID:
+    case arangodb.ERROR_ARANGO_ATTRIBUTE_PARSER_FAILED:
+    case arangodb.ERROR_ARANGO_DOCUMENT_KEY_BAD:
+    case arangodb.ERROR_ARANGO_DOCUMENT_KEY_UNEXPECTED:
+    case arangodb.ERROR_ARANGO_DOCUMENT_KEY_MISSING:
+    case arangodb.ERROR_ARANGO_DOCUMENT_TYPE_INVALID:
+    case arangodb.ERROR_ARANGO_DATABASE_NAME_INVALID:
+    case arangodb.ERROR_ARANGO_INVALID_KEY_GENERATOR:
+    case arangodb.ERROR_ARANGO_INVALID_EDGE_ATTRIBUTE:
+    case arangodb.ERROR_ARANGO_COLLECTION_TYPE_MISMATCH:
+    case arangodb.ERROR_ARANGO_COLLECTION_NOT_LOADED:
+    case arangodb.ERROR_ARANGO_DOCUMENT_REV_BAD:
+      return exports.HTTP_BAD;
+  }
+
+  return exports.HTTP_BAD;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief was docuBlock actionsResultException
 ////////////////////////////////////////////////////////////////////////////////
@@ -1851,13 +1918,6 @@ function resultException (req, res, err, headers, verbose) {
   }
 
   if (err instanceof internal.ArangoError) {
-    num = err.errorNum;
-    code = exports.HTTP_BAD;
-
-    if (num === 0) {
-      num = arangodb.ERROR_INTERNAL;
-    }
-
     if (err.errorMessage !== "") {
       if (verbose !== false) {
         info.message = err.errorMessage;
@@ -1867,44 +1927,8 @@ function resultException (req, res, err, headers, verbose) {
       }
     }
 
-    switch (num) {
-      case arangodb.ERROR_INTERNAL:
-      case arangodb.ERROR_OUT_OF_MEMORY:
-      case arangodb.ERROR_GRAPH_TOO_MANY_ITERATIONS:
-        code = exports.HTTP_SERVER_ERROR;
-        break;
-
-      case arangodb.ERROR_FORBIDDEN:
-      case arangodb.ERROR_ARANGO_USE_SYSTEM_DATABASE:
-        code = exports.HTTP_FORBIDDEN;
-        break;
-
-      case arangodb.ERROR_ARANGO_COLLECTION_NOT_FOUND:
-      case arangodb.ERROR_ARANGO_DOCUMENT_NOT_FOUND:
-      case arangodb.ERROR_ARANGO_DATABASE_NOT_FOUND:
-      case arangodb.ERROR_ARANGO_ENDPOINT_NOT_FOUND:
-      case arangodb.ERROR_ARANGO_NO_INDEX:
-      case arangodb.ERROR_ARANGO_INDEX_NOT_FOUND:
-      case arangodb.ERROR_CURSOR_NOT_FOUND:
-      case arangodb.ERROR_USER_NOT_FOUND:
-      case arangodb.ERROR_TASK_NOT_FOUND:
-      case arangodb.ERROR_QUERY_NOT_FOUND:
-        code = exports.HTTP_NOT_FOUND;
-        break;
-
-      case arangodb.ERROR_REQUEST_CANCELED:
-        code = exports.HTTP_REQUEST_TIMEOUT;
-        break;
-
-      case arangodb.ERROR_ARANGO_DUPLICATE_NAME:
-      case arangodb.ERROR_ARANGO_DUPLICATE_IDENTIFIER:
-        code = exports.HTTP_CONFLICT;
-        break;
-
-      case arangodb.ERROR_CLUSTER_UNSUPPORTED:
-        code = exports.HTTP_NOT_IMPLEMENTED;
-        break;
-    }
+    num = err.errorNum || arangodb.ERROR_INTERNAL;
+    code = arangoErrorToHttpCode(num);
   }
   else if (err instanceof TypeError) {
     num = arangodb.ERROR_TYPE_ERROR;
@@ -2061,31 +2085,24 @@ function pathHandler (req, res, options, next) {
 
   if (options.hasOwnProperty('root')) {
     var root = options.root;
-
     filename = fs.join(root, filename);
     encodedFilename = filename;
   }
   if (fs.exists(filename)) {
     res.responseCode = exports.HTTP_OK;
-    res.contentType = arangodb.guessContentType(filename);
-    if (options.hasOwnProperty('gzip')) {
-      if (options.gzip === true) {
-
-        //check if client is capable of gzip encoding
-        if (req.hasOwnProperty('headers')) {
-          if (req.headers.hasOwnProperty('accept-encoding')) {
-            var encoding = req.headers['accept-encoding'];
-            if (encoding.indexOf('gzip') > -1) {
-
-              //check if gzip file is available
-              encodedFilename = encodedFilename + '.gz';
-              if (fs.exists(encodedFilename)) {
-                if (!res.hasOwnProperty('headers')) {
-                  res.headers = {};
-                }
-                res.headers['Content-Encoding'] = "gzip";
-              }
+    res.contentType = options.type || mimeTypes.lookup(filename) || MIME_DEFAULT;
+    if (options.gzip === true) {
+      //check if client is capable of gzip encoding
+      if (req.headers) {
+        var encoding = req.headers['accept-encoding'];
+        if (encoding && encoding.indexOf('gzip') >= 0) {
+          //check if gzip file is available
+          encodedFilename = encodedFilename + '.gz';
+          if (fs.exists(encodedFilename)) {
+            if (!res.headers) {
+              res.headers = {};
             }
+            res.headers['Content-Encoding'] = "gzip";
           }
         }
       }
@@ -2129,6 +2146,7 @@ exports.firstRouting             = firstRouting;
 exports.nextRouting              = nextRouting;
 exports.addCookie                = addCookie;
 exports.stringifyRequest         = stringifyRequest;
+exports.arangoErrorToHttpCode    = arangoErrorToHttpCode;
 
 // standard HTTP responses
 exports.badParameter             = badParameter;
@@ -2165,6 +2183,7 @@ exports.PUT                      = "PUT";
 exports.PATCH                    = "PATCH";
 
 exports.ALL_METHODS              = ALL_METHODS;
+exports.BODYFREE_METHODS         = BODYFREE_METHODS;
 
 // HTTP 2xx
 exports.HTTP_OK                  = 200;
@@ -2200,5 +2219,3 @@ exports.HTTP_SERVER_ERROR        = 500;
 exports.HTTP_NOT_IMPLEMENTED     = 501;
 exports.HTTP_BAD_GATEWAY         = 502;
 exports.HTTP_SERVICE_UNAVAILABLE = 503;
-
-

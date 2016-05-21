@@ -20,6 +20,7 @@
     docid: 0,
 
     customView: false,
+    defaultMode: 'tree',
 
     template: templateEngine.createTemplate("documentView.ejs"),
 
@@ -30,13 +31,22 @@
       "click #document-from" : "navigateToDocument",
       "click #document-to" : "navigateToDocument",
       "keydown #documentEditor .ace_editor" : "keyPress",
-      "keyup .jsoneditor .search input" : "checkSearchBox"
+      "keyup .jsoneditor .search input" : "checkSearchBox",
+      "click .jsoneditor .modes" : "storeMode"
     },
 
     checkSearchBox: function(e) {
       if ($(e.currentTarget).val() === '') {
         this.editor.expandAll();
       }
+    },
+
+    storeMode: function() {
+      var self = this;
+
+      $('.type-modes').on('click', function(elem) {
+        self.defaultMode = $(elem.currentTarget).text().toLowerCase();
+      });
     },
 
     keyPress: function(e) {
@@ -173,6 +183,7 @@
 
     fillEditor: function() {
       var toFill = this.removeReadonlyKeys(this.collection.first().attributes);
+      $('.disabledBread').last().text(this.collection.first().get('_key'));
       this.editor.set(toFill);
       $('.ace_content').attr('font-size','11pt');
     },
@@ -181,8 +192,14 @@
       this.enableSaveButton();
     },
 
+    resize: function() {
+      $('#documentEditor').height($('.centralRow').height() - 300);
+    },
+
     render: function() {
       $(this.el).html(this.template.render({}));
+
+      $('#documentEditor').height($('.centralRow').height() - 300);
       this.disableSaveButton();
       this.breadcrumb();
 
@@ -197,6 +214,7 @@
         iconlib: "fontawesome4"
       };
       this.editor = new JSONEditor(container, options);
+      this.editor.setMode(this.defaultMode);
 
       return this;
     },
@@ -312,14 +330,10 @@
 
     breadcrumb: function () {
       var name = window.location.hash.split("/");
-      $('#transparentHeader').append(
-        '<div class="breadcrumb">'+
-        '<a href="#collections" class="activeBread">Collections</a>'+
-        '<span class="disabledBread"><i class="fa fa-chevron-right"></i></span>'+
-        '<a class="activeBread" href="#collection/' + name[1] + '/documents/1">' + name[1] + '</a>'+
-        '<span class="disabledBread"><i class="fa fa-chevron-right"></i></span>'+
-        '<a class="disabledBread">' + name[2] + '</a>'+
-        '</div>'
+      $('#subNavigationBar .breadcrumb').html(
+        '<a href="#collection/' + name[1] + '/documents/1">Collection: ' + name[1] + '</a>' + 
+        '<i class="fa fa-chevron-right"></i>' +
+        'Document: ' + name[2]
       );
     },
 

@@ -65,7 +65,8 @@ class HttpServer : protected TaskManager {
   //////////////////////////////////////////////////////////////////////////////
 
   HttpServer(Scheduler*, Dispatcher*, HttpHandlerFactory*, AsyncJobManager*,
-             double keepAliveTimeout);
+             double keepAliveTimeout, 
+             std::vector<std::string> const& accessControlAllowOrigins);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief destructs a general server
@@ -92,7 +93,7 @@ class HttpServer : protected TaskManager {
   /// @brief generates a suitable communication task
   //////////////////////////////////////////////////////////////////////////////
 
-  virtual HttpCommTask* createCommTask(TRI_socket_t, const ConnectionInfo&);
+  virtual HttpCommTask* createCommTask(TRI_socket_t, ConnectionInfo&&);
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -118,6 +119,14 @@ class HttpServer : protected TaskManager {
   //////////////////////////////////////////////////////////////////////////////
 
   HttpHandlerFactory* handlerFactory() const { return _handlerFactory; }
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief list of trusted origin urls for CORS 
+  //////////////////////////////////////////////////////////////////////////////
+  
+  std::vector<std::string> const& trustedOrigins() const { 
+    return _accessControlAllowOrigins;
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief adds the endpoint list
@@ -147,7 +156,7 @@ class HttpServer : protected TaskManager {
   /// @brief handles connection request
   //////////////////////////////////////////////////////////////////////////////
 
-  void handleConnected(TRI_socket_t s, const ConnectionInfo& info);
+  void handleConnected(TRI_socket_t s, ConnectionInfo&& info);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief handles a connection close
@@ -165,7 +174,8 @@ class HttpServer : protected TaskManager {
   /// @brief creates a job for asynchronous execution
   //////////////////////////////////////////////////////////////////////////////
 
-  bool handleRequestAsync(arangodb::WorkItem::uptr<HttpHandler>&,
+  bool handleRequestAsync(HttpCommTask*,
+                          arangodb::WorkItem::uptr<HttpHandler>&,
                           uint64_t* jobId);
 
   //////////////////////////////////////////////////////////////////////////////
@@ -258,6 +268,12 @@ class HttpServer : protected TaskManager {
   //////////////////////////////////////////////////////////////////////////////
 
   double _keepAliveTimeout;
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief list of trusted origin urls for CORS 
+  //////////////////////////////////////////////////////////////////////////////
+
+  std::vector<std::string> const _accessControlAllowOrigins;
 };
 }
 }

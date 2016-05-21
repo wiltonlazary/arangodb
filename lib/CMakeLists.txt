@@ -9,69 +9,34 @@ include_directories(.)
 # note that we check-in the generated FLEX/BISON files, therefore they are
 # generate inside the source tree
 
-if (USE_MAINTAINER_MODE)
+if (USE_MAINTAINER_MODE AND NOT MSVC)
   add_custom_command(
     OUTPUT
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser/json-parser.cpp
+      ${CMAKE_SOURCE_DIR}/lib/JsonParser/json-parser.cpp
     WORKING_DIRECTORY
-      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_SOURCE_DIR}
     COMMAND
       ${CMAKE_SOURCE_DIR}/utils/flex-c++.sh
       ${FLEX_EXECUTABLE}
-      lib/JsonParser/json-parser.ll
       lib/JsonParser/json-parser.cpp
-    MAIN_DEPENDENCY
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser/json-parser.ll
-    VERBATIM
-  )
-
-  add_custom_command(
-    OUTPUT
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser.cpp
-    WORKING_DIRECTORY
-      ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMAND
-      ${CMAKE_SOURCE_DIR}/utils/flex-c++.sh
-      ${FLEX_EXECUTABLE}
-      V8/v8-json.ll
-      V8/v8-json.cpp
-    MAIN_DEPENDENCY
-      ${CMAKE_CURRENT_SOURCE_DIR}/V8/v8-json.ll
-    VERBATIM
-  )
-endif ()
-
-# note that we check-in the generated FLEX/BISON files, therefore they are
-# generate inside the source tree
-
-if (USE_MAINTAINER_MODE)
-  add_custom_command(
-    OUTPUT
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser/json-parser.cpp
-    WORKING_DIRECTORY
-      ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMAND
-      ${CMAKE_SOURCE_DIR}/utils/flex-c++.sh
-      ${FLEX_EXECUTABLE}
       lib/JsonParser/json-parser.ll
-      lib/JsonParser/json-parser.cpp
     MAIN_DEPENDENCY
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser/json-parser.ll
+      ${CMAKE_SOURCE_DIR}/lib/JsonParser/json-parser.ll
     VERBATIM
   )
-
+  
   add_custom_command(
     OUTPUT
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/JsonParser.cpp
+      ${CMAKE_SOURCE_DIR}/lib/V8/v8-json.cpp
     WORKING_DIRECTORY
-      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_SOURCE_DIR}
     COMMAND
       ${CMAKE_SOURCE_DIR}/utils/flex-c++.sh
       ${FLEX_EXECUTABLE}
-      V8/v8-json.ll
-      V8/v8-json.cpp
+      lib/V8/v8-json.cpp
+      lib/V8/v8-json.ll
     MAIN_DEPENDENCY
-      ${CMAKE_CURRENT_SOURCE_DIR}/V8/v8-json.ll
+      ${CMAKE_SOURCE_DIR}/lib/V8/v8-json.ll
     VERBATIM
   )
 endif ()
@@ -91,6 +56,8 @@ if (MSVC)
   )
 else ()
   set(LIB_ARANGO_POSIX
+    ApplicationFeatures/DaemonFeature.cpp
+    ApplicationFeatures/SupervisorFeature.cpp
     Basics/locks-posix.cpp
     Basics/memory-map-posix.cpp
     Basics/terminal-utils-posix.cpp
@@ -126,24 +93,44 @@ set(LIB_ARANGO_VPACK
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/velocypack-common.cpp
 )
 
+if (ASM_OPTIMIZATIONS AND CMAKE_TARGET_ARCHITECTURE_CODE MATCHES "x86_64")
+  if (MACOSX OR DARWIN)
+    SET(LIB_ASM_SOURCES
+      Basics/crc1.S
+      )
+  else()
+    SET(LIB_ASM_SOURCES
+      Basics/crc4.S
+      )
+  endif()
+  add_definitions("-DENABLE_ASM_CRC32=1")
+  message("-- Will compile in hand-optimized assembler code for CRC32.")
+else()
+  add_definitions("-DENABLE_ASM_CRC32=0")
+  message("-- Will not compile in hand-optimized assembler code for CRC32.")
+endif()
+
 add_library(${LIB_ARANGO} STATIC
   ${LIB_ARANGO_APPLE}
   ${LIB_ARANGO_MSVC}
   ${LIB_ARANGO_POSIX}
   ${LIB_ARANGO_LINENOISE}
   ${LIB_ARANGO_VPACK}
+  ${LIB_ASM_SOURCES}
   ApplicationFeatures/ApplicationFeature.cpp
   ApplicationFeatures/ApplicationServer.cpp
   ApplicationFeatures/ClientFeature.cpp
   ApplicationFeatures/ConfigFeature.cpp
   ApplicationFeatures/ConsoleFeature.cpp
-  ApplicationFeatures/DatabaseFeature.cpp
   ApplicationFeatures/LanguageFeature.cpp
-  ApplicationFeatures/LoggerFeature.cpp
+  ApplicationFeatures/NonceFeature.cpp
+  ApplicationFeatures/PrivilegeFeature.cpp
   ApplicationFeatures/ShutdownFeature.cpp
-  ApplicationFeatures/SslFeature.cpp
   ApplicationFeatures/TempFeature.cpp
   ApplicationFeatures/V8PlatformFeature.cpp
+  ApplicationFeatures/VersionFeature.cpp
+  ApplicationFeatures/WorkMonitorFeature.cpp
+  Basics/ArangoGlobalContext.cpp
   Basics/AttributeNameParser.cpp
   Basics/Barrier.cpp
   Basics/ConditionLocker.cpp
@@ -155,21 +142,19 @@ add_library(${LIB_ARANGO} STATIC
   Basics/Mutex.cpp
   Basics/MutexLocker.cpp
   Basics/Nonce.cpp
-  Basics/ProgramOptions.cpp
-  Basics/ProgramOptionsDescription.cpp
-  Basics/RandomGenerator.cpp
   Basics/ReadWriteLock.cpp
   Basics/ReadWriteLockCPP11.cpp
+  Basics/StaticStrings.cpp
   Basics/StringBuffer.cpp
   Basics/StringUtils.cpp
   Basics/Thread.cpp
   Basics/ThreadPool.cpp
+  Basics/Timers.cpp
   Basics/Utf8Helper.cpp
-  Basics/VPackStringBufferAdapter.cpp
+  Basics/VelocyPackDumper.cpp
   Basics/VelocyPackHelper.cpp
   Basics/WorkMonitor.cpp
   Basics/application-exit.cpp
-  Basics/associative.cpp
   Basics/conversions.cpp
   Basics/csv.cpp
   Basics/debugging.cpp
@@ -185,9 +170,7 @@ add_library(${LIB_ARANGO} STATIC
   Basics/mimetypes.cpp
   Basics/prime-numbers.cpp
   Basics/process-utils.cpp
-  Basics/random.cpp
   Basics/socket-utils.cpp
-  Basics/ssl-helper.cpp
   Basics/structures.cpp
   Basics/system-functions.cpp
   Basics/terminal-utils.cpp
@@ -196,33 +179,50 @@ add_library(${LIB_ARANGO} STATIC
   Basics/vector.cpp
   Basics/voc-errors.cpp
   Basics/voc-mimetypes.cpp
+  Basics/xxhash.cpp
   Endpoint/Endpoint.cpp
   Endpoint/EndpointIp.cpp
   Endpoint/EndpointIpV4.cpp
   Endpoint/EndpointIpV6.cpp
   Endpoint/EndpointList.cpp
   JsonParser/json-parser.cpp
+  Logger/LogAppender.cpp
+  Logger/LogAppenderFile.cpp
+  Logger/LogAppenderSyslog.cpp
+  Logger/LogAppenderTty.cpp
+  Logger/LogBuffer.cpp
+  Logger/LogLevel.cpp
+  Logger/LogThread.cpp
+  Logger/LogTopic.cpp
   Logger/Logger.cpp
-  ProgramOptions/program-options.cpp
+  Logger/LoggerBufferFeature.cpp
+  Logger/LoggerFeature.cpp
+  Logger/LoggerStream.cpp
+  Random/RandomFeature.cpp
+  Random/RandomGenerator.cpp
+  Random/UniformCharacter.cpp
   Rest/GeneralRequest.cpp
   Rest/GeneralResponse.cpp
   Rest/HttpRequest.cpp
   Rest/HttpResponse.cpp
   Rest/InitializeRest.cpp
-  Rest/SslInterface.cpp
   Rest/Version.cpp
   SimpleHttpClient/ClientConnection.cpp
   SimpleHttpClient/ConnectionManager.cpp
   SimpleHttpClient/GeneralClientConnection.cpp
+  SimpleHttpClient/SimpleHttpClient.cpp
+  SimpleHttpClient/SimpleHttpResult.cpp
+  SimpleHttpClient/SslClientConnection.cpp
+  Ssl/SslFeature.cpp
+  Ssl/SslInterface.cpp
+  Ssl/SslServerFeature.cpp
+  Ssl/ssl-helper.cpp
   Utilities/LineEditor.cpp
   Utilities/ScriptLoader.cpp
   Utilities/ShellBase.cpp
   Zip/ioapi.cpp
   Zip/unzip.cpp
   Zip/zip.cpp
-  SimpleHttpClient/SslClientConnection.cpp
-  SimpleHttpClient/SimpleHttpClient.cpp
-  SimpleHttpClient/SimpleHttpResult.cpp
 )
 
 ################################################################################

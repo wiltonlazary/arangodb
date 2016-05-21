@@ -25,15 +25,13 @@
 #include "Aql/Query.h"
 #include "Aql/QueryRegistry.h"
 #include "Basics/Exceptions.h"
-#include "Basics/json.h"
 #include "Basics/MutexLocker.h"
+#include "Basics/StaticStrings.h"
+#include "Basics/VelocyPackDumper.h"
 #include "Basics/VelocyPackHelper.h"
-#include "Basics/VPackStringBufferAdapter.h"
 #include "Utils/Cursor.h"
 #include "Utils/CursorRepository.h"
-#include "V8Server/ApplicationV8.h"
 
-#include <velocypack/Dumper.h>
 #include <velocypack/Iterator.h>
 #include <velocypack/Value.h>
 #include <velocypack/velocypack-aliases.h>
@@ -43,10 +41,9 @@ using namespace arangodb::rest;
 
 RestCursorHandler::RestCursorHandler(
     HttpRequest* request,
-    std::pair<arangodb::ApplicationV8*, arangodb::aql::QueryRegistry*>* pair)
+    arangodb::aql::QueryRegistry* queryRegistry)
     : RestVocbaseBaseHandler(request),
-      _applicationV8(pair->first),
-      _queryRegistry(pair->second),
+      _queryRegistry(queryRegistry),
       _queryLock(),
       _query(nullptr),
       _queryKilled(false) {}
@@ -101,18 +98,21 @@ void RestCursorHandler::processQuery(VPackSlice const& slice) {
       return;
     }
   }
+  
+  std::shared_ptr<VPackBuilder> bindVarsBuilder;
+  if (!bindVars.isNone()) {
+    bindVarsBuilder.reset(new VPackBuilder);
+    bindVarsBuilder->add(bindVars);
+  }
 
-  VPackBuilder optionsBuilder = buildOptions(slice);
-  VPackSlice options = optionsBuilder.slice();
+  auto options = std::make_shared<VPackBuilder>(buildOptions(slice));
   VPackValueLength l;
   char const* queryString = querySlice.getString(l);
 
   arangodb::aql::Query query(
-      _applicationV8, false, _vocbase, queryString, static_cast<size_t>(l),
-      (!bindVars.isNone()
-           ? arangodb::basics::VelocyPackHelper::velocyPackToJson(bindVars)
-           : nullptr),
-      arangodb::basics::VelocyPackHelper::velocyPackToJson(options),
+      false, _vocbase, queryString, static_cast<size_t>(l),
+      bindVarsBuilder,
+      options,
       arangodb::aql::PART_MAIN);
 
   registerQuery(&query);
@@ -128,35 +128,56 @@ void RestCursorHandler::processQuery(VPackSlice const& slice) {
     THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code, queryResult.details);
   }
 
-  TRI_ASSERT(TRI_IsArrayJson(queryResult.json));
+  VPackSlice qResult = queryResult.result->slice();
+
+  if (qResult.isNone()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+
+  TRI_ASSERT(qResult.isArray());
 
   {
     createResponse(GeneralResponse::ResponseCode::CREATED);
-    _response->setContentType("application/json; charset=utf-8");
+    _response->setContentType(HttpResponse::CONTENT_TYPE_JSON);
 
     std::shared_ptr<VPackBuilder> extra = buildExtra(queryResult);
+    VPackSlice opts = options->slice();
 
     size_t batchSize =
         arangodb::basics::VelocyPackHelper::getNumericValue<size_t>(
-            options, "batchSize", 1000);
-    size_t const n = TRI_LengthArrayJson(queryResult.json);
+            opts, "batchSize", 1000);
+    size_t const n = static_cast<size_t>(qResult.length());
 
     if (n <= batchSize) {
       // result is smaller than batchSize and will be returned directly. no need
       // to create a cursor
 
-      VPackBuilder result;
+      VPackOptions options = VPackOptions::Defaults;
+      options.buildUnindexedArrays = true;
+      options.buildUnindexedObjects = true;
+  
+      // conservatively allocate a few bytes per value to be returned
+      int res;
+      if (n >= 10000) {
+        res = _response->body().reserve(128 * 1024);
+      } else if (n >= 1000) {
+        res = _response->body().reserve(64 * 1024);
+      } else {
+        res = _response->body().reserve(n * 48);
+      }
+
+      if (res != TRI_ERROR_NO_ERROR) {
+        THROW_ARANGO_EXCEPTION(res);
+      }
+
+      VPackBuilder result(&options);
       try {
         VPackObjectBuilder b(&result);
         result.add(VPackValue("result"));
-        int res = arangodb::basics::JsonHelper::toVelocyPack(queryResult.json,
-                                                             result);
-        if (res != TRI_ERROR_NO_ERROR) {
-          THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
-        }
+        result.add(VPackValue(qResult.begin(), VPackValueType::External));
         result.add("hasMore", VPackValue(false));
-        if (arangodb::basics::VelocyPackHelper::getBooleanValue(
-                options, "count", false)) {
+        if (arangodb::basics::VelocyPackHelper::getBooleanValue(opts, "count",
+                                                                false)) {
           result.add("count", VPackValue(n));
         }
         result.add("cached", VPackValue(queryResult.cached));
@@ -172,37 +193,25 @@ void RestCursorHandler::processQuery(VPackSlice const& slice) {
         THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
       }
 
-      arangodb::basics::VPackStringBufferAdapter bufferAdapter(
-          _response->body().stringBuffer());
-      VPackDumper dumper(&bufferAdapter);
-      dumper.dump(result.slice());
+      arangodb::basics::VelocyPackDumper dumper(&(_response->body()), queryResult.context->getVPackOptions());
+      dumper.dumpValue(result.slice());
       return;
     }
 
     // result is bigger than batchSize, and a cursor will be created
-    auto cursors =
-        static_cast<arangodb::CursorRepository*>(_vocbase->_cursorRepository);
+    auto cursors = _vocbase->_cursorRepository;
     TRI_ASSERT(cursors != nullptr);
 
     double ttl = arangodb::basics::VelocyPackHelper::getNumericValue<double>(
-        options, "ttl", 30);
+        opts, "ttl", 30);
     bool count = arangodb::basics::VelocyPackHelper::getBooleanValue(
-        options, "count", false);
+        opts, "count", false);
 
-    // steal the query JSON, cursor will take over the ownership
-    auto j = queryResult.json;
-    std::shared_ptr<VPackBuilder> builder =
-        arangodb::basics::JsonHelper::toVelocyPack(j);
-    {
-      // Temporarily validate that transformation actually worked.
-      // Can be removed again as soon as queryResult returns VPack
-      VPackSlice validate = builder->slice();
-      if (validate.isNone() && j != nullptr) {
-        THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
-      }
-    }
-    arangodb::JsonCursor* cursor = cursors->createFromVelocyPack(
-        builder, batchSize, extra, ttl, count, queryResult.cached);
+    TRI_ASSERT(queryResult.result.get() != nullptr);
+
+    // steal the query result, cursor will take over the ownership
+    arangodb::VelocyPackCursor* cursor = cursors->createFromQueryResult(
+        std::move(queryResult), batchSize, extra, ttl, count);
 
     try {
       _response->body().appendChar('{');
@@ -348,11 +357,7 @@ std::shared_ptr<VPackBuilder> RestCursorHandler::buildExtra(
     }
     if (queryResult.profile != nullptr) {
       extra->add(VPackValue("profile"));
-      int res = arangodb::basics::JsonHelper::toVelocyPack(queryResult.profile,
-                                                           *extra);
-      if (res != TRI_ERROR_NO_ERROR) {
-        return nullptr;
-      }
+      extra->add(queryResult.profile->slice());
       queryResult.profile = nullptr;
     }
     if (queryResult.warnings == nullptr) {
@@ -360,11 +365,7 @@ std::shared_ptr<VPackBuilder> RestCursorHandler::buildExtra(
       extra->close();
     } else {
       extra->add(VPackValue("warnings"));
-      int res = arangodb::basics::JsonHelper::toVelocyPack(queryResult.warnings,
-                                                           *extra);
-      if (res != TRI_ERROR_NO_ERROR) {
-        return nullptr;
-      }
+      extra->add(queryResult.warnings->slice());
     }
   } catch (...) {
     return nullptr;
@@ -387,9 +388,8 @@ void RestCursorHandler::createCursor() {
 
   try {
     bool parseSuccess = true;
-    VPackOptions options;
     std::shared_ptr<VPackBuilder> parsedBody =
-        parseVelocyPackBody(&options, parseSuccess);
+        parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
 
     if (!parseSuccess) {
       return;
@@ -454,7 +454,7 @@ void RestCursorHandler::modifyCursor() {
 
   try {
     createResponse(GeneralResponse::ResponseCode::OK);
-    _response->setContentType("application/json; charset=utf-8");
+    _response->setContentType(HttpResponse::CONTENT_TYPE_JSON);
 
     _response->body().appendChar('{');
     cursor->dump(_response->body());
@@ -507,14 +507,12 @@ void RestCursorHandler::deleteCursor() {
     return;
   }
 
-  createResponse(GeneralResponse::ResponseCode::ACCEPTED);
-  _response->setContentType("application/json; charset=utf-8");
+  VPackBuilder builder;
+  builder.openObject();
+  builder.add("id", VPackValue(id));
+  builder.add("error", VPackValue(false));
+  builder.add("code", VPackValue(static_cast<int>(GeneralResponse::ResponseCode::ACCEPTED)));
+  builder.close();
 
-  arangodb::basics::Json json(arangodb::basics::Json::Object);
-  json.set("id", arangodb::basics::Json(id));  // id as a string!
-  json.set("error", arangodb::basics::Json(false));
-  json.set("code", arangodb::basics::Json(
-                       static_cast<double>(_response->responseCode())));
-
-  json.dump(_response->body());
+  generateResult(GeneralResponse::ResponseCode::ACCEPTED, builder.slice());
 }

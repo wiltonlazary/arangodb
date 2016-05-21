@@ -115,20 +115,16 @@ class Builder {
   // at position base, also determine the length len of the attribute.
   // This takes into account the different possibilities for the format
   // of attribute names:
-  static uint8_t const* findAttrName(uint8_t const* base, uint64_t& len,
-                                     Options const*);
+  static uint8_t const* findAttrName(uint8_t const* base, uint64_t& len);
 
   static void sortObjectIndexShort(uint8_t* objBase,
-                                   std::vector<ValueLength>& offsets,
-                                   Options const*);
+                                   std::vector<ValueLength>& offsets);
 
   static void sortObjectIndexLong(uint8_t* objBase,
-                                  std::vector<ValueLength>& offsets,
-                                  Options const*);
+                                  std::vector<ValueLength>& offsets);
 
   static void sortObjectIndex(uint8_t* objBase,
-                              std::vector<ValueLength>& offsets,
-                              Options const*);
+                              std::vector<ValueLength>& offsets);
 
  public:
   Options const* options;
@@ -257,8 +253,9 @@ class Builder {
   std::shared_ptr<Buffer<uint8_t>> const& buffer() const { return _buffer; }
 
   std::shared_ptr<Buffer<uint8_t>> steal() {
-    std::shared_ptr<Buffer<uint8_t>> res = std::move(_buffer);
-    _buffer.reset(new Buffer<uint8_t>());
+    // After a steal the Builder is broken!
+    std::shared_ptr<Buffer<uint8_t>> res = _buffer;
+    _buffer.reset();
     _pos = 0;
     return res;
   }
@@ -301,7 +298,7 @@ class Builder {
     if (isEmpty()) { 
       return Slice();
     }
-    return Slice(start(), options); 
+    return Slice(start());
   }
 
   // Compute the actual size here, but only when sealed
@@ -331,15 +328,18 @@ class Builder {
     ValueLength const tos = _stack.back();
     return _start[tos] == 0x0b || _start[tos] == 0x14;
   }
-
+  
   // Add a subvalue into an object from a Value:
   uint8_t* add(std::string const& attrName, Value const& sub);
+  uint8_t* add(char const* attrName, Value const& sub);
 
   // Add a subvalue into an object from a Slice:
   uint8_t* add(std::string const& attrName, Slice const& sub);
+  uint8_t* add(char const* attrName, Slice const& sub);
 
   // Add a subvalue into an object from a ValuePair:
   uint8_t* add(std::string const& attrName, ValuePair const& sub);
+  uint8_t* add(char const* attrName, ValuePair const& sub);
   
   // Add all subkeys and subvalues into an object from an ObjectIterator
   // and leaves open the object intentionally
@@ -348,6 +348,38 @@ class Builder {
 
   // Add a subvalue into an array from a Value:
   uint8_t* add(Value const& sub);
+  
+  // Add an External slice to an array
+  uint8_t* addExternal(uint8_t const* sub) {
+    if (options->disallowExternals) {
+      // External values explicitly disallowed as a security
+      // precaution
+      throw Exception(Exception::BuilderExternalsDisallowed);
+    }
+
+    bool haveReported = false;
+    if (!_stack.empty()) {
+      if (! _keyWritten) {
+        reportAdd();
+        haveReported = true;
+      }
+    }
+    try {
+      auto oldPos = _pos;
+      reserveSpace(1 + sizeof(void*));
+      // store pointer. this doesn't need to be portable
+      _start[_pos++] = 0x1d;
+      memcpy(_start + _pos, &sub, sizeof(void*));
+      _pos += sizeof(void*);
+      return _start + oldPos;
+    } catch (...) {
+      // clean up in case of an exception
+      if (haveReported) {
+        cleanupAdd();
+      }
+      throw;
+    }
+  }
 
   // Add a slice to an array
   uint8_t* add(Slice const& sub);
@@ -582,6 +614,53 @@ private:
       }
 
       set(Value(attrName, ValueType::String));
+      _keyWritten = true;
+      return set(sub);
+    } catch (...) {
+      // clean up in case of an exception
+      if (haveReported) {
+        cleanupAdd();
+      }
+      throw;
+    }
+  }
+  
+  template <typename T>
+  uint8_t* addInternal(char const* attrName, T const& sub) {
+    bool haveReported = false;
+    if (!_stack.empty()) {
+      ValueLength& tos = _stack.back();
+      if (_start[tos] != 0x0b && _start[tos] != 0x14) {
+        throw Exception(Exception::BuilderNeedOpenObject);
+      }
+      if (_keyWritten) {
+        throw Exception(Exception::BuilderKeyAlreadyWritten);
+      }
+      reportAdd();
+      haveReported = true;
+    }
+
+    ValueLength attrLength = strlen(attrName);
+
+    try {
+      if (options->attributeTranslator != nullptr) {
+        // check if a translation for the attribute name exists
+        uint8_t const* translated =
+            options->attributeTranslator->translate(attrName, attrLength);
+
+        if (translated != nullptr) {
+          Slice item(translated);
+          ValueLength const l = item.byteSize();
+          reserveSpace(l);
+          memcpy(_start + _pos, translated, checkOverflow(l));
+          _pos += l;
+          _keyWritten = true;
+          return set(sub);
+        }
+        // otherwise fall through to regular behavior
+      }
+
+      set(ValuePair(attrName, attrLength, ValueType::String));
       _keyWritten = true;
       return set(sub);
     } catch (...) {

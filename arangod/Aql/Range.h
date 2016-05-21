@@ -29,10 +29,7 @@
 namespace arangodb {
 namespace aql {
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief Range, to hold a range compactly
-////////////////////////////////////////////////////////////////////////////////
-
 struct Range {
   Range() = delete;
 
@@ -41,6 +38,8 @@ struct Range {
   size_t size() const;
 
   int64_t at(size_t position) const;
+
+  bool isIn(int64_t value) const;
 
   int64_t const _low;
   int64_t const _high;

@@ -1,7 +1,7 @@
 /*jshint browser: true */
 /*jshint unused: false */
 /*global Backbone, EJS, $, flush, window, arangoHelper, nv, d3, localStorage*/
-/*global document, console, Dygraph, _,templateEngine */
+/*global document, console, frontendConfig, Dygraph, _,templateEngine */
 
 (function () {
   "use strict";
@@ -24,6 +24,7 @@
 
     events: {
       // will be filled in initialize
+      "click .subViewNavbar .subMenuEntry" : "toggleViews"
     },
 
     tendencies: {
@@ -161,14 +162,15 @@
       });
     },
 
-    initialize: function () {
-      this.dygraphConfig = this.options.dygraphConfig;
+    initialize: function (options) {
+      this.options = options;
+      this.dygraphConfig = options.dygraphConfig;
       this.d3NotInitialized = true;
       this.events["click .dashboard-sub-bar-menu-sign"] = this.showDetail.bind(this);
       this.events["mousedown .dygraph-rangesel-zoomhandle"] = this.stopUpdating.bind(this);
       this.events["mouseup .dygraph-rangesel-zoomhandle"] = this.startUpdating.bind(this);
 
-      this.serverInfo = this.options.serverToShow;
+      this.serverInfo = options.serverToShow;
 
       if (! this.serverInfo) {
         this.server = "-local-";
@@ -177,6 +179,31 @@
       }
 
       this.history[this.server] = {};
+    },
+
+    toggleViews: function(e) {
+      var id = e.currentTarget.id.split('-')[0], self = this;
+      var views = ['replication', 'requests', 'system'];
+
+      _.each(views, function(view) {
+        if (id !== view) {
+          $('#' + view).hide();
+        }
+        else {
+          $('#' + view).show();
+          self.resize();
+          $(window).resize();
+        }
+      });
+
+      $('.subMenuEntries').children().removeClass('active');
+      $('#' + id + '-statistics').addClass('active');
+
+      window.setTimeout(function() {
+        self.resize();
+        $(window).resize();
+      }, 200);
+
     },
 		
 		cleanupHistory: function(f) {
@@ -309,18 +336,29 @@
         }
       });
 
-      //sort for library
-      opts.file.sort(function(a,b){
-        return new Date(b[0]) - new Date(a[0]);
-      });
+      if (opts.file === undefined) {
+        $('#loadingScreen span').text('Statistics not ready yet. Waiting.');
+        $('#loadingScreen').show();
+        $('#content').hide();
+      }
+      else {
+        $('#content').show();
+        $('#loadingScreen').hide();
 
-      g.updateOptions(opts);
-			
-			//clean up history
-			if (this.history[this.server].hasOwnProperty(figure)) {
-				this.cleanupHistory(figure);
-			}
+        //sort for library
+        opts.file.sort(function(a,b){
+          return new Date(b[0]) - new Date(a[0]);
+        });
 
+        g.updateOptions(opts);
+        
+        //clean up history
+        if (this.history[this.server].hasOwnProperty(figure)) {
+          this.cleanupHistory(figure);
+        }
+      }
+      $(window).trigger('resize');
+      this.resize();
     },
 
     mergeDygraphHistory: function (newData, i) {
@@ -356,6 +394,27 @@
 
         // if we found at list one value besides times, then use the entry
         if (valueList.length > 1) {
+
+          // HTTP requests combine all types to one
+          // 0: date, 1: GET", 2: "PUT", 3: "POST", 4: "DELETE", 5: "PATCH",
+          // 6: "HEAD", 7: "OPTIONS", 8: "OTHER"
+          //
+          var read = 0, write = 0;
+          if (valueList.length === 9) {
+
+            read += valueList[1];
+            read += valueList[6];
+            read += valueList[7];
+            read += valueList[8];
+
+            write += valueList[2];
+            write += valueList[3];
+            write += valueList[4];
+            write += valueList[5];
+
+            valueList = [valueList[0], read, write];
+          }
+
           self.history[self.server][f].push(valueList);
         }
       });
@@ -451,7 +510,7 @@
         },
         {
           "key": "",
-          "color": this.dygraphConfig.colors[0],
+          "color": this.dygraphConfig.colors[2],
           "values": [
             {
               label: "used",
@@ -469,11 +528,11 @@
     mergeBarChartData: function (attribList, newData) {
       var i, v1 = {
         "key": this.barChartsElementNames[attribList[0]],
-        "color": this.dygraphConfig.colors[0],
+        "color": this.dygraphConfig.colors[1],
         "values": []
       }, v2 = {
         "key": this.barChartsElementNames[attribList[1]],
-        "color": this.dygraphConfig.colors[1],
+        "color": this.dygraphConfig.colors[2],
         "values": []
       };
       for (i = newData[attribList[0]].values.length - 1;  0 <= i;  --i) {
@@ -530,7 +589,7 @@
       var self = this;
 
       $.ajax(
-        '/_api/replication/applier-state',
+        arangoHelper.databaseUrl('/_api/replication/applier-state'),
         {async: true}
       ).done(
         function (d) {
@@ -550,9 +609,9 @@
       });
     },
 
-    getStatistics: function (callback) {
+    getStatistics: function (callback, modalView) {
       var self = this;
-      var url = "/_db/_system/_admin/aardvark/statistics/short";
+      var url = arangoHelper.databaseUrl("/_admin/aardvark/statistics/short", "_system");
       var urlParams = "?start=";
 
       if (self.nextStart) {
@@ -563,17 +622,23 @@
       }
 
       if (self.server !== "-local-") {
-        url = self.serverInfo.endpoint + "/_admin/aardvark/statistics/cluster";
         urlParams += "&type=short&DBserver=" + self.serverInfo.target;
 
         if (! self.history.hasOwnProperty(self.server)) {
           self.history[self.server] = {};
         }
       }
+      console.log(url);
 
       $.ajax(
         url + urlParams,
-        {async: true}
+        { 
+          async: true,
+          xhrFields: {
+            withCredentials: true
+          },
+          crossDomain: true
+        }
       ).done(
         function (d) {
           if (d.times.length > 0) {
@@ -584,9 +649,12 @@
             return;
           }
           if (callback) {
-            callback();
+            callback(d.enabled, modalView);
           }
           self.updateCharts();
+      }).error(function(e) {
+        console.log("stat fetch req error");
+        console.log(e);
       });
 
       this.getReplicationStatistics();
@@ -600,7 +668,7 @@
         = "?filter=" + this.dygraphConfig.mapStatToFigure[figure].join();
 
       if (self.server !== "-local-") {
-        url = self.server.endpoint + "/_admin/aardvark/statistics/cluster";
+        url = self.server.endpoint + arangoHelper.databaseUrl("/_admin/aardvark/statistics/cluster");
         urlParams += "&type=long&DBserver=" + self.server.target;
 
         if (! self.history.hasOwnProperty(self.server)) {
@@ -687,8 +755,8 @@
           .showValues(false)
           .showYAxis(false)
           .showXAxis(false)
-          .transitionDuration(100)
-          .tooltips(false)
+          //.transitionDuration(100)
+          //.tooltip(false)
           .showLegend(false)
           .showControls(false)
           .stacked(true);
@@ -803,8 +871,8 @@
             .showValues(false)
             .showYAxis(true)
             .showXAxis(true)
-            .transitionDuration(100)
-            .tooltips(false)
+            //.transitionDuration(100)
+            //.tooltips(false)
             .showLegend(false)
             .showControls(false)
             .forceY([0,1]);
@@ -848,7 +916,15 @@
       return;
     }
     self.timer = window.setInterval(function () {
-        self.getStatistics();
+
+        if (window.App.isCluster) {
+          if (window.location.hash.indexOf(self.serverInfo.target) > -1) {
+            self.getStatistics();
+          }
+        }
+        else {
+          self.getStatistics();
+        }
       },
       self.interval
     );
@@ -875,41 +951,83 @@
   template: templateEngine.createTemplate("dashboardView.ejs"),
 
   render: function (modalView) {
-    if (!modalView)  {
-      $(this.el).html(this.template.render());
-    }
-    var callback = function() {
+
+    var callback = function(enabled, modalView) {
+      if (!modalView)  {
+        $(this.el).html(this.template.render());
+      }
+
+      if (!enabled || frontendConfig.db !== '_system') {
+        $(this.el).html('');
+        if (this.server) {
+          $(this.el).append(
+            '<div style="color: red">Server statistics (' + this.server + ') are disabled.</div>'
+          );
+        }
+        else {
+          $(this.el).append(
+            '<div style="color: red">Server statistics are disabled.</div>'
+          );
+        }
+        return;
+      }
+
       this.prepareDygraphs();
       if (this.isUpdating) {
         this.prepareD3Charts();
         this.prepareResidentSize();
         this.updateTendencies();
+        $(window).trigger('resize');
       }
       this.startUpdating();
+      $(window).resize();
     }.bind(this);
+
+    var errorFunction = function() {
+        $(this.el).html('');
+        $('.contentDiv').remove();
+        $('.headerBar').remove();
+        $('.dashboard-headerbar').remove();
+        $('.dashboard-row').remove();
+        $(this.el).append(
+          '<div style="color: red">You do not have permission to view this page.</div>'
+        );
+        $(this.el).append(
+          '<div style="color: red">You can switch to \'_system\' to see the dashboard.</div>'
+        );
+    }.bind(this);
+
+    if (frontendConfig.db !== '_system') {
+      errorFunction();
+      return;
+    }
 
     var callback2 = function(error, authorized) {
       if (!error) {
         if (!authorized) {
-          $('.contentDiv').remove();
-          $('.headerBar').remove();
-          $('.dashboard-headerbar').remove();
-          $('.dashboard-row').remove();
-          $('#content').append(
-            '<div style="color: red">You do not have permission to view this page.</div>'
-          );
-          $('#content').append(
-            '<div style="color: red">You can switch to \'_system\' to see the dashboard.</div>'
-          );
+          errorFunction();
         }
         else {
-          this.getStatistics(callback);
+          this.getStatistics(callback, modalView);
         }
       }
     }.bind(this);
 
-    //check if user has _system permission
-    this.options.database.hasSystemAccess(callback2);
+    if (window.App.currentDB.get("name") === undefined) {
+      window.setTimeout(function() {
+        if (window.App.currentDB.get("name") !== '_system') {
+          errorFunction();
+          return;
+        }
+        //check if user has _system permission
+        this.options.database.hasSystemAccess(callback2);
+      }.bind(this), 300);
+    }
+    else {
+      //check if user has _system permission
+      this.options.database.hasSystemAccess(callback2);
+    }
+
   }
 });
 }());

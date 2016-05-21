@@ -22,8 +22,8 @@
 /// @author Achim Brandt
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef ARANGOSH_V8_CLIENT_IMPORT_HELPER_H
-#define ARANGOSH_V8_CLIENT_IMPORT_HELPER_H 1
+#ifndef ARANGODB_IMPORT_IMPORT_HELPER_H
+#define ARANGODB_IMPORT_IMPORT_HELPER_H 1
 
 #include "Basics/Common.h"
 
@@ -95,7 +95,23 @@ class ImportHelper {
   /// this is a string because the quote might also be empty if not used
   //////////////////////////////////////////////////////////////////////////////
 
-  void setQuote(std::string quote) { _quote = quote; }
+  void setQuote(std::string const& quote) { _quote = quote; }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief set collection name prefix for _from
+  //////////////////////////////////////////////////////////////////////////////
+
+  void setFrom (std::string const& from) {
+    _fromCollectionPrefix = from;
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief set collection name prefix for _to
+  //////////////////////////////////////////////////////////////////////////////
+
+  void setTo (std::string const& to) {
+    _toCollectionPrefix = to;
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief whether or not backslashes can be used for escaping quotes
@@ -107,7 +123,7 @@ class ImportHelper {
   /// @brief sets the separator
   //////////////////////////////////////////////////////////////////////////////
 
-  void setSeparator(std::string separator) { _separator = separator; }
+  void setSeparator(std::string const& separator) { _separator = separator; }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief sets the createCollection flag
@@ -187,12 +203,13 @@ class ImportHelper {
 
   void reportProgress(int64_t, int64_t, double&);
 
-  std::string getCollectionUrlPart();
+  std::string getCollectionUrlPart() const;
   void beginLine(size_t row);
   void addField(char const*, size_t, size_t row, size_t column, bool escaped);
   void addLastField(char const*, size_t, size_t row, size_t column,
                     bool escaped);
 
+  bool checkCreateCollection();
   void sendCsvBuffer();
   void sendJsonBuffer(char const* str, size_t len, bool isObject);
   void handleResult(httpclient::SimpleHttpResult* result);
@@ -221,6 +238,8 @@ class ImportHelper {
 
   std::string _onDuplicateAction;
   std::string _collectionName;
+  std::string _fromCollectionPrefix;
+  std::string _toCollectionPrefix;
   arangodb::basics::StringBuffer _lineBuffer;
   arangodb::basics::StringBuffer _outputBuffer;
   std::string _firstLine;

@@ -21,223 +21,136 @@
 /// @author Kaveh Vahedipour
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __ARANGODB_CONSENSUS_STORE__
-#define __ARANGODB_CONSENSUS_STORE__
+#ifndef ARANGOD_CONSENSUS_STORE_H
+#define ARANGOD_CONSENSUS_STORE_H 1
 
-#include "AgencyCommon.h"
-
-#include <type_traits>
-#include <utility>
-#include <typeinfo>
-#include <string>
-#include <cassert>
-#include <map>
-#include <vector>
-#include <list>
-#include <memory>
-#include <cstdint>
-
-#include <Basics/Mutex.h>
-#include <Basics/MutexLocker.h>
-#include <Basics/Thread.h>
-#include <Basics/ConditionVariable.h>
-#include <velocypack/Buffer.h>
-#include <velocypack/velocypack-aliases.h>
+#include "Node.h"
 
 namespace arangodb {
 namespace consensus {
 
-enum NodeType {NODE, LEAF};
-
-using namespace arangodb::velocypack;
-
-class StoreException : public std::exception {
-public:
-  explicit StoreException(std::string const& message) : _message(message) {}
-  virtual char const* what() const noexcept override final { return _message.c_str(); }
-private:
-  std::string _message;
-};
-
-enum NODE_EXCEPTION {PATH_NOT_FOUND};
-
-class Node;
-
-typedef std::chrono::system_clock::time_point TimePoint;
-typedef std::map<TimePoint, std::shared_ptr<Node>> TimeTable;
-typedef std::map<std::shared_ptr<Node>, TimePoint> TableTime;
-
-/// @brief Simple tree implementation
-class Node {
-  
-public:
-  // @brief Slash-segemented path 
-  typedef std::vector<std::string> PathType;
-
-  // @brief Child nodes
-  typedef std::map<std::string, std::shared_ptr<Node>> Children;
-  
-  /// @brief Construct with name
-  explicit Node (std::string const& name);
-
-  /// @brief Construct with name and introduce to tree under parent
-  Node (std::string const& name, Node* parent);
-  
-  /// @brief Default dtor
-  virtual ~Node ();
-  
-  /// @brief Get name 
-  std::string const& name() const;
-
-  /// @brief Get full path
-  std::string uri() const;
-
-  /// @brief Apply rhs to this node (deep copy of rhs)
-  Node& operator= (Node const& node);
-
-  /// @brief Apply value slice to this node
-  Node& operator= (arangodb::velocypack::Slice const&);
-
-  /// @brief Check equality with slice
-  bool operator== (arangodb::velocypack::Slice const&) const;
-
-  /// @brief Type of this node (LEAF / NODE)
-  NodeType type() const;
-
-  /// @brief Get child specified by name
-  Node& operator [](std::string name);
-  /// @brief Get child specified by name
-  Node const& operator [](std::string name) const;
-
-  /// @brief Get node specified by path vector  
-  Node& operator ()(std::vector<std::string>& pv);
-  /// @brief Get node specified by path vector  
-  Node const& operator ()(std::vector<std::string>& pv) const;
-  
-  /// @brief Get node specified by path string  
-  Node& operator ()(std::string const& path);
-  /// @brief Get node specified by path string  
-  Node const& operator ()(std::string const& path) const;
-
-  /// @brief Remove node at absolut path
-  bool remove (std::string const& path);
-
-  /// @brief Remove child by name
-  bool removeChild (std::string const& key);
-
-  /// @brief Remove this node and below from tree
-  bool remove();
-
-  /// @brief Get root node
-  Node& root();
-
-  /// @brief Dump to ostream
-  std::ostream& print (std::ostream&) const;
-
-  /// #brief Get path of this node
-  std::string path (); 
-  
-  /// @brief Apply single slice
-  bool applies (arangodb::velocypack::Slice const&);
-
-  /// @brief Create Builder representing this store
-  void toBuilder (Builder&) const;
-
-  /// @brief Create slice from value
-  Slice slice() const;
-
-  /// @brief Get value type  
-  ValueType valueType () const;
-
-  /// @brief Add observer for this node
-  bool addObserver (std::string const&);
-  
-  /// @brief Add observer for this node
-  void notifyObservers () const;
-
-protected:
-
-  /// @brief Add time to live entry
-  virtual bool addTimeToLive (long millis);
-
-  /// @brief Remove time to live entry
-  virtual bool removeTimeToLive ();
-  
-  Node* _parent;
-  Children _children;
-  TimeTable _time_table;
-  TableTime _table_time;
-  Buffer<uint8_t> _value;
-  std::vector<std::string> _observers;
-  std::string _node_name;
-  
-};
-
-inline std::ostream& operator<< (std::ostream& o, Node const& n) {
-  return n.print(o);
-}
-
 class Agent;
 
-/// @brief Key value tree 
-class Store : public Node, public arangodb::Thread {
-  
-public:
-
+/// @brief Key value tree
+class Store : public arangodb::Thread {
+ public:
   /// @brief Construct with name
-  explicit Store (std::string const& name = "root");
+  explicit Store(std::string const& name = "root");
 
   /// @brief Destruct
-  virtual ~Store ();
+  virtual ~Store();
 
-  /// @brief Apply entry in query 
-  std::vector<bool> apply (query_t const& query);
+  /// @brief Copy constructor
+  Store (Store const& other);
 
-  /// @brief Apply entry in query 
-  std::vector<bool> apply (std::vector<Slice> const& query);
+  /// @brief Move constructor
+  Store (Store&& other);
+
+  // @brief Copy assignent
+  Store& operator= (Store const& rhs);
+
+  // @brief Move assigment
+  Store& operator= (Store&& rhs);
+
+  /// @brief Apply entry in query
+  std::vector<bool> apply(query_t const& query);
+
+  /// @brief Apply entry in query
+  std::vector<bool> apply(std::vector<Slice> const& query, bool inform = true);
 
   /// @brief Read specified query from store
-  std::vector<bool> read (query_t const& query, query_t& result) const;
-  
+  std::vector<bool> read(query_t const& query, query_t& result) const;
+
   /// @brief Begin shutdown of thread
-  void beginShutdown () override final;
+  void beginShutdown() override final;
 
   /// @brief Start thread
-  bool start ();
+  bool start();
 
   /// @brief Start thread with access to agent
-  bool start (Agent*);
+  bool start(Agent*);
 
   /// @brief Set name
-  void name (std::string const& name);
+  void name(std::string const& name);
 
   /// @brief Dump everything to builder
-  void dumpToBuilder (Builder&) const;
+  void dumpToBuilder(Builder&) const;
 
-private:
+  /// @brief Notify observers
+  void notifyObservers() const;
+
+  /// @brief See how far the path matches anything in store
+  size_t matchPath(std::vector<std::string> const& pv) const;
+
+  /// @brief Get node specified by path vector
+  Node operator()(std::vector<std::string> const& pv);
+  /// @brief Get node specified by path vector
+  Node const operator()(std::vector<std::string> const& pv) const;
+
+  /// @brief Get node specified by path string
+  Node operator()(std::string const& path);
+  /// @brief Get node specified by path string
+  Node const operator()(std::string const& path) const;
+
+  Store& operator=(VPackSlice const& slice);
+
+  /// @brief Apply single slice
+  bool applies(arangodb::velocypack::Slice const&);
+
+  /// @brief Create Builder representing this store
+  void toBuilder(Builder&) const;
+
+  /// @brief Copy out a node
+  Node const get(std::string const& path) const;
+
+  std::string toJson() const;
+
+  friend class Node;
+
+ private:
+  /// @brief Remove time to live entries for uri
+  void removeTTL(std::string const&);
+
+  std::multimap<TimePoint, std::string>& timeTable();
+  std::multimap<TimePoint, std::string> const& timeTable() const;
+  std::multimap<std::string, std::string>& observerTable();
+  std::multimap<std::string, std::string> const& observerTable() const;
+  std::multimap<std::string, std::string>& observedTable();
+  std::multimap<std::string, std::string> const& observedTable() const;
+
   /// @brief Read individual entry specified in slice into builder
-  bool read  (arangodb::velocypack::Slice const&,
-              arangodb::velocypack::Builder&) const;
+  bool read(arangodb::velocypack::Slice const&,
+            arangodb::velocypack::Builder&) const;
 
   /// @brief Check precondition
-  bool check (arangodb::velocypack::Slice const&) const;
+  bool check(arangodb::velocypack::Slice const&) const;
 
   /// @brief Clear entries, whose time to live has expired
-  void clearTimeTable ();
+  query_t clearExpired() const;
 
   /// @brief Run thread
-  void run () override final;
+  void run() override final;
 
   /// @brief Condition variable guarding removal of expired entries
-  arangodb::basics::ConditionVariable _cv;
+  mutable arangodb::basics::ConditionVariable _cv;
 
   /// @brief Read/Write mutex on database
   mutable arangodb::Mutex _storeLock;
 
+  /// @brief My own agent
   Agent* _agent;
-  
-};
 
-}}
+  /// @brief Table of expiries in tree (only used in root node)
+  std::multimap<TimePoint, std::string> _timeTable;
+
+  /// @brief Table of observers in tree (only used in root node)
+  std::multimap<std::string, std::string> _observerTable;
+  std::multimap<std::string, std::string> _observedTable;
+
+  /// @brief Root node
+  Node _node;
+};
+}
+}
 
 #endif

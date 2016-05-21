@@ -25,23 +25,21 @@
 
 #include "ApplicationFeatures/ClientFeature.h"
 #include "ApplicationFeatures/ConfigFeature.h"
-#include "ApplicationFeatures/LoggerFeature.h"
 #include "ApplicationFeatures/ShutdownFeature.h"
 #include "ApplicationFeatures/TempFeature.h"
+#include "ApplicationFeatures/VersionFeature.h"
+#include "Basics/ArangoGlobalContext.h"
+#include "Logger/LoggerFeature.h"
+#include "ProgramOptions/ProgramOptions.h"
+#include "Random/RandomFeature.h"
 #include "Restore/RestoreFeature.h"
-#include "ProgramOptions2/ProgramOptions.h"
-#include "Rest/InitializeRest.h"
 
 using namespace arangodb;
 using namespace arangodb::application_features;
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief main
-////////////////////////////////////////////////////////////////////////////////
-
 int main(int argc, char* argv[]) {
-  ADB_WindowsEntryFunction();
-  TRIAGENS_REST_INITIALIZE();
+  ArangoGlobalContext context(argc, argv);
+  context.installHup();
 
   std::shared_ptr<options::ProgramOptions> options(new options::ProgramOptions(
       argv[0], "Usage: arangorestore [<options>]", "For more information use:"));
@@ -50,17 +48,26 @@ int main(int argc, char* argv[]) {
 
   int ret;
 
-  server.addFeature(new LoggerFeature(&server));
-  server.addFeature(new TempFeature(&server, "arangorestore"));
-  server.addFeature(new ConfigFeature(&server, "arangorestore"));
   server.addFeature(new ClientFeature(&server));
+  server.addFeature(new ConfigFeature(&server, "arangorestore"));
+  server.addFeature(new LoggerFeature(&server, false));
+  server.addFeature(new RandomFeature(&server));
   server.addFeature(new RestoreFeature(&server, &ret));
-  server.addFeature(new ShutdownFeature(&server, "Restore"));
+  server.addFeature(new ShutdownFeature(&server, {"Restore"}));
+  server.addFeature(new TempFeature(&server, "arangorestore"));
+  server.addFeature(new VersionFeature(&server));
 
-  server.run(argc, argv);
+  try {
+    server.run(argc, argv);
+  } catch (std::exception const& ex) {
+    LOG(ERR) << "arangorestore terminated because of an unhandled exception: "
+             << ex.what();
+    ret = EXIT_FAILURE;
+  } catch (...) {
+    LOG(ERR) << "arangorestore terminated because of an unhandled exception of "
+                "unknown type";
+    ret = EXIT_FAILURE;
+  }
 
-  TRIAGENS_REST_SHUTDOWN;
-  ADB_WindowsExitFunction(ret, nullptr);
-
-  return ret;
+  return context.exit(ret);
 }

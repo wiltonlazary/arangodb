@@ -18,6 +18,11 @@
 * Project Home: https://code.google.com/p/fast-hash/
 * License: [MIT License](https://code.google.com/p/fast-hash/)
 
+### xxHash
+
+* Project Home: https://github.com/Cyan4973/xxHash/
+* License: [BSD License](https://github.com/Cyan4973/xxHash/blob/master/LICENSE)
+
 ### Google V8 4.3.61
 
 * Project Home: https://code.google.com/p/v8/
@@ -137,6 +142,11 @@
 * GITHUB: https://github.com/3rd-Eden/extendible
 * License: [MIT License](https://github.com/bigpipe/extendible/blob/master/README.md)
 
+#### graphql-sync
+
+* GITHUB: https://github.com/arangodb/graphql-sync
+* License: [BSD-style 3-Clause License](https://github.com/arangodb/graphql-sync/blob/master/LICENSE)
+
 #### highlight.js
 
 * Project Home: https://highlightjs.org
@@ -157,6 +167,11 @@
 
 * GITHUB: https://github.com/hapijs/joi
 * License: [BSD-style 3-Clause License](https://github.com/hapijs/joi/blob/master/LICENSE)
+
+### joi-to-json-schema
+
+* GITHUB: https://github.com/lightsofapollo/joi-to-json-schema
+* License: [Apache 2 License](https://github.com/lightsofapollo/joi-to-json-schema/blob/master/README.md#license)
 
 #### JS-YAML
 

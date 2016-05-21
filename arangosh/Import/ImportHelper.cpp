@@ -29,17 +29,18 @@
 #include "Logger/Logger.h"
 #include "Basics/tri-strings.h"
 #include "Basics/VelocyPackHelper.h"
+#include "Rest/GeneralResponse.h"
 #include "Rest/HttpRequest.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
 
+#include <velocypack/Builder.h>
 #include <velocypack/Iterator.h>
 #include <velocypack/velocypack-aliases.h>
 
 using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::httpclient;
-using namespace std;
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief helper function to determine if a field value is an integer
@@ -202,7 +203,7 @@ bool ImportHelper::importDelimited(std::string const& collectionName,
   size_t separatorLength;
   char* separator =
       TRI_UnescapeUtf8String(TRI_UNKNOWN_MEM_ZONE, _separator.c_str(),
-                             _separator.size(), &separatorLength);
+                             _separator.size(), &separatorLength, true);
 
   if (separator == nullptr) {
     if (fd != STDIN_FILENO) {
@@ -429,26 +430,8 @@ void ImportHelper::reportProgress(int64_t totalLength, int64_t totalRead,
 /// @brief return the collection-related URL part
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string ImportHelper::getCollectionUrlPart() {
-  std::string part("collection=" + StringUtils::urlEncode(_collectionName));
-
-  if (_firstChunk) {
-    if (_createCollection) {
-      part += "&createCollection=yes";
-    }
-
-    if (!_createCollectionType.empty()) {
-      part += "&createCollectionType=" + _createCollectionType;
-    }
-
-    if (_overwrite) {
-      part += "&overwrite=yes";
-    }
-
-    _firstChunk = false;
-  }
-
-  return part;
+std::string ImportHelper::getCollectionUrlPart() const {
+  return std::string("collection=" + StringUtils::urlEncode(_collectionName));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -614,15 +597,75 @@ void ImportHelper::addLastField(char const* field, size_t fieldLength,
   }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief check if we must create the target collection, and create it if
+/// required
+////////////////////////////////////////////////////////////////////////////////
+  
+bool ImportHelper::checkCreateCollection() {
+  if (!_firstChunk || !_createCollection) {
+    return true;
+  }
+  
+  std::string const url("/_api/collection");
+
+  VPackBuilder builder;
+  builder.openObject();
+  builder.add("name", VPackValue(_collectionName));
+  builder.add("type", VPackValue(_createCollectionType == "edge" ? 3 : 2));
+  builder.close();
+
+  std::string data = builder.slice().toJson();
+  
+  std::unordered_map<std::string, std::string> headerFields;
+  std::unique_ptr<SimpleHttpResult> result(_client->request(
+      GeneralRequest::RequestType::POST, url, data.c_str(),
+      data.size(), headerFields));
+
+  if (result == nullptr) {
+    return false;
+  }
+
+  auto code = static_cast<GeneralResponse::ResponseCode>(result->getHttpReturnCode());
+  if (code == GeneralResponse::ResponseCode::CONFLICT ||
+      code == GeneralResponse::ResponseCode::OK ||
+      code == GeneralResponse::ResponseCode::CREATED ||
+      code == GeneralResponse::ResponseCode::ACCEPTED) {
+    // collection already exists or was created successfully
+    return true;
+  }
+
+  LOG(ERR) << "unable to create collection '" << _collectionName << "', server returned status code: " << static_cast<int>(code); 
+  _hasError = true;
+  return false;
+}
+
 void ImportHelper::sendCsvBuffer() {
   if (_hasError) {
     return;
   }
+  
+  if (!checkCreateCollection()) {
+    return;
+  }
 
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
   std::string url("/_api/import?" + getCollectionUrlPart() + "&line=" +
                   StringUtils::itoa(_rowOffset) + "&details=true&onDuplicate=" +
                   StringUtils::urlEncode(_onDuplicateAction));
+
+  if (!_fromCollectionPrefix.empty()) {
+    url += "&fromPrefix=" + StringUtils::urlEncode(_fromCollectionPrefix);
+  }
+  if (!_toCollectionPrefix.empty()) {
+    url += "&toPrefix=" + StringUtils::urlEncode(_toCollectionPrefix);
+  }
+  if (_firstChunk && _overwrite) {
+    url += "&overwrite=true";
+  }
+  
+  _firstChunk = false;
+
   std::unique_ptr<SimpleHttpResult> result(_client->request(
       GeneralRequest::RequestType::POST, url, _outputBuffer.c_str(),
       _outputBuffer.length(), headerFields));
@@ -638,6 +681,10 @@ void ImportHelper::sendJsonBuffer(char const* str, size_t len, bool isObject) {
     return;
   }
 
+  if (!checkCreateCollection()) {
+    return;
+  }
+
   // build target url
   std::string url("/_api/import?" + getCollectionUrlPart() +
                   "&details=true&onDuplicate=" +
@@ -648,7 +695,19 @@ void ImportHelper::sendJsonBuffer(char const* str, size_t len, bool isObject) {
     url += "&type=documents";
   }
 
-  std::map<std::string, std::string> headerFields;
+  if (!_fromCollectionPrefix.empty()) {
+    url += "&fromPrefix=" + StringUtils::urlEncode(_fromCollectionPrefix);
+  }
+  if (!_toCollectionPrefix.empty()) {
+    url += "&toPrefix=" + StringUtils::urlEncode(_toCollectionPrefix);
+  }
+  if (_firstChunk && _overwrite) {
+    url += "&overwrite=true";
+  }
+  
+  _firstChunk = false;
+
+  std::unordered_map<std::string, std::string> headerFields;
   std::unique_ptr<SimpleHttpResult> result(_client->request(
       GeneralRequest::RequestType::POST, url, str, len, headerFields));
 

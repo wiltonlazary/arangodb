@@ -29,7 +29,6 @@
 var internal = require("internal");
 var fs = require("fs");
 var console = require("console");
-var _ = require('lodash');
 
 var JSHINT = require("jshint").JSHINT;
 var jshintrc = {};
@@ -56,8 +55,7 @@ function RunTest(path, options) {
   }
 
   var result = {};
-  content = content.replace("/*jslint", "/*xxxxxx");
-  result["passed"] = JSHINT(content, _.extend({}, jshintrc, options));
+  result["passed"] = JSHINT(content, Object.assign({}, jshintrc, options));
 
   if (JSHINT.errors) {
     result["errors"] = JSHINT.errors;
@@ -89,17 +87,14 @@ function RunCommandLineTests(options) {
             continue;
           }
 
-          var position = file + ":" + err.line + ", " + err.character;
-          var reason = err.reason;
-
-          console.error("jslint: %s : %s", position, reason);
+          console.error(`jslint: ${file}:${err.line},${err.character} ${err.reason} (${err.code})`);
         }
       } else {
-        console.info("jslint: %s passed", file);
+        console.log(`jslint: ${file} passed`);
       }
     } catch (err) {
-      print("cannot run test file '" + file + "': " + err);
-      print(err.stack);
+      console.error(`cannot run test file "${file}": ${err}`);
+      console.error(err.stack);
       result = false;
     }
   }

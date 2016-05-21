@@ -25,16 +25,10 @@
 
 using namespace arangodb::aql;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief Range constructor
-////////////////////////////////////////////////////////////////////////////////
-
 Range::Range(int64_t low, int64_t high) : _low(low), _high(high) {}
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief get number of elements in Range
-////////////////////////////////////////////////////////////////////////////////
-
 size_t Range::size() const {
   if (_low <= _high) {
     // e.g. 1..1, 1..10 etc.
@@ -44,10 +38,7 @@ size_t Range::size() const {
   return static_cast<size_t>(_low - _high + 1);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief get element at position
-////////////////////////////////////////////////////////////////////////////////
-
 int64_t Range::at(size_t position) const {
   if (_low <= _high) {
     // e.g. 1..1, 1..10 etc.
@@ -56,4 +47,13 @@ int64_t Range::at(size_t position) const {
 
   // e.g. 10..1
   return _low - static_cast<int64_t>(position);
+}
+
+bool Range::isIn(int64_t value) const {
+  if (_low <= _high) {
+    // e.g. 1..1, 1..10 etc.
+    return value >= _low && value <= _high;
+  }
+  // e.g. 10..1
+  return value <= _low && value >= _high;
 }

@@ -44,10 +44,7 @@ double const QueryList::DefaultSlowQueryThreshold = 10.0;
 size_t const QueryList::DefaultMaxSlowQueries = 64;
 size_t const QueryList::DefaultMaxQueryStringLength = 4096;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief create a query list
-////////////////////////////////////////////////////////////////////////////////
-
 QueryList::QueryList(TRI_vocbase_t*)
     : _lock(),
       _current(),
@@ -61,10 +58,7 @@ QueryList::QueryList(TRI_vocbase_t*)
   _current.reserve(64);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief destroy a query list
-////////////////////////////////////////////////////////////////////////////////
-
 QueryList::~QueryList() {
   WRITE_LOCKER(writeLocker, _lock);
 
@@ -75,10 +69,7 @@ QueryList::~QueryList() {
   _slow.clear();
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief insert a query
-////////////////////////////////////////////////////////////////////////////////
-
 bool QueryList::insert(Query const* query, double stamp) {
   // not enable or no query string
   if (!_enabled || query == nullptr || query->queryString() == nullptr) {
@@ -105,10 +96,7 @@ bool QueryList::insert(Query const* query, double stamp) {
   return false;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief remove a query
-////////////////////////////////////////////////////////////////////////////////
-
 void QueryList::remove(Query const* query, double now) {
   // we're intentionally not checking _enabled here...
 
@@ -174,7 +162,7 @@ void QueryList::remove(Query const* query, double now) {
           std::string q(queryString, length);
           q.append(originalLength > maxLength ? "..." : "");
 
-          LOG_TOPIC(WARN, Logger::QUERIES) << "slow query: '" << q << "', took: " << Logger::DURATION(now - entry->started);
+          LOG_TOPIC(WARN, Logger::QUERIES) << "slow query: '" << q << "', took: " << Logger::FIXED(now - entry->started);
 
           _slow.emplace_back(QueryEntryCopy(
               entry->query->id(),
@@ -198,10 +186,7 @@ void QueryList::remove(Query const* query, double now) {
   }
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief kills a query
-////////////////////////////////////////////////////////////////////////////////
-
 int QueryList::kill(TRI_voc_tick_t id) {
   std::string queryString;
 
@@ -225,11 +210,34 @@ int QueryList::kill(TRI_voc_tick_t id) {
 
   return TRI_ERROR_NO_ERROR;
 }
+  
+/// @brief kills all currently running queries
+uint64_t QueryList::killAll(bool silent) {
+  uint64_t killed = 0;
 
-////////////////////////////////////////////////////////////////////////////////
+  WRITE_LOCKER(writeLocker, _lock);
+
+  for (auto& it : _current) {
+    auto entry = it.second;
+    const_cast<arangodb::aql::Query*>(entry->query)->killed(true);
+    
+    ++killed;
+      
+    std::string queryString(entry->query->queryString(),
+                            entry->query->queryLength());
+  
+
+    if (silent) {
+      LOG(TRACE) << "killing AQL query " << entry->query->id() << " '" << queryString << "'";
+    } else {
+      LOG(WARN) << "killing AQL query " << entry->query->id() << " '" << queryString << "'";
+    }
+  }
+
+  return killed;
+}
+
 /// @brief get the list of currently running queries
-////////////////////////////////////////////////////////////////////////////////
-
 std::vector<QueryEntryCopy> QueryList::listCurrent() {
   double const now = TRI_microtime();
   size_t const maxLength = _maxQueryStringLength;
@@ -285,10 +293,7 @@ std::vector<QueryEntryCopy> QueryList::listCurrent() {
   return result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief get the list of slow queries
-////////////////////////////////////////////////////////////////////////////////
-
 std::vector<QueryEntryCopy> QueryList::listSlow() {
   std::vector<QueryEntryCopy> result;
 
@@ -301,10 +306,7 @@ std::vector<QueryEntryCopy> QueryList::listSlow() {
   return result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief clear the list of slow queries
-////////////////////////////////////////////////////////////////////////////////
-
 void QueryList::clearSlow() {
   WRITE_LOCKER(writeLocker, _lock);
   _slow.clear();

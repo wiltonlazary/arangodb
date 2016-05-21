@@ -26,10 +26,7 @@
 
 using namespace arangodb::aql;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief create the function
-////////////////////////////////////////////////////////////////////////////////
-
 Function::Function(std::string const& externalName,
                    std::string const& internalName,
                    std::string const& arguments, bool isCacheable,
@@ -51,21 +48,14 @@ Function::Function(std::string const& externalName,
   initializeArguments();
 
   // condition must only be set if we also have an implementation
-  TRI_ASSERT(implementation != nullptr ||
-             (implementation == nullptr && condition == nullptr));
+  TRI_ASSERT(implementation != nullptr || condition == nullptr);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief destroy the function
-////////////////////////////////////////////////////////////////////////////////
-
 Function::~Function() {}
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief parse the argument list and set the minimum and maximum number of
 /// arguments
-////////////////////////////////////////////////////////////////////////////////
-
 void Function::initializeArguments() {
   minRequiredArguments = 0;
   maxRequiredArguments = 0;

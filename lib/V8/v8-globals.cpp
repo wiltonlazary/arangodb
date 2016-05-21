@@ -25,15 +25,14 @@
 
 TRI_v8_global_s::TRI_v8_global_s(v8::Isolate* isolate)
     : JSCollections(),
-      JSDitches(),
+      JSVPack(),
 
       AgencyTempl(),
       ClusterInfoTempl(),
       ServerStateTempl(),
       ClusterCommTempl(),
       ArangoErrorTempl(),
-      GeneralCursorTempl(),
-      ShapedJsonTempl(),
+      VPackTempl(),
       VocbaseColTempl(),
       VocbaseTempl(),
 
@@ -87,29 +86,30 @@ TRI_v8_global_s::TRI_v8_global_s(v8::Isolate* isolate)
       RequestBodyKey(),
       RequestTypeKey(),
       ResponseCodeKey(),
+      ReturnNewKey(),
+      ReturnOldKey(),
       SecureKey(),
       ServerKey(),
       ShardIDKey(),
       SilentKey(),
       SingleRequestKey(),
-      SleepKey(),
       StatusKey(),
       SuffixKey(),
       TimeoutKey(),
+      ToJsonKey(),
       TransformationsKey(),
       UrlKey(),
       UserKey(),
       ValueKey(),
-      VersionKey(),
       VersionKeyHidden(),
       WaitForSyncKey(),
 
-      _FromKey(),
+      _DbCacheKey(),
       _DbNameKey(),
       _IdKey(),
       _KeyKey(),
-      _OldRevKey(),
       _RevKey(),
+      _FromKey(),
       _ToKey(),
 
       _currentRequest(),
@@ -120,8 +120,6 @@ TRI_v8_global_s::TRI_v8_global_s(v8::Isolate* isolate)
       _server(nullptr),
       _vocbase(nullptr),
       _activeExternals(0),
-      _applicationV8(nullptr),
-      _loader(nullptr),
       _canceled(false),
       _allowUseDatabase(true) {
   v8::HandleScope scope(isolate);
@@ -178,29 +176,30 @@ TRI_v8_global_s::TRI_v8_global_s(v8::Isolate* isolate)
   RequestBodyKey.Reset(isolate, TRI_V8_ASCII_STRING("requestBody"));
   RequestTypeKey.Reset(isolate, TRI_V8_ASCII_STRING("requestType"));
   ResponseCodeKey.Reset(isolate, TRI_V8_ASCII_STRING("responseCode"));
+  ReturnNewKey.Reset(isolate, TRI_V8_ASCII_STRING("returnNew"));
+  ReturnOldKey.Reset(isolate, TRI_V8_ASCII_STRING("returnOld"));
   SecureKey.Reset(isolate, TRI_V8_ASCII_STRING("secure"));
   ServerKey.Reset(isolate, TRI_V8_ASCII_STRING("server"));
   ShardIDKey.Reset(isolate, TRI_V8_ASCII_STRING("shardID"));
   SilentKey.Reset(isolate, TRI_V8_ASCII_STRING("silent"));
   SingleRequestKey.Reset(isolate, TRI_V8_ASCII_STRING("singleRequest"));
-  SleepKey.Reset(isolate, TRI_V8_ASCII_STRING("sleep"));
   StatusKey.Reset(isolate, TRI_V8_ASCII_STRING("status"));
   SuffixKey.Reset(isolate, TRI_V8_ASCII_STRING("suffix"));
   TimeoutKey.Reset(isolate, TRI_V8_ASCII_STRING("timeout"));
+  ToJsonKey.Reset(isolate, TRI_V8_ASCII_STRING("toJSON"));
   TransformationsKey.Reset(isolate, TRI_V8_ASCII_STRING("transformations"));
   UrlKey.Reset(isolate, TRI_V8_ASCII_STRING("url"));
   UserKey.Reset(isolate, TRI_V8_ASCII_STRING("user"));
   ValueKey.Reset(isolate, TRI_V8_ASCII_STRING("value"));
-  VersionKey.Reset(isolate, TRI_V8_ASCII_STRING("version"));
   VersionKeyHidden.Reset(isolate, TRI_V8_ASCII_STRING("*version"));
   WaitForSyncKey.Reset(isolate, TRI_V8_ASCII_STRING("waitForSync"));
 
-  _FromKey.Reset(isolate, TRI_V8_ASCII_STRING("_from"));
+  _DbCacheKey.Reset(isolate, TRI_V8_ASCII_STRING("__dbcache__"));
   _DbNameKey.Reset(isolate, TRI_V8_ASCII_STRING("_dbName"));
   _IdKey.Reset(isolate, TRI_V8_ASCII_STRING("_id"));
   _KeyKey.Reset(isolate, TRI_V8_ASCII_STRING("_key"));
-  _OldRevKey.Reset(isolate, TRI_V8_ASCII_STRING("_oldRev"));
   _RevKey.Reset(isolate, TRI_V8_ASCII_STRING("_rev"));
+  _FromKey.Reset(isolate, TRI_V8_ASCII_STRING("_from"));
   _ToKey.Reset(isolate, TRI_V8_ASCII_STRING("_to"));
 }
 

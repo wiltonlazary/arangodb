@@ -1,7 +1,7 @@
 /*eslint camelcase:0 */
 /*jshint esnext:true, -W051:true */
 /*eslint-disable */
-global.DEFINE_MODULE('internal', (function() {
+global.DEFINE_MODULE('internal', (function () {
 'use strict';
 /*eslint-enable */
 
@@ -42,7 +42,7 @@ if (global.ArangoError) {
   exports.ArangoError = global.ArangoError;
   delete global.ArangoError;
 } else {
-  exports.ArangoError = function(error) {
+  exports.ArangoError = function (error) {
     if (error !== undefined) {
       this.error = error.error;
       this.code = error.code;
@@ -53,6 +53,8 @@ if (global.ArangoError) {
 
   exports.ArangoError.prototype = new Error();
 }
+
+exports.ArangoError.prototype.isArangoError = true;
 
 Object.defineProperty(exports.ArangoError.prototype, 'message', {
   configurable: true,
@@ -224,12 +226,12 @@ if (global.REMOVE_ENDPOINT) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief listEndpoints
+/// @brief endpoints
 ////////////////////////////////////////////////////////////////////////////////
 
-if (global.LIST_ENDPOINTS) {
-  exports.listEndpoints = global.LIST_ENDPOINTS;
-  delete global.LIST_ENDPOINTS;
+if (global.ENDPOINTS) {
+  exports.endpoints = global.ENDPOINTS;
+  delete global.ENDPOINTS;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -305,6 +307,15 @@ if (global.SYS_DOWNLOAD) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief whether or not Statistics are enabled
+////////////////////////////////////////////////////////////////////////////////
+
+if (global.SYS_ENABLED_STATISTICS) {
+  exports.enabledStatistics = global.SYS_ENABLED_STATISTICS;
+  delete global.SYS_ENABLED_STATISTICS;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief executeScript
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -335,16 +346,16 @@ if (global.SYS_GET_CURRENT_RESPONSE) {
 /// @brief extend
 ////////////////////////////////////////////////////////////////////////////////
 
-exports.extend = function(target, source) {
+exports.extend = function (target, source) {
 
   Object.getOwnPropertyNames(source)
-    .forEach(function(propName) {
-      Object.defineProperty(
-        target,
-        propName,
-        Object.getOwnPropertyDescriptor(source, propName)
-      );
-    });
+  .forEach(function(propName) {
+    Object.defineProperty(
+      target,
+      propName,
+      Object.getOwnPropertyDescriptor(source, propName)
+    );
+  });
 
   return target;
 };
@@ -646,6 +657,24 @@ if (global.SYS_EXECUTE_EXTERNAL_AND_WAIT) {
 if (global.SYS_KILL_EXTERNAL) {
   exports.killExternal = global.SYS_KILL_EXTERNAL;
   delete global.SYS_KILL_EXTERNAL;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief suspendExternal
+////////////////////////////////////////////////////////////////////////////////
+
+if (global.SYS_SUSPEND_EXTERNAL) {
+  exports.suspendExternal = global.SYS_SUSPEND_EXTERNAL;
+  delete global.SYS_SUSPEND_EXTERNAL;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief continueExternal
+////////////////////////////////////////////////////////////////////////////////
+
+if (global.SYS_CONTINUE_EXTERNAL) {
+  exports.continueExternal = global.SYS_CONTINUE_EXTERNAL;
+  delete global.SYS_CONTINUE_EXTERNAL;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1420,8 +1449,6 @@ printShell.limitString = 80;
 /// @brief flatten
 ////////////////////////////////////////////////////////////////////////////////
 
-var hasOwnProperty = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
-
 exports.flatten = function(obj, seen) {
   if (!obj || (typeof obj !== 'object' && typeof obj !== 'function')) {
     return obj;
@@ -1716,7 +1743,6 @@ if (typeof SYS_OPTIONS !== 'undefined') {
   exports.options = global.SYS_OPTIONS;
   delete global.SYS_OPTIONS;
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief print

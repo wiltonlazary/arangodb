@@ -27,8 +27,7 @@
       "click #databaseSearchSubmit" : "search",
       "click #databaseToggle"       : "toggleSettingsDropdown",
       "click .css-label"            : "checkBoxes",
-      "click #dbSortDesc"           : "sorting",
-      "click .tile"                 : "switchDatabase"
+      "click #dbSortDesc"           : "sorting"
     },
 
     sorting: function() {
@@ -195,7 +194,7 @@
 
     submitDeleteDatabase: function(dbname) {
       var toDelete = this.collection.where({name: dbname});
-      toDelete[0].destroy({wait: true, url:"/_api/database/"+dbname});
+      toDelete[0].destroy({wait: true, url: arangoHelper.databaseUrl("/_api/database/"+dbname)});
       this.updateDatabases();
       window.App.naviView.dbSelectionView.render($("#dbSelect"));
       window.modalView.hide();

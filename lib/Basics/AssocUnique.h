@@ -23,21 +23,22 @@
 /// @author Michael hackstein
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_ASSOC_UNIQUE_H
-#define LIB_BASICS_ASSOC_UNIQUE_H 1
+#ifndef ARANGODB_BASICS_ASSOC_UNIQUE_H
+#define ARANGODB_BASICS_ASSOC_UNIQUE_H 1
 
 #include "Basics/Common.h"
-#include "Basics/gcd.h"
-#include "Basics/JsonHelper.h"
-#include "Logger/Logger.h"
-#include "Basics/memory-map.h"
-#include "Basics/MutexLocker.h"
-#include "Basics/prime-numbers.h"
-#include "Basics/random.h"
 
 #include <thread>
 #include <velocypack/Builder.h>
 #include <velocypack/velocypack-aliases.h>
+
+#include "Basics/JsonHelper.h"
+#include "Basics/MutexLocker.h"
+#include "Basics/gcd.h"
+#include "Basics/memory-map.h"
+#include "Basics/prime-numbers.h"
+#include "Logger/Logger.h"
+#include "Random/RandomGenerator.h"
 
 namespace arangodb {
 namespace basics {
@@ -76,7 +77,7 @@ class AssocUnique {
   typedef std::function<bool(UserData*, Element const*, Element const*)>
       IsEqualElementElementFuncType;
 
-  typedef std::function<void(Element*)> CallbackElementFuncType;
+  typedef std::function<bool(Element*)> CallbackElementFuncType;
 
  private:
   struct Bucket {
@@ -131,7 +132,7 @@ class AssocUnique {
         b._table = nullptr;
 
         // may fail...
-        b._table = new Element* [b._nrAlloc];
+        b._table = new Element*[static_cast<size_t>(b._nrAlloc)];
 
         for (uint64_t i = 0; i < b._nrAlloc; i++) {
           b._table[i] = nullptr;
@@ -194,7 +195,7 @@ class AssocUnique {
 
     double start = TRI_microtime();
     if (targetSize > NotificationSizeThreshold) {
-      LOG_TOPIC(TRACE, Logger::PERFORMANCE) << 
+      LOG_TOPIC(TRACE, Logger::PERFORMANCE) <<
           "index-resize " << cb << ", target size: " << targetSize;
     }
 
@@ -206,7 +207,7 @@ class AssocUnique {
     targetSize = TRI_NearPrime(targetSize);
 
     // This might throw, is catched outside
-    b._table = new Element* [targetSize];
+    b._table = new Element*[static_cast<size_t>(targetSize)];
 
     b._nrAlloc = targetSize;
 
@@ -251,7 +252,7 @@ class AssocUnique {
 
     LOG(TRACE) << "resizing index " << cb << " done";
 
-    LOG_TOPIC(TRACE, Logger::PERFORMANCE) << "[timer] " << Logger::DURATION(TRI_microtime() - start) << " s, index-resize, " << cb << ", target size: " << targetSize;
+    LOG_TOPIC(TRACE, Logger::PERFORMANCE) << "[timer] " << Logger::FIXED(TRI_microtime() - start) << " s, index-resize, " << cb << ", target size: " << targetSize;
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -330,6 +331,10 @@ class AssocUnique {
   }
 
  public:
+  size_t buckets() const {
+    return _buckets.size();
+  }
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief checks if this index is empty
   //////////////////////////////////////////////////////////////////////////////
@@ -385,26 +390,6 @@ class AssocUnique {
       }
     }
     return TRI_ERROR_NO_ERROR;
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief Appends information about statistics in the given json.
-  //////////////////////////////////////////////////////////////////////////////
-
-  void appendToJson(TRI_memory_zone_t* zone, arangodb::basics::Json& json) {
-    arangodb::basics::Json bkts(zone, arangodb::basics::Json::Array);
-    for (auto& b : _buckets) {
-      arangodb::basics::Json bucketInfo(zone, arangodb::basics::Json::Object);
-      bucketInfo("nrAlloc",
-                 arangodb::basics::Json(static_cast<double>(b._nrAlloc)));
-      bucketInfo("nrUsed",
-                 arangodb::basics::Json(static_cast<double>(b._nrUsed)));
-      bkts.add(bucketInfo);
-    }
-    json("buckets", bkts);
-    json("nrBuckets",
-         arangodb::basics::Json(static_cast<double>(_buckets.size())));
-    json("totalUsed", arangodb::basics::Json(static_cast<double>(size())));
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -464,7 +449,7 @@ class AssocUnique {
     uint64_t hash = _hashKey(userData, key);
     uint64_t i = hash;
     uint64_t bucketId = i & _bucketsMask;
-    Bucket const& b = _buckets[bucketId];
+    Bucket const& b = _buckets[static_cast<size_t>(bucketId)];
 
     uint64_t const n = b._nrAlloc;
     i = i % n;
@@ -500,7 +485,7 @@ class AssocUnique {
     hash = _hashKey(userData, key);
     uint64_t i = hash;
     uint64_t bucketId = i & _bucketsMask;
-    Bucket const& b = _buckets[bucketId];
+    Bucket const& b = _buckets[static_cast<size_t>(bucketId)];
 
     uint64_t const n = b._nrAlloc;
     i = i % n;
@@ -519,7 +504,7 @@ class AssocUnique {
 
     // if requested, pass the position of the found element back
     // to the caller
-    position.bucketId = bucketId;
+    position.bucketId = static_cast<size_t>(bucketId);
     position.position = i;
 
     // ...........................................................................
@@ -680,7 +665,7 @@ class AssocUnique {
             }
 
             // we're responsible for this bucket!
-            Bucket& b = _buckets[bucketId];
+            Bucket& b = _buckets[static_cast<size_t>(bucketId)];
             uint64_t expected = 0;
 
             for (auto const& it2 : it.second) {
@@ -839,7 +824,8 @@ class AssocUnique {
   }
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief a method to iterate over all elements in the hash
+  /// @brief a method to iterate over all elements in the hash. this method
+  /// can NOT be used for deleting elements
   //////////////////////////////////////////////////////////////////////////////
 
   void invokeOnAllElements(CallbackElementFuncType callback) {
@@ -851,7 +837,39 @@ class AssocUnique {
         if (b._table[i] == nullptr) {
           continue;
         }
-        callback(b._table[i]);
+        if (!callback(b._table[i])) {
+          return;
+        }
+      }
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief a method to iterate over all elements in the hash. this method
+  /// can be used for deleting elements as well
+  //////////////////////////////////////////////////////////////////////////////
+
+  void invokeOnAllElementsForRemoval(CallbackElementFuncType callback) {
+    for (auto& b : _buckets) {
+      if (b._table == nullptr) {
+        continue;
+      }
+      for (size_t i = 0; i < b._nrAlloc; /* no hoisting */) {
+        if (b._table[i] == nullptr) {
+          ++i;
+          continue;
+        }
+        // intentionally don't increment i
+        auto old = b._table[i];
+        if (!callback(b._table[i])) {
+          return;
+        }
+        if (b._nrUsed == 0) {
+          break;
+        }
+        if (b._table[i] == old) {
+          ++i;
+        }
       }
     }
   }
@@ -998,12 +1016,12 @@ class AssocUnique {
 
       // find a co-prime for total
       while (true) {
-        step = TRI_UInt32Random() % total;
+        step = RandomGenerator::interval(UINT32_MAX) % total;
         if (step > 10 &&
             arangodb::basics::binaryGcd<uint64_t>(total, step) == 1) {
           uint64_t initialPositionNr = 0;
           while (initialPositionNr == 0) {
-            initialPositionNr = TRI_UInt32Random() % total;
+            initialPositionNr = RandomGenerator::interval(UINT32_MAX) % total;
           }
           for (size_t i = 0; i < _buckets.size(); ++i) {
             if (initialPositionNr < _buckets[i]._nrAlloc) {

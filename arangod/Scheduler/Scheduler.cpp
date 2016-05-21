@@ -32,7 +32,6 @@
 #include "Basics/StringUtils.h"
 #include "Basics/Thread.h"
 #include "Basics/json.h"
-#include "Basics/JsonHelper.h"
 #include "Logger/Logger.h"
 #include "Scheduler/SchedulerThread.h"
 #include "Scheduler/Task.h"
@@ -46,8 +45,6 @@ using namespace arangodb::rest;
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief scheduler singleton
 ////////////////////////////////////////////////////////////////////////////////
-
-std::unique_ptr<Scheduler> Scheduler::SCHEDULER;
 
 Scheduler::Scheduler(size_t nrThreads)
     : nrThreads(nrThreads),
@@ -71,8 +68,6 @@ Scheduler::Scheduler(size_t nrThreads)
 
   // setup signal handlers
   initializeSignalHandlers();
-
-  SCHEDULER.reset(this);
 }
 
 Scheduler::~Scheduler() {}
@@ -118,14 +113,6 @@ bool Scheduler::start(ConditionVariable* cv) {
 ////////////////////////////////////////////////////////////////////////////////
 
 bool Scheduler::isStarted() {
-  return true;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief opens the scheduler for business
-////////////////////////////////////////////////////////////////////////////////
-
-bool Scheduler::open() {
   return true;
 }
 
@@ -401,7 +388,7 @@ void Scheduler::setProcessorAffinity(size_t i, size_t c) {
 Task* Scheduler::lookupTaskById(uint64_t taskId) {
   MUTEX_LOCKER(mutexLocker, schedulerLock);
 
-  auto&& task = taskRegistered.find(taskId);
+  auto task = taskRegistered.find(taskId);
 
   if (task == taskRegistered.end()) {
     return nullptr;
@@ -417,7 +404,7 @@ Task* Scheduler::lookupTaskById(uint64_t taskId) {
 EventLoop Scheduler::lookupLoopById(uint64_t taskId) {
   MUTEX_LOCKER(mutexLocker, schedulerLock);
 
-  auto&& task = taskRegistered.find(taskId);
+  auto task = taskRegistered.find(taskId);
 
   if (task == taskRegistered.end()) {
     return static_cast<EventLoop>(nrThreads);

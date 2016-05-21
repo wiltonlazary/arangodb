@@ -14,18 +14,13 @@ if [ "x$@" == "x" ] ; then
     `find ./js/common/tests -name "*.js"` \
     `find ./js/client/tests -name "*.js"` \
     \
-    `find ./js/apps/system/_system/cerberus/APP -name "*.js"` \
     `find ./js/apps/system/_api/gharial/APP -name "*.js"` \
-    `find ./js/apps/system/_system/sessions/APP -name "*.js"` \
-    `find ./js/apps/system/_system/simple-auth/APP -name "*.js"` \
-    `find ./js/apps/system/_system/users/APP -name "*.js"` \
     \
     `find ./js/apps/system/_admin/aardvark/APP/frontend/js/models -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/frontend/js/views -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/frontend/js/collections -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/frontend/js/routers -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/frontend/js/arango -name "*.js"` \
-    `find ./js/apps/system/_admin/aardvark/APP/frontend/js/shell -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/test/specs -name "*.js"` \
     `find ./js/apps/system/_admin/aardvark/APP/test/clusterSpecs -name "*.js"` \
     \
@@ -36,7 +31,6 @@ if [ "x$@" == "x" ] ; then
     ./js/server/server.js \
     ./js/server/upgrade-database.js \
     \
-    ./js/apps/system/_admin/aardvark/APP/frontend/js/shell/browser.js \
   "
 else
   JAVASCRIPT_JSLINT="$@"

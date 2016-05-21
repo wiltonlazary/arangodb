@@ -21,14 +21,13 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_THREAD_POOL_H
-#define LIB_BASICS_THREAD_POOL_H 1
+#ifndef ARANGODB_BASICS_THREAD_POOL_H
+#define ARANGODB_BASICS_THREAD_POOL_H 1
 
 #include "Basics/Common.h"
 #include "Basics/ConditionLocker.h"
 #include "Basics/ConditionVariable.h"
 
-#include <functional>
 #include <deque>
 
 namespace arangodb {

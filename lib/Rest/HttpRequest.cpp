@@ -30,25 +30,19 @@
 #include <velocypack/velocypack-aliases.h>
 
 #include "Basics/conversions.h"
-#include "Logger/Logger.h"
+#include "Basics/StaticStrings.h"
 #include "Basics/StringBuffer.h"
 #include "Basics/StringUtils.h"
 #include "Basics/tri-strings.h"
+#include "Logger/Logger.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
 
-std::string const HttpRequest::BATCH_CONTENT_TYPE =
-    "application/x-arango-batchpart";
-
-std::string const HttpRequest::MULTI_PART_CONTENT_TYPE = "multipart/form-data";
-
 HttpRequest::HttpRequest(ConnectionInfo const& connectionInfo,
                          char const* header, size_t length,
-                         int32_t defaultApiCompatibility,
                          bool allowMethodOverride)
-    : GeneralRequest(connectionInfo, defaultApiCompatibility),
-
+    : GeneralRequest(connectionInfo),
       _contentLength(0),
       _header(nullptr),
       _allowMethodOverride(allowMethodOverride) {
@@ -60,73 +54,7 @@ HttpRequest::HttpRequest(ConnectionInfo const& connectionInfo,
   }
 }
 
-HttpRequest::~HttpRequest() {
-  if (_header != nullptr) {
-    delete[] _header;
-  }
-}
-
-int32_t HttpRequest::compatibility() {
-  int32_t result = _defaultApiCompatibility;
-
-  bool found;
-  std::string const& apiVersion = header("x-arango-version", found);
-
-  if (!found) {
-    return result;
-  }
-
-  char const* a = apiVersion.c_str();
-  char const* p = a;
-  char const* e = a + apiVersion.size();
-
-  // read major version
-  uint32_t major = 0;
-
-  while (p < e && *p >= '0' && *p <= '9') {
-    major = major * 10 + (*p - '0');
-    ++p;
-  }
-
-  if (p != a && (*p == '.' || *p == '-' || p == e)) {
-    if (major >= 10000) {
-      // version specified as "10400"
-      if (*p == '\0') {
-        result = major;
-
-        if (result < MIN_COMPATIBILITY) {
-          result = MIN_COMPATIBILITY;
-        } else {
-          // set patch-level to 0
-          result /= 100L;
-          result *= 100L;
-        }
-
-        return result;
-      }
-    }
-
-    a = ++p;
-
-    // read minor version
-    uint32_t minor = 0;
-
-    while (p < e && *p >= '0' && *p <= '9') {
-      minor = minor * 10 + (*p - '0');
-      ++p;
-    }
-
-    if (p != a && (*p == '.' || *p == '-' || p == e)) {
-      result = (int32_t)(minor * 100L + major * 10000L);
-    }
-  }
-
-  if (result < MIN_COMPATIBILITY) {
-    result = MIN_COMPATIBILITY;
-  }
-
-  return result;
-}
+HttpRequest::~HttpRequest() { delete[] _header; }
 
 void HttpRequest::parseHeader(size_t length) {
   char* start = _header;
@@ -432,7 +360,8 @@ void HttpRequest::parseHeader(size_t length) {
         }
 
         if (keyBegin < keyEnd) {
-          setHeader(keyBegin, keyEnd - keyBegin, valueBegin);
+          setHeader(keyBegin, keyEnd - keyBegin, valueBegin,
+                    valueEnd - valueBegin);
         }
       }
 
@@ -452,7 +381,7 @@ void HttpRequest::parseHeader(size_t length) {
 
         // use empty value
         if (keyBegin < keyEnd) {
-          setHeader(keyBegin, keyEnd - keyBegin, keyEnd);
+          setHeader(keyBegin, keyEnd - keyBegin);
         }
       }
     }
@@ -504,8 +433,7 @@ void HttpRequest::setValues(char* buffer, char* end) {
         *(key - 2) = '\0';
         setArrayValue(keyBegin, key - keyBegin - 2, valueBegin);
       } else {
-        std::string keyStr(keyBegin, key - keyBegin);
-        _values[keyStr] = valueBegin;
+        _values[std::string(keyBegin, key - keyBegin)] = valueBegin;
       }
 
       keyBegin = key = buffer + 1;
@@ -564,53 +492,60 @@ void HttpRequest::setValues(char* buffer, char* end) {
       *(key - 2) = '\0';
       setArrayValue(keyBegin, key - keyBegin - 2, valueBegin);
     } else {
-      std::string keyStr(keyBegin, key - keyBegin);
-      _values[keyStr] = valueBegin;
+      _values[std::string(keyBegin, key - keyBegin)] = valueBegin;
     }
   }
 }
 
+/// @brief sets a key/value header
 void HttpRequest::setHeader(char const* key, size_t keyLength,
-                            char const* value) {
+                            char const* value, size_t valueLength) {
   if (keyLength == 14 &&
       memcmp(key, "content-length", keyLength) ==
           0) {  // 14 = strlen("content-length")
-    _contentLength = StringUtils::int64(value);
-  } else if (keyLength == 6 &&
-             memcmp(key, "cookie", keyLength) == 0) {  // 6 = strlen("cookie")
-    parseCookies(value);
-  } else {
-    if (_allowMethodOverride && keyLength >= 13 && *key == 'x' &&
-        *(key + 1) == '-') {
-      // handle x-... headers
-
-      // override HTTP method?
-      if ((keyLength == 13 && memcmp(key, "x-http-method", keyLength) == 0) ||
-          (keyLength == 17 &&
-           memcmp(key, "x-method-override", keyLength) == 0) ||
-          (keyLength == 22 &&
-           memcmp(key, "x-http-method-override", keyLength) == 0)) {
-        std::string overriddenType(value);
-        StringUtils::tolowerInPlace(&overriddenType);
-
-        _type = findRequestType(overriddenType.c_str(), overriddenType.size());
-
-        // don't insert this header!!
-        return;
-      }
-    }
-
-    std::string keyStr(key, keyLength);
-    _headers[keyStr] = value;
+    _contentLength = StringUtils::int64(value, valueLength);
+    // do not store this header
+    return;
   }
+
+  if (keyLength == 6 &&
+      memcmp(key, "cookie", keyLength) == 0) {  // 6 = strlen("cookie")
+    parseCookies(value, valueLength);
+    return;
+  }
+
+  if (_allowMethodOverride && keyLength >= 13 && *key == 'x' &&
+      *(key + 1) == '-') {
+    // handle x-... headers
+
+    // override HTTP method?
+    if ((keyLength == 13 && memcmp(key, "x-http-method", keyLength) == 0) ||
+        (keyLength == 17 && memcmp(key, "x-method-override", keyLength) == 0) ||
+        (keyLength == 22 &&
+         memcmp(key, "x-http-method-override", keyLength) == 0)) {
+      std::string overriddenType(value, valueLength);
+      StringUtils::tolowerInPlace(&overriddenType);
+
+      _type = findRequestType(overriddenType.c_str(), overriddenType.size());
+
+      // don't insert this header!!
+      return;
+    }
+  }
+
+  _headers[std::string(key, keyLength)] = std::string(value, valueLength);
+}
+
+/// @brief sets a key-only header
+void HttpRequest::setHeader(char const* key, size_t keyLength) {
+  _headers[std::string(key, keyLength)] = StaticStrings::Empty;
 }
 
 void HttpRequest::setCookie(char* key, size_t length, char const* value) {
-  std::string keyStr(key, length);
-  _cookies[keyStr] = value;
+  _cookies[std::string(key, length)] = value;
 }
 
-void HttpRequest::parseCookies(char const* buffer) {
+void HttpRequest::parseCookies(char const* buffer, size_t length) {
   char* keyBegin = nullptr;
   char* key = nullptr;
 
@@ -628,7 +563,7 @@ void HttpRequest::parseCookies(char const* buffer) {
   char const SPACE = ' ';
 
   char* buffer2 = (char*)buffer;
-  char* end = buffer2 + strlen(buffer);
+  char* end = buffer2 + length;
 
   for (keyBegin = key = buffer2; buffer2 < end; buffer2++) {
     char next = *buffer2;
@@ -710,34 +645,29 @@ void HttpRequest::parseCookies(char const* buffer) {
 }
 
 std::string const& HttpRequest::cookieValue(std::string const& key) const {
-  static std::string EMPTY_STR = "";
-  
   auto it = _cookies.find(key);
 
   if (it == _cookies.end()) {
-    return EMPTY_STR;
+    return StaticStrings::Empty;
   }
 
   return it->second;
 }
 
-std::string const& HttpRequest::cookieValue(std::string const& key, bool& found) const {
-  static std::string EMPTY_STR = "";
-  
+std::string const& HttpRequest::cookieValue(std::string const& key,
+                                            bool& found) const {
   auto it = _cookies.find(key);
 
   if (it == _cookies.end()) {
     found = false;
-    return EMPTY_STR;
+    return StaticStrings::Empty;
   }
 
   found = true;
   return it->second;
 }
 
-std::string const& HttpRequest::body() const {
-  return _body;
-}
+std::string const& HttpRequest::body() const { return _body; }
 
 void HttpRequest::setBody(char const* body, size_t length) {
   _body = std::string(body, length);
@@ -748,8 +678,4 @@ std::shared_ptr<VPackBuilder> HttpRequest::toVelocyPack(
   VPackParser parser(options);
   parser.parse(body());
   return parser.steal();
-}
-
-TRI_json_t* HttpRequest::toJson(char** errmsg) {
-  return TRI_Json2String(TRI_UNKNOWN_MEM_ZONE, body().c_str(), errmsg);
 }

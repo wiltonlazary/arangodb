@@ -24,38 +24,37 @@
 #ifndef ARANGOD_CLUSTER_SERVER_JOB_H
 #define ARANGOD_CLUSTER_SERVER_JOB_H 1
 
-#include "Basics/Common.h"
-#include "Basics/Exceptions.h"
-#include "Basics/Mutex.h"
 #include "Dispatcher/Job.h"
 
-struct TRI_server_t;
+#include "Basics/Exceptions.h"
+#include "Basics/Mutex.h"
+
+//struct TRI_server_t;
 
 namespace arangodb {
 class HeartbeatThread;
-class ApplicationV8;
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief general server job
-////////////////////////////////////////////////////////////////////////////////
+struct ServerJobResult {
+  bool success;
+  uint64_t planVersion;
+  uint64_t currentVersion;
+
+  ServerJobResult() : success(false), planVersion(0), currentVersion(0) {
+  }
+
+  ServerJobResult(const ServerJobResult& other)
+    : success(other.success),
+    planVersion(other.planVersion),
+    currentVersion(other.currentVersion) {
+    }
+};
 
 class ServerJob : public arangodb::rest::Job {
- private:
   ServerJob(ServerJob const&) = delete;
   ServerJob& operator=(ServerJob const&) = delete;
 
  public:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief constructs a new db server job
-  //////////////////////////////////////////////////////////////////////////////
-
-  ServerJob(HeartbeatThread* heartbeat, TRI_server_t* server,
-            ApplicationV8* applicationV8);
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief destructs a db server job
-  //////////////////////////////////////////////////////////////////////////////
-
+  explicit ServerJob(HeartbeatThread* heartbeat);
   ~ServerJob();
 
  public:
@@ -89,7 +88,7 @@ class ServerJob : public arangodb::rest::Job {
   /// @brief execute job
   //////////////////////////////////////////////////////////////////////////////
 
-  bool execute();
+  ServerJobResult execute();
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -102,13 +101,7 @@ class ServerJob : public arangodb::rest::Job {
   /// @brief server
   //////////////////////////////////////////////////////////////////////////////
 
-  TRI_server_t* _server;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief v8 dispatcher
-  //////////////////////////////////////////////////////////////////////////////
-
-  ApplicationV8* _applicationV8;
+//  TRI_server_t* _server;
 
  protected:
   //////////////////////////////////////////////////////////////////////////////

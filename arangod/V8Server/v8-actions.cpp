@@ -22,6 +22,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "v8-actions.h"
+
+#include "Actions/ActionFeature.h"
 #include "Actions/actions.h"
 #include "Basics/MutexLocker.h"
 #include "Basics/ReadLocker.h"
@@ -30,11 +32,11 @@
 #include "Basics/conversions.h"
 #include "Basics/files.h"
 #include "Basics/json.h"
-#include "Logger/Logger.h"
 #include "Basics/tri-strings.h"
 #include "Cluster/ClusterComm.h"
 #include "Cluster/ServerState.h"
 #include "HttpServer/HttpServer.h"
+#include "Logger/Logger.h"
 #include "Rest/GeneralRequest.h"
 #include "Rest/HttpRequest.h"
 #include "Rest/HttpResponse.h"
@@ -42,7 +44,8 @@
 #include "V8/v8-buffer.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-utils.h"
-#include "V8Server/ApplicationV8.h"
+#include "V8Server/V8Context.h"
+#include "V8Server/V8DealerFeature.h"
 #include "V8Server/v8-vocbase.h"
 #include "VocBase/server.h"
 #include "VocBase/vocbase.h"
@@ -54,12 +57,6 @@ using namespace arangodb::rest;
 static TRI_action_result_t ExecuteActionVocbase(
     TRI_vocbase_t* vocbase, v8::Isolate* isolate, TRI_action_t const* action,
     v8::Handle<v8::Function> callback, HttpRequest* request);
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief global V8 dealer
-////////////////////////////////////////////////////////////////////////////////
-
-static ApplicationV8* GlobalV8Dealer = nullptr;
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief action description for V8
@@ -78,11 +75,10 @@ class v8_action_t : public TRI_action_t {
   void createCallback(v8::Isolate* isolate, v8::Handle<v8::Function> callback) {
     WRITE_LOCKER(writeLocker, _callbacksLock);
 
-    std::map<v8::Isolate*, v8::Persistent<v8::Function>>::iterator i =
-        _callbacks.find(isolate);
+    auto it = _callbacks.find(isolate);
 
-    if (i != _callbacks.end()) {
-      i->second.Reset();
+    if (it != _callbacks.end()) {
+      it->second.Reset();
     }
 
     _callbacks[isolate].Reset(isolate, callback);
@@ -93,8 +89,7 @@ class v8_action_t : public TRI_action_t {
     TRI_action_result_t result;
 
     // allow use datase execution in rest calls
-    extern bool ALLOW_USE_DATABASE_IN_REST_ACTIONS;
-    bool allowUseDatabaseInRestActions = ALLOW_USE_DATABASE_IN_REST_ACTIONS;
+    bool allowUseDatabaseInRestActions = ActionFeature::ACTION->allowUseDatabase();
 
     if (_allowUseDatabase) {
       allowUseDatabaseInRestActions = true;
@@ -111,10 +106,10 @@ class v8_action_t : public TRI_action_t {
     }
 
     // get a V8 context
-    ApplicationV8::V8Context* context = GlobalV8Dealer->enterContext(
+    V8Context* context = V8DealerFeature::DEALER->enterContext(
         vocbase, allowUseDatabaseInRestActions, forceContext);
 
-    // note: the context might be 0 in case of shut-down
+    // note: the context might be nullptr in case of shut-down
     if (context == nullptr) {
       return result;
     }
@@ -123,18 +118,17 @@ class v8_action_t : public TRI_action_t {
     READ_LOCKER(readLocker, _callbacksLock);
 
     {
-      std::map<v8::Isolate*, v8::Persistent<v8::Function>>::iterator i =
-          _callbacks.find(context->isolate);
+      auto it = _callbacks.find(context->_isolate);
 
-      if (i == _callbacks.end()) {
+      if (it == _callbacks.end()) {
         LOG(WARN) << "no callback function for JavaScript action '" << _url
                   << "'";
 
-        GlobalV8Dealer->exitContext(context);
+        V8DealerFeature::DEALER->exitContext(context);
 
         result.isValid = true;
         result.response =
-            new HttpResponse(GeneralResponse::ResponseCode::NOT_FOUND, request->compatibility());
+            new HttpResponse(GeneralResponse::ResponseCode::NOT_FOUND);
 
         return result;
       }
@@ -146,19 +140,19 @@ class v8_action_t : public TRI_action_t {
         if (*data != 0) {
           result.canceled = true;
 
-          GlobalV8Dealer->exitContext(context);
+          V8DealerFeature::DEALER->exitContext(context);
 
           return result;
         }
 
-        *data = (void*)context->isolate;
+        *data = (void*)context->_isolate;
       }
-      v8::HandleScope scope(context->isolate);
+      v8::HandleScope scope(context->_isolate);
       auto localFunction =
-          v8::Local<v8::Function>::New(context->isolate, i->second);
+          v8::Local<v8::Function>::New(context->_isolate, it->second);
 
       try {
-        result = ExecuteActionVocbase(vocbase, context->isolate, this,
+        result = ExecuteActionVocbase(vocbase, context->_isolate, this,
                                       localFunction, request);
       } catch (...) {
         result.isValid = false;
@@ -169,7 +163,7 @@ class v8_action_t : public TRI_action_t {
         *data = 0;
       }
     }
-    GlobalV8Dealer->exitContext(context);
+    V8DealerFeature::DEALER->exitContext(context);
 
     return result;
   }
@@ -357,12 +351,12 @@ static v8::Handle<v8::Object> RequestCppToV8(v8::Isolate* isolate,
   req->ForceSet(UrlKey, TRI_V8_STD_STRING(fullUrl));
 
   // set the protocol
-  std::string const& protocol = request->protocol();
+  char const* protocol = request->protocol();
   TRI_GET_GLOBAL_STRING(ProtocolKey);
-  req->ForceSet(ProtocolKey, TRI_V8_STD_STRING(protocol));
+  req->ForceSet(ProtocolKey, TRI_V8_ASCII_STRING(protocol));
 
   // set the task id
-  std::string const&& taskId = StringUtils::itoa(request->clientTaskId());
+  std::string const taskId(StringUtils::itoa(request->clientTaskId()));
 
   // set the connection info
   const ConnectionInfo& info = request->connectionInfo();
@@ -399,13 +393,12 @@ static v8::Handle<v8::Object> RequestCppToV8(v8::Isolate* isolate,
   // copy header fields
   v8::Handle<v8::Object> headerFields = v8::Object::New(isolate);
 
-  std::map<std::string, std::string> headers = request->headers();
+  auto headers = request->headers();
   headers["content-length"] = StringUtils::itoa(request->contentLength());
-  std::map<std::string, std::string>::const_iterator iter = headers.begin();
 
-  for (; iter != headers.end(); ++iter) {
-    headerFields->ForceSet(TRI_V8_STD_STRING(iter->first),
-                           TRI_V8_STD_STRING(iter->second));
+  for (auto const& it : headers) {
+    headerFields->ForceSet(TRI_V8_STD_STRING(it.first),
+                           TRI_V8_STD_STRING(it.second));
   }
 
   TRI_GET_GLOBAL_STRING(HeadersKey);
@@ -460,19 +453,14 @@ static v8::Handle<v8::Object> RequestCppToV8(v8::Isolate* isolate,
 
   // copy request parameter
   v8::Handle<v8::Object> valuesObject = v8::Object::New(isolate);
-  std::map<std::string, std::string> values = request->values();
 
-  for (std::map<std::string, std::string>::iterator i = values.begin();
-       i != values.end(); ++i) {
-    valuesObject->ForceSet(TRI_V8_STD_STRING(i->first),
-                           TRI_V8_STD_STRING(i->second));
+  for (auto& it : request->values()) {
+    valuesObject->ForceSet(TRI_V8_STD_STRING(it.first),
+                           TRI_V8_STD_STRING(it.second));
   }
 
   // copy request array parameter (a[]=1&a[]=2&...)
-  std::map<std::string, std::vector<std::string>> arrayValues =
-      request->arrayValues();
-
-  for (auto& arrayValue : arrayValues) {
+  for (auto& arrayValue : request->arrayValues()) {
     std::string const& k = arrayValue.first;
     std::vector<std::string> const& v = arrayValue.second;
 
@@ -492,21 +480,13 @@ static v8::Handle<v8::Object> RequestCppToV8(v8::Isolate* isolate,
   // copy cookies
   v8::Handle<v8::Object> cookiesObject = v8::Object::New(isolate);
 
-  std::map<std::string, std::string> const& cookies = request->cookieValues();
-  iter = cookies.begin();
-
-  for (; iter != cookies.end(); ++iter) {
-    cookiesObject->ForceSet(TRI_V8_STD_STRING(iter->first),
-                            TRI_V8_STD_STRING(iter->second));
+  for (auto& it : request->cookieValues()) {
+    cookiesObject->ForceSet(TRI_V8_STD_STRING(it.first),
+                            TRI_V8_STD_STRING(it.second));
   }
 
   TRI_GET_GLOBAL_STRING(CookiesKey);
   req->ForceSet(CookiesKey, cookiesObject);
-
-  // determine API compatibility version
-  int32_t compatibility = request->compatibility();
-  TRI_GET_GLOBAL_STRING(CompatibilityKey);
-  req->ForceSet(CompatibilityKey, v8::Integer::New(isolate, compatibility));
 
   return req;
 }
@@ -517,8 +497,7 @@ static v8::Handle<v8::Object> RequestCppToV8(v8::Isolate* isolate,
 
 static HttpResponse* ResponseV8ToCpp(v8::Isolate* isolate,
                                      TRI_v8_global_t const* v8g,
-                                     v8::Handle<v8::Object> const res,
-                                     uint32_t compatibility) {
+                                     v8::Handle<v8::Object> const res) {
   GeneralResponse::ResponseCode code = GeneralResponse::ResponseCode::OK;
 
   TRI_GET_GLOBAL_STRING(ResponseCodeKey);
@@ -528,7 +507,7 @@ static HttpResponse* ResponseV8ToCpp(v8::Isolate* isolate,
         (int)(TRI_ObjectToDouble(res->Get(ResponseCodeKey))));
   }
 
-  auto response = std::make_unique<HttpResponse>(code, compatibility);
+  auto response = std::make_unique<HttpResponse>(code);
 
   TRI_GET_GLOBAL_STRING(ContentTypeKey);
   if (res->Has(ContentTypeKey)) {
@@ -564,20 +543,16 @@ static HttpResponse* ResponseV8ToCpp(v8::Isolate* isolate,
         std::string name = TRI_ObjectToString(transformator);
 
         // check available transformations
-        static std::string const contentEncoding = "content-encoding";
-
         if (name == "base64encode") {
           // base64-encode the result
           out = StringUtils::encodeBase64(out);
           // set the correct content-encoding header
-          static std::string const base64 = "base64";
-          response->setHeaderNC(contentEncoding, base64);
+          response->setHeaderNC(StaticStrings::ContentEncoding, StaticStrings::Base64);
         } else if (name == "base64decode") {
           // base64-decode the result
           out = StringUtils::decodeBase64(out);
           // set the correct content-encoding header
-          static std::string const binary = "binary";
-          response->setHeaderNC(contentEncoding, binary);
+          response->setHeaderNC(StaticStrings::ContentEncoding, StaticStrings::Binary);
         }
       }
 
@@ -591,8 +566,7 @@ static HttpResponse* ResponseV8ToCpp(v8::Isolate* isolate,
         response->body().appendText(V8Buffer::data(obj), V8Buffer::length(obj));
       } else {
         // treat body as a string
-        std::string&& obj(TRI_ObjectToString(res->Get(BodyKey)));
-        response->body().appendText(obj);
+        response->body().appendText(TRI_ObjectToString(res->Get(BodyKey)));
       }
     }
   }
@@ -738,7 +712,7 @@ static TRI_action_result_t ExecuteActionVocbase(
     result.canceled = false;
 
     HttpResponse* response =
-        new HttpResponse(GeneralResponse::ResponseCode::SERVER_ERROR, request->compatibility());
+        new HttpResponse(GeneralResponse::ResponseCode::SERVER_ERROR);
     if (errorMessage.empty()) {
       errorMessage = TRI_errno_string(errorCode);
     }
@@ -752,8 +726,7 @@ static TRI_action_result_t ExecuteActionVocbase(
 
   else if (tryCatch.HasCaught()) {
     if (tryCatch.CanContinue()) {
-      HttpResponse* response = new HttpResponse(GeneralResponse::ResponseCode::SERVER_ERROR,
-                                                request->compatibility());
+      HttpResponse* response = new HttpResponse(GeneralResponse::ResponseCode::SERVER_ERROR);
       response->body().appendText(TRI_StringifyV8Exception(isolate, &tryCatch));
 
       result.response = response;
@@ -766,7 +739,7 @@ static TRI_action_result_t ExecuteActionVocbase(
 
   else {
     result.response =
-        ResponseV8ToCpp(isolate, v8g, res, request->compatibility());
+        ResponseV8ToCpp(isolate, v8g, res);
   }
 
   return result;
@@ -863,7 +836,7 @@ static void JS_ExecuteGlobalContextFunction(
   std::string const def = *utf8def;
 
   // and pass it to the V8 contexts
-  if (!GlobalV8Dealer->addGlobalContextMethod(def)) {
+  if (!V8DealerFeature::DEALER->addGlobalContextMethod(def)) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
                                    "invalid action definition");
   }
@@ -1228,11 +1201,8 @@ static void JS_AccessSid(v8::FunctionCallbackInfo<v8::Value> const& args) {
 /// @brief stores the V8 actions function inside the global variable
 ////////////////////////////////////////////////////////////////////////////////
 
-void TRI_InitV8Actions(v8::Isolate* isolate, v8::Handle<v8::Context> context,
-                       TRI_vocbase_t* vocbase, ApplicationV8* applicationV8) {
+void TRI_InitV8Actions(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
   v8::HandleScope scope(isolate);
-
-  GlobalV8Dealer = applicationV8;
 
   // .............................................................................
   // create the global functions
@@ -1288,8 +1258,7 @@ static bool clusterSendToAllServers(
 
   DBServers = ci->getCurrentDBServers();
   for (auto const& sid : DBServers) {
-    std::unique_ptr<std::map<std::string, std::string>> headers(
-        new std::map<std::string, std::string>());
+    auto headers = std::make_unique<std::unordered_map<std::string, std::string>>();
     cc->asyncRequest("", coordTransactionID, "server:" + sid, method, url,
                      reqBodyString, headers, nullptr, 3600.0);
   }

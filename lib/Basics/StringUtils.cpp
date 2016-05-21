@@ -207,55 +207,6 @@ namespace arangodb {
 namespace basics {
 namespace StringUtils {
 
-// .............................................................................
-// STRING AND STRING POINTER
-// .............................................................................
-
-blob_t duplicateBlob(const blob_t& source) {
-  blob_t result = {0, 0};
-
-  if (source.length == 0 || source.data == 0) {
-    return result;
-  }
-
-  result.data = new char[source.length];
-
-  memcpy(const_cast<char*>(result.data), source.data, source.length);
-  result.length = source.length;
-
-  return result;
-}
-
-blob_t duplicateBlob(char const* source, size_t len) {
-  blob_t result = {0, 0};
-
-  if (source == 0 || len == 0) {
-    return result;
-  }
-
-  result.data = new char[len];
-
-  memcpy(const_cast<char*>(result.data), source, len);
-  result.length = (uint32_t)len;
-
-  return result;
-}
-
-blob_t duplicateBlob(std::string const& source) {
-  blob_t result = {0, 0};
-
-  if (source.size() == 0) {
-    return result;
-  }
-
-  result.data = new char[source.size()];
-
-  memcpy(const_cast<char*>(result.data), source.c_str(), source.size());
-  result.length = (uint32_t)source.size();
-
-  return result;
-}
-
 char* duplicate(std::string const& source) {
   size_t len = source.size();
   char* result = new char[len + 1];
@@ -308,27 +259,10 @@ void destroy(char*& source, size_t length) {
   }
 }
 
-void destroy(blob_t& source) {
-  if (source.data != 0) {
-    ::memset(const_cast<char*>(source.data), 0, source.length);
-    delete[] source.data;
-    source.data = 0;
-    source.length = 0;
-  }
-}
-
 void erase(char*& source) {
   if (source != 0) {
     delete[] source;
     source = 0;
-  }
-}
-
-void erase(blob_t& source) {
-  if (source.data != 0) {
-    delete[] source.data;
-    source.data = 0;
-    source.length = 0;
   }
 }
 
@@ -944,80 +878,6 @@ std::vector<std::string> split(std::string const& source,
   return result;
 }
 
-std::string join(std::vector<std::string> const& source, char delim) {
-  std::string result = "";
-  bool first = true;
-
-  for (std::vector<std::string>::const_iterator i = source.begin();
-       i != source.end(); ++i) {
-    if (first) {
-      first = false;
-    } else {
-      result += delim;
-    }
-
-    result += *i;
-  }
-
-  return result;
-}
-
-std::string join(std::vector<std::string> const& source,
-                 std::string const& delim) {
-  std::string result = "";
-  bool first = true;
-
-  for (std::vector<std::string>::const_iterator i = source.begin();
-       i != source.end(); ++i) {
-    if (first) {
-      first = false;
-    } else {
-      result += delim;
-    }
-
-    result += *i;
-  }
-
-  return result;
-}
-
-std::string join(std::set<std::string> const& source, char delim) {
-  std::string result = "";
-  bool first = true;
-
-  for (std::set<std::string>::const_iterator i = source.begin();
-       i != source.end(); ++i) {
-    if (first) {
-      first = false;
-    } else {
-      result += delim;
-    }
-
-    result += *i;
-  }
-
-  return result;
-}
-
-std::string join(std::set<std::string> const& source,
-                 std::string const& delim) {
-  std::string result = "";
-  bool first = true;
-
-  for (std::set<std::string>::const_iterator i = source.begin();
-       i != source.end(); ++i) {
-    if (first) {
-      first = false;
-    } else {
-      result += delim;
-    }
-
-    result += *i;
-  }
-
-  return result;
-}
-
 std::string trim(std::string const& sourceStr, std::string const& trimStr) {
   size_t s = sourceStr.find_first_not_of(trimStr);
   size_t e = sourceStr.find_last_not_of(trimStr);
@@ -1185,6 +1045,16 @@ void tolowerInPlace(std::string* str) {
   }
 }
 
+std::string tolower(std::string&& str) {
+  size_t const len = str.size();
+
+  for (size_t i = 0; i < len; ++i) {
+    str[i] = static_cast<char>(::tolower(str[i]));
+  }
+
+  return str;
+}
+
 std::string tolower(std::string const& str) {
   size_t len = str.length();
 
@@ -1261,17 +1131,18 @@ bool isSuffix(std::string const& str, std::string const& postfix) {
 }
 
 std::string urlDecode(std::string const& str) {
+  std::string result;
+  // reserve enough room so we do not need to re-alloc
+  result.reserve(str.size() + 16); 
+
   char const* src = str.c_str();
   char const* end = src + str.size();
 
-  char* buffer = new char[str.size() + 1];
-  char* ptr = buffer;
-
   for (; src < end && *src != '%'; ++src) {
     if (*src == '+') {
-      *ptr++ = ' ';
+      result.push_back(' ');
     } else {
-      *ptr++ = *src;
+      result.push_back(*src);
     }
   }
 
@@ -1284,10 +1155,10 @@ std::string urlDecode(std::string const& str) {
         src += 1;
       } else {
         if (h2 == -1) {
-          *ptr++ = h1;
+          result.push_back(h1);
           src += 2;
         } else {
-          *ptr++ = h1 << 4 | h2;
+          result.push_back(h1 << 4 | h2);
           src += 3;
         }
       }
@@ -1297,7 +1168,7 @@ std::string urlDecode(std::string const& str) {
       if (h1 == -1) {
         src += 1;
       } else {
-        *ptr++ = h1;
+        result.push_back(h1);
         src += 2;
       }
     } else {
@@ -1306,17 +1177,12 @@ std::string urlDecode(std::string const& str) {
 
     for (; src < end && *src != '%'; ++src) {
       if (*src == '+') {
-        *ptr++ = ' ';
+        result.push_back(' ');
       } else {
-        *ptr++ = *src;
+        result.push_back(*src);
       }
     }
   }
-
-  *ptr = '\0';
-  std::string result(buffer, ptr - buffer);
-
-  delete[] buffer;
 
   return result;
 }
@@ -1326,7 +1192,7 @@ std::string urlEncode(std::string const& str) {
 }
 
 std::string urlEncode(char const* src) {
-  if (src != 0) {
+  if (src != nullptr) {
     size_t len = strlen(src);
     return urlEncode(src, len);
   }
@@ -1343,24 +1209,24 @@ std::string urlEncode(char const* src, size_t const len) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
 
-  char* buffer = new char[3 * len + 1];
-  char* ptr = buffer;
+  std::string result;
+  result.reserve(3 * len);
 
   for (; src < end; ++src) {
     if ('0' <= *src && *src <= '9') {
-      *ptr++ = *src;
+      result.push_back(*src);
     }
 
     else if ('a' <= *src && *src <= 'z') {
-      *ptr++ = *src;
+      result.push_back(*src);
     }
 
     else if ('A' <= *src && *src <= 'Z') {
-      *ptr++ = *src;
+      result.push_back(*src);
     }
 
     else if (*src == '-' || *src == '_' || *src == '.' || *src == '~') {
-      *ptr++ = *src;
+      result.push_back(*src);
     }
 
     else {
@@ -1368,16 +1234,11 @@ std::string urlEncode(char const* src, size_t const len) {
       uint8_t n1 = n >> 4;
       uint8_t n2 = n & 0x0F;
 
-      *ptr++ = '%';
-      *ptr++ = hexChars[n1];
-      *ptr++ = hexChars[n2];
+      result.push_back('%');
+      result.push_back(hexChars[n1]);
+      result.push_back(hexChars[n2]);
     }
   }
-
-  *ptr = '\0';
-  std::string result(buffer, ptr - buffer);
-
-  delete[] buffer;
 
   return result;
 }
@@ -2016,6 +1877,7 @@ std::string encodeBase64(std::string const& in) {
   unsigned char charArray4[4];
 
   std::string ret;
+  ret.reserve((in.size() * 4 / 3) + 2);
 
   int i = 0;
 
@@ -2069,13 +1931,14 @@ std::string encodeBase64(std::string const& in) {
 std::string decodeBase64(std::string const& source) {
   unsigned char charArray4[4];
   unsigned char charArray3[3];
-
+  
   std::string ret;
 
   int i = 0;
   int inp = 0;
 
   int in_len = (int)source.size();
+  ret.reserve((source.size() / 4 * 3) + 1);
 
   while (in_len-- && (source[inp] != '=') && isBase64(source[inp])) {
     charArray4[i++] = source[inp];
@@ -2127,6 +1990,7 @@ std::string encodeBase64U(std::string const& in) {
   unsigned char charArray4[4];
 
   std::string ret;
+  ret.reserve((in.size() * 4 / 3) + 2);
 
   int i = 0;
 
@@ -2182,6 +2046,7 @@ std::string decodeBase64U(std::string const& source) {
   unsigned char charArray3[3];
 
   std::string ret;
+  ret.reserve((source.size() / 4 * 3) + 1);
 
   int i = 0;
   int inp = 0;

@@ -7,22 +7,6 @@
 include(ExternalProject)
 
 ################################################################################
-## GETOPT
-################################################################################
-
-if (WINDOWS)
-  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/getopt)
-endif ()
-
-################################################################################
-## REGEX
-################################################################################
-
-if (WINDOWS)
-  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/regex)
-endif ()
-
-################################################################################
 ## EV
 ################################################################################
 
@@ -42,7 +26,7 @@ option(USE_PRECOMPILED_V8 "use a precompiled V8" OFF)
 
 if (USE_PRECOMPILED_V8)
   set(V8_VERSION
-    "V8-4.9.391"
+    "V8-5.0.71.39"
     CACHE INTERNAL
     "${PROJECT_NAME}: Version"
     FORCE
@@ -104,6 +88,19 @@ endif ()
 
 set(SKIP_INSTALL_ALL ON)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/zlib/zlib-1.2.8)
+
+################################################################################
+## ROCKSDB
+################################################################################
+
+if (USE_ROCKSDB)
+  if (${JEMALLOC_FOUND})
+#   set(USE_JEMALLOC_DEFAULT 1)
+  endif()
+  set(SKIP_INSTALL_ALL ON)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/snappy/google-snappy-d53de18)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/rocksdb/rocksdb)
+endif ()
 
 ################################################################################
 ## LINK_DIRECTORIES

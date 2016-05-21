@@ -33,7 +33,7 @@ using namespace arangodb;
 ////////////////////////////////////////////////////////////////////////////////
 
 IndexIteratorContext::IndexIteratorContext(TRI_vocbase_t* vocbase,
-                                           CollectionNameResolver* resolver)
+                                           CollectionNameResolver const* resolver)
     : vocbase(vocbase), resolver(resolver), ownsResolver(resolver == nullptr) {}
 
 IndexIteratorContext::IndexIteratorContext(TRI_vocbase_t* vocbase)
@@ -94,7 +94,87 @@ IndexIterator::~IndexIterator() {}
 TRI_doc_mptr_t* IndexIterator::next() { return nullptr; }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief default implementation for nextBabies
+////////////////////////////////////////////////////////////////////////////////
+
+void IndexIterator::nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t) {
+  THROW_ARANGO_EXCEPTION(TRI_ERROR_NOT_IMPLEMENTED);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief default implementation for reset
 ////////////////////////////////////////////////////////////////////////////////
 
 void IndexIterator::reset() {}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief default implementation for skip
+////////////////////////////////////////////////////////////////////////////////
+
+void IndexIterator::skip(uint64_t count, uint64_t& skipped) {
+  // Skip the first count-many entries
+  // TODO: Can be improved
+  while (count > 0 && next() != nullptr) {
+    --count;
+    skipped++;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Get the next element
+///        If one iterator is exhausted, the next one is used.
+///        A nullptr indicates that all iterators are exhausted
+////////////////////////////////////////////////////////////////////////////////
+
+TRI_doc_mptr_t* MultiIndexIterator::next() {
+  if (_current == nullptr) {
+    return nullptr;
+  }
+  TRI_doc_mptr_t* next = _current->next();
+  while (next == nullptr) {
+    _currentIdx++;
+    if (_currentIdx >= _iterators.size()) {
+      _current = nullptr;
+      return nullptr;
+    }
+    _current = _iterators.at(_currentIdx);
+    next = _current->next();
+  }
+  return next;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Get the next limit many elements
+///        If one iterator is exhausted, the next one will be used.
+///        An empty result vector indicates that all iterators are exhausted
+////////////////////////////////////////////////////////////////////////////////
+
+void MultiIndexIterator::nextBabies(std::vector<TRI_doc_mptr_t*>& result, size_t limit) {
+  if (_current == nullptr) {
+    result.clear();
+    return;
+  }
+  _current->nextBabies(result, limit);
+  while (result.empty()) {
+    _currentIdx++;
+    if (_currentIdx >= _iterators.size()) {
+      _current = nullptr;
+      return;
+    }
+    _current = _iterators.at(_currentIdx);
+    _current->nextBabies(result, limit);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief Reset the cursor
+///        This will reset ALL internal iterators and start all over again
+////////////////////////////////////////////////////////////////////////////////
+
+void MultiIndexIterator::reset() {
+  _current = _iterators.at(0);
+  _currentIdx = 0;
+  for (auto& it : _iterators) {
+    it->reset();
+  }
+}

@@ -24,19 +24,19 @@
 
 #include <iostream>
 
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "ApplicationFeatures/ClientFeature.h"
 #include "Basics/StringUtils.h"
-#include "Basics/random.h"
 #include "Benchmark/BenchmarkCounter.h"
 #include "Benchmark/BenchmarkOperation.h"
 #include "Benchmark/BenchmarkThread.h"
-#include "ProgramOptions2/ProgramOptions.h"
-#include "ProgramOptions2/Section.h"
+#include "ProgramOptions/ProgramOptions.h"
+#include "ProgramOptions/Section.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
 
 using namespace arangodb;
-using namespace arangodb::arangob;
+using namespace arangodb::arangobench;
 using namespace arangodb::basics;
 using namespace arangodb::httpclient;
 using namespace arangodb::options;
@@ -48,7 +48,7 @@ using namespace arangodb::rest;
 /// We use an evil global pointer here.
 ////////////////////////////////////////////////////////////////////////////////
 
-BenchFeature* ARANGOB;
+BenchFeature* ARANGOBENCH;
 #include "Benchmark/test-cases.h"
 
 BenchFeature::BenchFeature(application_features::ApplicationServer* server,
@@ -71,15 +71,11 @@ BenchFeature::BenchFeature(application_features::ApplicationServer* server,
   setOptional(false);
   startsAfter("Client");
   startsAfter("Config");
+  startsAfter("Random");
   startsAfter("Logger");
 }
 
 void BenchFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addOption("--async", "send asynchronous requests",
                      new BooleanParameter(&_async));
 
@@ -137,10 +133,10 @@ void BenchFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
 
   options->addOption("--verbose",
                      "print out replies if the http-header indicates db-errors",
-                     new BooleanParameter(&_verbose, false));
+                     new BooleanParameter(&_verbose));
 
   options->addOption("--quiet", "supress status messages",
-                     new BooleanParameter(&_quiet, false));
+                     new BooleanParameter(&_quiet));
 }
 
 void BenchFeature::status(std::string const& value) {
@@ -156,22 +152,19 @@ void BenchFeature::updateStartCounter() { ++_started; }
 int BenchFeature::getStartCounter() { return _started; }
 
 void BenchFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
-  ClientFeature* client =
-      dynamic_cast<ClientFeature*>(server()->feature("Client"));
+  ClientFeature* client = application_features::ApplicationServer::getFeature<ClientFeature>("Client");
   client->setRetries(3);
   client->setWarn(true);
 
   int ret = EXIT_SUCCESS;
 
   *_result = ret;
-  ARANGOB = this;
+  ARANGOBENCH = this;
 
   std::unique_ptr<BenchmarkOperation> benchmark(GetTestCase(_testCase));
 
   if (benchmark == nullptr) {
-    ARANGOB = nullptr;
+    ARANGOBENCH = nullptr;
     LOG(FATAL) << "invalid test case name '" << _testCase << "'";
     FATAL_ERROR_EXIT();
   }
@@ -207,7 +200,7 @@ void BenchFeature::start() {
 
     BenchmarkThread* thread = new BenchmarkThread(
         benchmark.get(), &startCondition, &BenchFeature::updateStartCounter,
-        i, (unsigned long)_batchSize, &operationsCounter, client, _keepAlive,
+        static_cast<int>(i), (unsigned long)_batchSize, &operationsCounter, client, _keepAlive,
         _async, _verbose);
 
     threads.push_back(thread);
@@ -235,7 +228,7 @@ void BenchFeature::start() {
     guard.broadcast();
   }
 
-  size_t const stepValue = _operations / 20;
+  size_t const stepValue = static_cast<size_t>(_operations / 20);
   size_t nextReportValue = stepValue;
 
   if (nextReportValue < 100) {
@@ -260,7 +253,7 @@ void BenchFeature::start() {
   double time = TRI_microtime() - start;
   double requestTime = 0.0;
 
-  for (uint64_t i = 0; i < _concurreny; ++i) {
+  for (size_t i = 0; i < static_cast<size_t>(_concurreny); ++i) {
     requestTime += threads[i]->getTime();
   }
 
@@ -300,16 +293,16 @@ void BenchFeature::start() {
             << std::endl;
 
   if (failures > 0) {
-    LOG(WARN) << "WARNING: " << failures << " arangob request(s) failed!";
+    LOG(WARN) << "WARNING: " << failures << " arangobench request(s) failed!";
   }
   if (incomplete > 0) {
     LOG(WARN) << "WARNING: " << incomplete
-              << " arangob requests with incomplete results!";
+              << " arangobench requests with incomplete results!";
   }
 
   benchmark->tearDown();
 
-  for (uint64_t i = 0; i < _concurreny; ++i) {
+  for (size_t i = 0; i < static_cast<size_t>(_concurreny); ++i) {
     delete threads[i];
     delete endpoints[i];
   }
@@ -322,7 +315,5 @@ void BenchFeature::start() {
 }
 
 void BenchFeature::stop() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::stop";
-
-  ARANGOB = nullptr;
+  ARANGOBENCH = nullptr;
 }

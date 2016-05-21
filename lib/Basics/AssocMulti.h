@@ -23,19 +23,18 @@
 /// @author Max Neunhoeffer
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_ASSOC_MULTI_H
-#define LIB_BASICS_ASSOC_MULTI_H 1
+#ifndef ARANGODB_BASICS_ASSOC_MULTI_H
+#define ARANGODB_BASICS_ASSOC_MULTI_H 1
 
 // Activate for additional debugging:
 // #define TRI_CHECK_MULTI_POINTER_HASH 1
 
 #include "Basics/Common.h"
-#include "Basics/JsonHelper.h"
-#include "Logger/Logger.h"
 #include "Basics/memory-map.h"
 #include "Basics/Mutex.h"
 #include "Basics/MutexLocker.h"
 #include "Basics/prime-numbers.h"
+#include "Logger/Logger.h"
 
 #include <thread>
 #include <velocypack/Builder.h>
@@ -130,7 +129,7 @@ class AssocMulti {
       IsEqualKeyElementFuncType;
   typedef std::function<bool(UserData*, Element const*, Element const*)>
       IsEqualElementElementFuncType;
-  typedef std::function<void(Element*)> CallbackElementFuncType;
+  typedef std::function<bool(Element*)> CallbackElementFuncType;
 
  private:
   typedef Entry<Element, IndexType, useHashCache> EntryType;
@@ -297,23 +296,6 @@ class AssocMulti {
   }
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief Appends information about statistics in the given json.
-  //////////////////////////////////////////////////////////////////////////////
-
-  void appendToJson(TRI_memory_zone_t* zone, Json& json) {
-    Json bkts(zone, Json::Array);
-    for (auto& b : _buckets) {
-      Json bucketInfo(zone, Json::Object);
-      bucketInfo("nrAlloc", Json(static_cast<double>(b._nrAlloc)));
-      bucketInfo("nrUsed", Json(static_cast<double>(b._nrUsed)));
-      bkts.add(bucketInfo);
-    }
-    json("buckets", bkts);
-    json("nrBuckets", Json(static_cast<double>(_buckets.size())));
-    json("totalUsed", Json(static_cast<double>(size())));
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief capacity(), return the number of allocated items
   //////////////////////////////////////////////////////////////////////////////
 
@@ -475,7 +457,7 @@ class AssocMulti {
             }
 
             // we're responsible for this bucket!
-            Bucket& b = _buckets[bucketId];
+            Bucket& b = _buckets[static_cast<size_t>(bucketId)];
 
             for (auto const& it2 : it.second) {
               for (auto const& it3 : it2) {
@@ -534,7 +516,9 @@ class AssocMulti {
         if (b._table[i].ptr == nullptr) {
           continue;
         }
-        callback(b._table[i].ptr);
+        if (!callback(b._table[i].ptr)) {
+          return;
+        }
       }
     }
   }
@@ -791,7 +775,26 @@ class AssocMulti {
 
   std::vector<Element*>* lookupByKey(UserData* userData, Key const* key,
                                      size_t limit = 0) const {
-    std::unique_ptr<std::vector<Element*>> result(new std::vector<Element*>());
+    auto result = std::make_unique<std::vector<Element*>>();
+    lookupByKey(userData, key, *result, limit);
+    return result.release();
+  }
+
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief lookups an element given a key
+  ///        Accepts a result vector as input. The result of this lookup will
+  ///        be appended to the given vector.
+  ///        This function returns as soon as limit many elements are inside
+  ///        the given vector, no matter if the come from this lookup or
+  ///        have been in the result before.
+  //////////////////////////////////////////////////////////////////////////////
+
+  void lookupByKey(UserData* userData, Key const* key,
+                   std::vector<Element*>& result, size_t limit = 0) const {
+    if (limit > 0 && result.size() >= limit) {
+      return;
+    }
 
     // compute the hash
     uint64_t hashByKey = _hashKey(userData, key);
@@ -819,13 +822,12 @@ class AssocMulti {
       // We found the beginning of the linked list:
 
       do {
-        result->push_back(b._table[i].ptr);
+        result.push_back(b._table[i].ptr);
         i = b._table[i].next;
-      } while (i != INVALID_INDEX && (limit == 0 || result->size() < limit));
+      } while (i != INVALID_INDEX && (limit == 0 || result.size() < limit));
     }
 
     // return whatever we found
-    return result.release();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -835,7 +837,29 @@ class AssocMulti {
   std::vector<Element*>* lookupWithElementByKey(UserData* userData,
                                                 Element const* element,
                                                 size_t limit = 0) const {
-    std::unique_ptr<std::vector<Element*>> result(new std::vector<Element*>());
+    auto result = std::make_unique<std::vector<Element*>>();
+    lookupWithElementByKey(userData, element, *result, limit);
+    return result.release();
+  }
+
+
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief looks up all elements with the same key as a given element
+  ///        Accepts a result vector as input. The result of this lookup will
+  ///        be appended to the given vector.
+  ///        This function returns as soon as limit many elements are inside
+  ///        the given vector, no matter if the come from this lookup or
+  ///        have been in the result before.
+  //////////////////////////////////////////////////////////////////////////////
+
+  void lookupWithElementByKey(UserData* userData, Element const* element,
+                              std::vector<Element*>& result,
+                              size_t limit = 0) const {
+    if (limit > 0 && result.size() >= limit) {
+      // The vector is full, nothing to do.
+      return;
+    }
 
     // compute the hash
     uint64_t hashByKey = _hashElement(userData, element, true);
@@ -863,13 +887,11 @@ class AssocMulti {
       // We found the beginning of the linked list:
 
       do {
-        result->push_back(b._table[i].ptr);
+        result.push_back(b._table[i].ptr);
         i = b._table[i].next;
-      } while (i != INVALID_INDEX && (limit == 0 || result->size() < limit));
+      } while (i != INVALID_INDEX && (limit == 0 || result.size() < limit));
     }
-
     // return whatever we found
-    return result.release();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -879,7 +901,29 @@ class AssocMulti {
 
   std::vector<Element*>* lookupWithElementByKeyContinue(
       UserData* userData, Element const* element, size_t limit = 0) const {
-    std::unique_ptr<std::vector<Element*>> result(new std::vector<Element*>());
+    auto result = std::make_unique<std::vector<Element*>>();
+    lookupWithElementByKeyContinue(userData, element, *result.get(), limit);
+    return result.release();
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief looks up all elements with the same key as a given element,
+  ///        continuation.
+  ///        Accepts a result vector as input. The result of this lookup will
+  ///        be appended to the given vector.
+  ///        This function returns as soon as limit many elements are inside
+  ///        the given vector, no matter if the come from this lookup or
+  ///        have been in the result before.
+  //////////////////////////////////////////////////////////////////////////////
+
+  void lookupWithElementByKeyContinue(UserData* userData,
+                                      Element const* element,
+                                      std::vector<Element*>& result,
+                                      size_t limit = 0) const {
+    if (limit > 0 && result.size() >= limit) {
+      // The vector is full, nothing to do.
+      return;
+    }
 
     uint64_t hashByKey = _hashElement(userData, element, true);
     Bucket const& b = _buckets[hashByKey & _bucketsMask];
@@ -907,21 +951,21 @@ class AssocMulti {
 
       if (b._table[i].ptr == nullptr) {
         // This cannot really happen, but we handle it gracefully anyway
-        return nullptr;
+        return;
       }
     }
 
     // continue search of the table
     while (true) {
       i = b._table[i].next;
-      if (i == INVALID_INDEX || (limit != 0 && result->size() >= limit)) {
+      if (i == INVALID_INDEX || (limit != 0 && result.size() >= limit)) {
         break;
       }
-      result->push_back(b._table[i].ptr);
+      result.push_back(b._table[i].ptr);
     }
 
     // return whatever we found
-    return result.release();
+    return;
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -934,6 +978,23 @@ class AssocMulti {
                                              size_t limit = 0) const {
     return lookupWithElementByKeyContinue(userData, element, limit);
   }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief looks up all elements with the same key as a given element,
+  ///        continuation
+  ///        Accepts a result vector as input. The result of this lookup will
+  ///        be appended to the given vector.
+  ///        This function returns as soon as limit many elements are inside
+  ///        the given vector, no matter if the come from this lookup or
+  ///        have been in the result before.
+  //////////////////////////////////////////////////////////////////////////////
+
+  void lookupByKeyContinue(UserData* userData, Element const* element,
+                           std::vector<Element*>& result,
+                           size_t limit = 0) const {
+    lookupWithElementByKeyContinue(userData, element, result, limit);
+  }
+
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief removes an element from the array, caller is responsible to free it
@@ -1083,7 +1144,7 @@ class AssocMulti {
 
     LOG(TRACE) << "resizing index " << cb << ", target size: " << size;
 
-    LOG_TOPIC(TRACE, Logger::PERFORMANCE) << 
+    LOG_TOPIC(TRACE, Logger::PERFORMANCE) <<
         "index-resize " << cb << ", target size: " << size;
 
     double start = TRI_microtime();
@@ -1160,7 +1221,7 @@ class AssocMulti {
 
     LOG(TRACE) << "resizing index " << cb << " done";
 
-    LOG_TOPIC(TRACE, Logger::PERFORMANCE) << "[timer] " << Logger::DURATION(TRI_microtime() - start) << " s, index-resize, " << cb << ", target size: " << size;
+    LOG_TOPIC(TRACE, Logger::PERFORMANCE) << "[timer] " << Logger::FIXED(TRI_microtime() - start) << " s, index-resize, " << cb << ", target size: " << size;
   }
 
 #ifdef TRI_CHECK_MULTI_POINTER_HASH

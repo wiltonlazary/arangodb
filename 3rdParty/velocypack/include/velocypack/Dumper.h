@@ -119,7 +119,7 @@ class Dumper {
 
   void dumpString(char const*, ValueLength);
 
-  void dumpValue(Slice const& slice, Slice const* base = nullptr) {
+  inline void dumpValue(Slice const& slice, Slice const* base = nullptr) {
     dumpValue(&slice, base);
   }
 
@@ -127,15 +127,18 @@ class Dumper {
 
   void indent() {
     size_t n = _indentation;
-    _sink->reserve(n);
+    _sink->reserve(2 * n);
     for (size_t i = 0; i < n; ++i) {
       _sink->append("  ", 2);
     }
   }
 
-  void handleUnsupportedType(Slice const*) {
+  void handleUnsupportedType(Slice const* slice) {
     if (options->unsupportedTypeBehavior == Options::NullifyUnsupportedType) {
       _sink->append("null", 4);
+      return;
+    } else if (options->unsupportedTypeBehavior == Options::ConvertUnsupportedType) {
+      _sink->append(std::string("\"(non-representable type ") + slice->typeName() + ")\"");
       return;
     }
 

@@ -27,7 +27,6 @@
 #include "Basics/Common.h"
 #include "V8/v8-globals.h"
 #include "VocBase/document-collection.h"
-#include "VocBase/shaped-json.h"
 
 struct TRI_server_t;
 struct TRI_vocbase_t;
@@ -37,18 +36,9 @@ namespace aql {
 class QueryRegistry;
 }
 
-class ApplicationV8;
 class CollectionNameResolver;
 class JSLoader;
 }
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief parse vertex handle from a v8 value (string | object)
-////////////////////////////////////////////////////////////////////////////////
-
-int TRI_ParseVertex(v8::FunctionCallbackInfo<v8::Value> const& args,
-                    arangodb::CollectionNameResolver const*, TRI_voc_cid_t&,
-                    std::unique_ptr<char[]>&, v8::Handle<v8::Value> const);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief return the private WRP_VOCBASE_COL_TYPE value
@@ -60,15 +50,13 @@ int32_t TRI_GetVocBaseColType();
 /// @brief run version check
 ////////////////////////////////////////////////////////////////////////////////
 
-bool TRI_UpgradeDatabase(TRI_vocbase_t*, arangodb::JSLoader*,
-                         v8::Handle<v8::Context>);
+bool TRI_UpgradeDatabase(TRI_vocbase_t*, v8::Handle<v8::Context>);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief run upgrade check
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_CheckDatabaseVersion(TRI_vocbase_t* vocbase,
-                             arangodb::JSLoader* startupLoader,
                              v8::Handle<v8::Context> context);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -81,9 +69,8 @@ void TRI_V8ReloadRouting(v8::Isolate* isolate);
 /// @brief creates a TRI_vocbase_t global context
 ////////////////////////////////////////////////////////////////////////////////
 
-void TRI_InitV8VocBridge(v8::Isolate* isolate, arangodb::ApplicationV8*,
-                         v8::Handle<v8::Context>, arangodb::aql::QueryRegistry*,
-                         TRI_server_t*, TRI_vocbase_t*, arangodb::JSLoader*,
-                         size_t);
+void TRI_InitV8VocBridge(v8::Isolate* isolate, v8::Handle<v8::Context>,
+                         arangodb::aql::QueryRegistry*, TRI_server_t*,
+                         TRI_vocbase_t*, size_t);
 
 #endif

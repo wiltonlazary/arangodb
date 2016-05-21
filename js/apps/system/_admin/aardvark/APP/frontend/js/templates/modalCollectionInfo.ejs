@@ -4,16 +4,7 @@
     var revision    = content.revision;
 %>
 
-    <ul id="infoTab" class="nav nav-tabs">
-      <li class="active"><a href="#info" data-toggle="tab">Info</a></li>
-      <li><a href="#figures" data-toggle="tab">Figures</a></li>
-    </ul>
-
-    <div class="tab-content" id="tab-content-collection-info">
-
-			<div class="tab-pane active" id="info">
-
-        <table id="collectionInfoTable">
+        <table id="collectionInfoTable" class="arango-table">
           <tr id="collectionSizeBox">
             <th class="collectionInfoTh2">Journal size:</th>
             <th class="collectionInfoTh">
@@ -61,12 +52,16 @@
                 <%=revision.revision%>
               </div>
             </th>
+            <th class="collectionInfoTh">
+            </th>
           </tr>
 
           <tr>
             <th class="collectionInfoTh2">Type:</th>
             <th class="collectionInfoTh">
               <div class="modal-text"><%=content.model.get("type")%></div>
+            </th>
+            <th class="collectionInfoTh">
             </th>
           </tr>
 
@@ -75,12 +70,38 @@
             <th class="collectionInfoTh">
               <div class="modal-text"><%=content.model.get("status")%></div>
             </th>
+            <th class="collectionInfoTh">
+            </th>
           </tr>
+
+          <% if (figuresData.numberOfShards) { %>
+            <tr>
+              <th class="collectionInfoTh2">Shards:</th>
+              <th class="collectionInfoTh">
+                <div class="modal-text"><%=figuresData.numberOfShards%></div>
+              </th>
+              <th class="collectionInfoTh">
+              </th>
+            </tr>
+          <% } %>
           
+          <% if (figuresData.replicationFactor) { %>
+            <tr>
+              <th class="collectionInfoTh2">Replication factor:</th>
+              <th class="collectionInfoTh">
+                <div class="modal-text"><%=figuresData.replicationFactor%></div>
+              </th>
+              <th class="collectionInfoTh">
+              </th>
+            </tr>
+          <% } %>
+
           <tr>
             <th class="collectionInfoTh2">Index buckets:</th>
             <th class="collectionInfoTh">
               <div class="modal-text"><%=figuresData.indexBuckets%></div>
+            </th>
+            <th class="collectionInfoTh">
             </th>
           </tr>
           <tr>
@@ -88,19 +109,22 @@
             <th class="collectionInfoTh">
               <div class="modal-text"><%=figuresData.figures.compactionStatus.message + " (" + figuresData.figures.compactionStatus.time + ")" %></div>
             </th>
+            <th class="collectionInfoTh">
+            </th>
           </tr>
           <tr>
             <th class="collectionInfoTh2">Waiting for:</th>
             <th class="collectionInfoTh">
               <div class="modal-text"><%=figuresData.figures.waitingFor%></div>
             </th>
+            <th class="collectionInfoTh">
+            </th>
           </tr>
         </table>
 
       </div>
 
-      <div class="tab-pane collection-info-figures" id="figures">
-        <table class="figures1">
+        <table class="figures1 arango-table">
           <tr class="figuresHeader">
             <th class="">Type</th>
             <th>Count</th>
@@ -144,17 +168,6 @@
             </th>
           </tr>
           <tr>
-            <th class="modal-text">Shape files</th>
-            <th class="modal-text"><%=numeral(figuresData.figures.shapefiles.count).format('0,0')%></th>
-            <th class="modal-text">
-            <%=prettyBytes(figuresData.figures.shapefiles.fileSize)%>
-            </th>
-            <th class="tooltipInfoTh">
-              <a class="modalTooltips" title="Number and total size of shape files.">
-                <span class="arangoicon icon_arangodb_info"></span></a>
-            </th>
-          </tr>
-          <tr>
             <th class="modal-text">Indexes</th>
             <th class="modal-text"><%=numeral(figuresData.figures.indexes.count).format('0,0')%></th>
             <th class="modal-text">
@@ -167,27 +180,11 @@
           </tr>
         </table>
 
-        <table class="figures2">
+        <table class="figures2 arango-table">
           <tr class="figuresHeader">
             <th>Type</th>
             <th>Count</th>
             <th>Info</th>
-          </tr>
-          <tr>
-            <th class="modal-text">Shapes</th>
-            <th class="modal-text"><%=numeral(figuresData.figures.shapes.count).format('0,0')%></th>
-            <th class="tooltipInfoTh">
-              <a class="modalTooltips" title="Total number of shapes in the collection">
-                <span class="arangoicon icon_arangodb_info"></span></a>
-            </th>
-          </tr>
-          <tr>
-            <th class="modal-text">Attributes</th>
-            <th class="modal-text"><%=numeral(figuresData.figures.attributes.count).format('0,0')%></th>
-            <th class="tooltipInfoTh">
-              <a class="modalTooltips" title="Total number of attributes in the collection">
-                <span class="arangoicon icon_arangodb_info"></span></a>
-            </th>
           </tr>
           <tr>
             <th class="modal-text">Uncollected</th>
@@ -207,7 +204,7 @@
           </tr>
         </table>
 
-        <table class="figures3">
+        <table class="figures3 arango-table">
           <tr class="figuresHeader">
             <th>Type</th>
             <th>Count</th>
@@ -247,7 +244,5 @@
           </tr>
           <tr><th><div> </div></th></tr>
         </table>
-      </div>
 
-	  </div>
 </script>

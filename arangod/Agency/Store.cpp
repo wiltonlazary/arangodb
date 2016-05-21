@@ -22,540 +22,306 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "Store.h"
-#include "Agent.h"
+
+#include "StoreCallback.h"
+#include "Agency/Agent.h"
+#include "Basics/ConditionLocker.h"
+#include "Basics/StringUtils.h"
+#include "Basics/VelocyPackHelper.h"
 
 #include <velocypack/Buffer.h>
 #include <velocypack/Iterator.h>
+#include <velocypack/Slice.h>
 #include <velocypack/velocypack-aliases.h>
-
-#include <Basics/ConditionLocker.h>
 
 #include <ctime>
 #include <iomanip>
-#include <iostream>
 
 using namespace arangodb::consensus;
+using namespace arangodb::basics;
 
 struct NotEmpty {
   bool operator()(const std::string& s) { return !s.empty(); }
 };
+
 struct Empty {
   bool operator()(const std::string& s) { return s.empty(); }
 };
 
 /// @brief Split strings by separator
-std::vector<std::string> split(const std::string& value, char separator) {
+inline std::vector<std::string> split(const std::string& value,
+                                      char separator) {
   std::vector<std::string> result;
-  std::string::size_type p = (value.find(separator) == 0) ? 1:0;
+  std::string::size_type p = (value.find(separator) == 0) ? 1 : 0;
   std::string::size_type q;
   while ((q = value.find(separator, p)) != std::string::npos) {
     result.emplace_back(value, p, q - p);
     p = q + 1;
   }
   result.emplace_back(value, p);
-  result.erase(std::find_if(result.rbegin(), result.rend(),
-                            NotEmpty()).base(), result.end());
+  result.erase(std::find_if(result.rbegin(), result.rend(), NotEmpty()).base(),
+               result.end());
   return result;
 }
 
-// Construct with node name
-Node::Node (std::string const& name) : _parent(nullptr), _node_name(name) {
-  _value.clear();
-}
-
-// Construct with node name in tree structure
-Node::Node (std::string const& name, Node* parent) :
-  _parent(parent), _node_name(name) {
-  _value.clear();
-}
-
-// Default dtor
-Node::~Node() {}
-
-VPackSlice Node::slice() const {
-  return (_value.size()==0) ?
-    VPackSlice("\x00a",&Options::Defaults):VPackSlice(_value.data());
-}
-
-std::string const& Node::name() const {return _node_name;}
-
-std::string Node::uri() const {
-  Node *par = _parent;
-  std::stringstream path;
-  std::deque<std::string> names;
-  names.push_front(name());
-  while (par != 0) {
-    names.push_front(par->name());
-    par = par->_parent;
+inline static bool endpointPathFromUrl(std::string const& url,
+                                       std::string& endpoint,
+                                       std::string& path) {
+  std::stringstream ep;
+  path = "/";
+  size_t pos = 7;
+  if (url.find("http://") == 0) {
+    ep << "tcp://";
+  } else if (url.find("https://") == 0) {
+    ep << "ssl://";
+    ++pos;
+  } else {
+    return false;
   }
-  for (size_t i = 1; i < names.size(); ++i) {
-    path << "/" << names.at(i);
+
+  size_t slash_p = url.find("/", pos);
+  if (slash_p == std::string::npos) {
+    ep << url.substr(pos);
+  } else {
+    ep << url.substr(pos, slash_p - pos);
+    path = url.substr(slash_p);
   }
-  return path.str();
+
+  if (ep.str().find(':') == std::string::npos) {
+    ep << ":8529";
+  }
+
+  endpoint = ep.str();
+
+  return true;
 }
 
-Node& Node::operator= (VPackSlice const& slice) { // Assign value (become leaf)
-  _children.clear();
-  _value.reset();
-  _value.append(reinterpret_cast<char const*>(slice.begin()), slice.byteSize());
-  Node *par = _parent;
-  while (par != 0) {
-    _parent->notifyObservers();
-    par = par->_parent;
-  }
+// Create with name
+Store::Store(std::string const& name) : Thread(name), _node(name, this) {}
+
+Store::Store(Store const& other) :
+  Thread(other._node.name()), _agent(other._agent), _timeTable(other._timeTable),
+  _observerTable(other._observerTable), _observedTable(other._observedTable),
+  _node(other._node) {}
+  
+  Store::Store(Store&& other) :
+  Thread(other._node.name()), _agent(std::move(other._agent)),
+  _timeTable(std::move(other._timeTable)),
+  _observerTable(std::move(other._observerTable)),
+  _observedTable(std::move(other._observedTable)),
+  _node(std::move(other._node)) {}
+
+Store& Store::operator=(Store const& rhs) {
+  _agent = rhs._agent;
+  _timeTable = rhs._timeTable;
+  _observerTable = rhs._observerTable;
+  _observedTable = rhs._observedTable;
+  _node = rhs._node;
   return *this;
 }
 
-Node& Node::operator= (Node const& node) { // Assign node
-  _node_name = node._node_name;
-  _value = node._value;
-  _children = node._children;
-  Node *par = _parent;
-  while (par != 0) {
-    _parent->notifyObservers();
-    par = par->_parent;
-  }
+Store& Store::operator=(Store&& rhs) {
+  _agent = std::move(rhs._agent);
+  _timeTable = std::move(rhs._timeTable);
+  _observerTable = std::move(rhs._observerTable);
+  _observedTable = std::move(rhs._observedTable);
+  _node = std::move(rhs._node);
   return *this;
 }
 
-bool Node::operator== (VPackSlice const& rhs) const {
-  return rhs.equals(slice());
-}
+// Default ctor
+Store::~Store() {}
 
-bool Node::remove (std::string const& path) {
-  std::vector<std::string> pv = split(path, '/');
-  std::string key(pv.back());
-  pv.pop_back();
-  try {
-    Node& parent = (*this)(pv);
-    return parent.removeChild(key);
-  } catch (StoreException const& e) {
-    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Failed to delete key " << key;
-    LOG_TOPIC(DEBUG, Logger::AGENCY) << e.what();
-    return false;
-  }
-}
-
-bool Node::remove () {
-  Node& parent = *_parent;
-  return parent.removeChild(_node_name);
-}
-
-bool Node::removeChild (std::string const& key) {
-  auto found = _children.find(key);
-  if (found == _children.end())
-    return false;
-  else
-    _children.erase(found);
-  return true;
-}
-
-NodeType Node::type() const {return _children.size() ? NODE : LEAF;}
-
-Node& Node::operator [](std::string name) {
-  return *_children[name];
-}
-
-Node& Node::operator ()(std::vector<std::string>& pv) {
-  if (pv.size()) {
-    std::string const key = pv[0];
-    if (_children.find(key) == _children.end()) {
-      _children[key] = std::make_shared<Node>(pv[0], this);
-    }
-    pv.erase(pv.begin());
-    return (*_children[key])(pv);
-  } else {
-    return *this;
-  }
-}
-
-Node const& Node::operator ()(std::vector<std::string>& pv) const {
-  if (pv.size()) {
-    std::string const key = pv[0];
-    pv.erase(pv.begin());
-    if (_children.find(key) == _children.end()) {
-      throw StoreException("Not found");
-    }
-    const Node& child = *_children.at(key);
-    return child(pv);
-  } else {
-    return *this;
-  }
-}
-  
-Node const& Node::operator ()(std::string const& path) const {
-  PathType pv = split(path,'/');
-  return this->operator()(pv);
-}
-
-Node& Node::operator ()(std::string const& path) {
-  PathType pv = split(path,'/');
-  return this->operator()(pv);
-}
-
-Node& Node::root() {
-  Node *par = _parent, *tmp = 0;
-  while (par != 0) {
-    tmp = par;
-    par = par->_parent;
-  }
-  return *tmp;
-}
-
-ValueType Node::valueType() const {
-  return slice().type();
-}
-
-bool Node::addTimeToLive (long millis) {
-  auto tkey = std::chrono::system_clock::now() +
-    std::chrono::milliseconds(millis);
-  root()._time_table[tkey] =
-    _parent->_children[_node_name];
-  root()._table_time[_parent->_children[_node_name]] = tkey;
-  return true;
-}
-
-bool Node::removeTimeToLive () {
-  auto it = root()._table_time.find(_parent->_children[_node_name]);
-  if (it != root()._table_time.end()) {
-    root()._time_table.erase(root()._time_table.find(it->second));
-    root()._table_time.erase(it);
-  }
-  return true;
-}
-
-bool Node::addObserver (std::string const& uri) {
-  auto it = std::find(_observers.begin(), _observers.end(), uri);
-  if (it==_observers.end()) {
-    _observers.push_back(uri);
-    return true;
-  }
-  return false;
-}
-
-void Node::notifyObservers () const {
-  
-  for (auto const& i : _observers) {
-
-    Builder body;
-    toBuilder(body);
-    body.close();
-
-    size_t spos = i.find('/',7);
-    if (spos==std::string::npos) {
-      LOG_TOPIC(WARN, Logger::AGENCY) << "Invalid URI " << i;
-      continue;
-    }
-
-    std::string endpoint = i.substr(0,spos-1);
-    std::string path = i.substr(spos);
-    
-    std::unique_ptr<std::map<std::string, std::string>> headerFields =
-      std::make_unique<std::map<std::string, std::string> >();
-    
-    ClusterCommResult res =
-      arangodb::ClusterComm::instance()->asyncRequest(
-        "1", 1, endpoint, GeneralRequest::RequestType::POST, path,
-        std::make_shared<std::string>(body.toString()), headerFields, nullptr,
-        0.0, true);
-    
-  }
-  
-}
-
-bool Node::applies (VPackSlice const& slice) {
-
-  if (slice.type() == ValueType::Object) {
-    
-    for (auto const& i : VPackObjectIterator(slice)) {
-
-      std::string key = i.key.copyString();
-      
-      if (slice.hasKey("op")) {
-        
-        std::string oper = slice.get("op").copyString();
-        VPackSlice const& self = this->slice();
-        if (oper == "delete") {
-          removeTimeToLive();
-          return _parent->removeChild(_node_name);
-        } else if (oper == "set") { //
-          if (!slice.hasKey("new")) {
-            LOG_TOPIC(WARN, Logger::AGENCY) << "Operator set without new value";
-            LOG_TOPIC(WARN, Logger::AGENCY) << slice.toJson();
-            return false;
-          }
-          removeTimeToLive();
-          if (slice.hasKey("ttl")) {
-            VPackSlice ttl_v = slice.get("ttl");
-            if (ttl_v.isNumber()) {
-              long ttl = 1000l * (
-                (ttl_v.isDouble()) ?
-                static_cast<long>(slice.get("ttl").getDouble()):
-                slice.get("ttl").getInt());
-                addTimeToLive (ttl);
-            } else {
-              LOG_TOPIC(WARN, Logger::AGENCY) <<
-                "Non-number value assigned to ttl: " << ttl_v.toJson();
-            }
-          }
-          *this = slice.get("new");
-          return true;
-        } else if (oper == "increment") { // Increment
-          Builder tmp;
-          tmp.openObject();
-          try {
-            tmp.add("tmp", Value(self.getInt()+1));
-          } catch (std::exception const&) {
-            tmp.add("tmp",Value(1));
-          }
-          tmp.close();
-          *this = tmp.slice().get("tmp");
-          removeTimeToLive();
-          return true;
-        } else if (oper == "decrement") { // Decrement
-          Builder tmp;
-          tmp.openObject();
-          try {
-            tmp.add("tmp", Value(self.getInt()-1));
-          } catch (std::exception const&) {
-            tmp.add("tmp",Value(-1));
-          }
-          tmp.close();
-          *this = tmp.slice().get("tmp");
-          removeTimeToLive();
-          return true;
-        } else if (oper == "push") { // Push
-          if (!slice.hasKey("new")) {
-            LOG_TOPIC(WARN, Logger::AGENCY)
-              << "Operator push without new value: " << slice.toJson();
-            return false;
-          }
-          Builder tmp;
-          tmp.openArray();
-          if (self.isArray()) {
-            for (auto const& old : VPackArrayIterator(self))
-              tmp.add(old);
-          }
-          tmp.add(slice.get("new"));
-          tmp.close();
-          *this = tmp.slice();
-          removeTimeToLive();
-          return true;
-        } else if (oper == "pop") { // Pop
-          Builder tmp;
-          tmp.openArray();
-          if (self.isArray()) {
-            VPackArrayIterator it(self);
-            size_t j = it.size()-1;
-            for (auto old : it) {
-              tmp.add(old);
-              if (--j==0)
-                break;
-            }
-          }
-          tmp.close();
-          *this = tmp.slice();
-          removeTimeToLive();
-          return true;
-        } else if (oper == "prepend") { // Prepend
-          if (!slice.hasKey("new")) {
-            LOG_TOPIC(WARN, Logger::AGENCY)
-              << "Operator prepend without new value: " << slice.toJson();
-            return false;
-          }
-          Builder tmp;
-          tmp.openArray();
-          tmp.add(slice.get("new"));
-          if (self.isArray()) {
-          for (auto const& old : VPackArrayIterator(self))
-            tmp.add(old);
-          }
-          tmp.close();
-          *this = tmp.slice();
-          removeTimeToLive();
-          return true;
-        } else if (oper == "shift") { // Shift
-          Builder tmp;
-          tmp.openArray();
-          if (self.isArray()) { // If a
-            VPackArrayIterator it(self);
-            bool first = true;
-            for (auto old : it) {
-              if (first) {
-                first = false;
-              } else {
-                tmp.add(old);
-              }
-            }
-          } 
-          tmp.close();
-          *this = tmp.slice();
-          removeTimeToLive();
-          return true;
-        } else {
-          LOG_TOPIC(WARN, Logger::AGENCY) << "Unknown operation " << oper;
-          return false;
-        }
-      } else if (slice.hasKey("new")) { // new without set
-        *this = slice.get("new");
-        removeTimeToLive();
-        return true;
-      } else if (key.find('/')!=std::string::npos) {
-        (*this)(key).applies(i.value);
-      } else {
-        auto found = _children.find(key);
-        if (found == _children.end()) {
-          _children[key] = std::make_shared<Node>(key, this);
-        }
-      _children[key]->applies(i.value);
-      }
-    }
-  } else {
-    *this = slice;
-    removeTimeToLive();
-  }
-  return true;
-}
-
-void Node::toBuilder (Builder& builder) const {
-  
-  try {
-    if (type()==NODE) {
-      VPackObjectBuilder guard(&builder);
-      for (auto const& child : _children) {
-        builder.add(VPackValue(child.first));
-        child.second->toBuilder(builder);
-      }
-    } else {
-      builder.add(slice());
-    }
-  } catch (std::exception const& e) {
-    LOG(FATAL) << e.what();
-  }
-  
-}
-
-std::ostream& Node::print (std::ostream& o) const {
-  Node const* par = _parent;
-  while (par != 0) {
-      par = par->_parent;
-      o << "  ";
-  }
-  o << _node_name << " : ";
-  if (type() == NODE) {
-    o << std::endl;
-    for (auto const& i : _children)
-      o << *(i.second);
-  } else {
-    o << ((slice().type() == ValueType::None) ? "NONE" : slice().toJson()) << std::endl;
-  }
-  if (_time_table.size()) {
-    for (auto const& i : _time_table) {
-      o << i.second.get() << std::endl;
-    }
-  }
-  if (_table_time.size()) {
-    for (auto const& i : _table_time) {
-      o << i.first.get() << std::endl;
-    }
-  }
-  return o;
-}
-
-Store::Store (std::string const& name) : Node(name), Thread(name) {}
-
-Store::~Store () {}
-
-std::vector<bool> Store::apply (query_t const& query) {    
+// Apply queries multiple queries to store
+std::vector<bool> Store::apply(query_t const& query) {
   std::vector<bool> applied;
   MUTEX_LOCKER(storeLocker, _storeLock);
   for (auto const& i : VPackArrayIterator(query->slice())) {
     switch (i.length()) {
-    case 1:
-      applied.push_back(applies(i[0])); break; // no precond
-    case 2:
-      if (check(i[1])) {
-        applied.push_back(applies(i[0]));      // precondition
-      } else {
-        LOG_TOPIC(DEBUG, Logger::AGENCY) << "Precondition failed!";
+      case 1:
+        applied.push_back(applies(i[0]));
+        break;  // no precond
+      case 2:
+        if (check(i[1])) {  // precondition
+          applied.push_back(applies(i[0]));
+        } else {  // precondition failed
+          LOG_TOPIC(TRACE, Logger::AGENCY) << "Precondition failed!";
+          applied.push_back(false);
+        }
+        break;
+      default:  // wrong
+        LOG_TOPIC(ERR, Logger::AGENCY)
+            << "We can only handle log entry with or without precondition!";
         applied.push_back(false);
-      }
-      break;
-    default:                                   // wrong
-      LOG_TOPIC(ERR, Logger::AGENCY)
-        << "We can only handle log entry with or without precondition!";
-      applied.push_back(false);
-      break;
+        break;
     }
   }
-  _cv.signal();                                // Wake up run
+
+  _cv.signal();
 
   return applied;
 }
 
-std::vector<bool> Store::apply( std::vector<VPackSlice> const& queries) {
-  std::vector<bool> applied;
-  MUTEX_LOCKER(storeLocker, _storeLock);
-  for (auto const& i : queries) {
-    applied.push_back(applies(i)); // no precond
+// template<class T, class U> std::multimap<std::string, std::string>
+std::ostream& operator<<(std::ostream& os,
+                         std::multimap<std::string, std::string> const& m) {
+  for (auto const& i : m) {
+    os << i.first << ": " << i.second << std::endl;
   }
+  return os;
+}
+
+// Apply external
+struct notify_t {
+  std::string key;
+  std::string modified;
+  std::string oper;
+  notify_t(std::string const& k, std::string const& m, std::string const& o)
+      : key(k), modified(m), oper(o) {}
+};
+
+std::vector<bool> Store::apply(std::vector<VPackSlice> const& queries,
+                               bool inform) {
+  std::vector<bool> applied;
+  {
+    MUTEX_LOCKER(storeLocker, _storeLock);
+    for (auto const& i : queries) {
+      applied.push_back(applies(i));  // no precond
+    }
+  }
+
+  std::multimap<std::string, std::shared_ptr<notify_t>> in;
+  for (auto const& i : queries) {
+    for (auto const& j : VPackObjectIterator(i)) {
+      if (j.value.isObject() && j.value.hasKey("op")) {
+        std::string oper = j.value.get("op").copyString();
+        if (!(oper == "observe" || oper == "unobserve")) {
+          std::string uri = j.key.copyString();
+          while (true) {
+            auto ret = _observedTable.equal_range(uri);
+            for (auto it = ret.first; it != ret.second; ++it) {
+              in.emplace(it->second, std::make_shared<notify_t>(
+                                         it->first, j.key.copyString(), oper));
+            }
+            size_t pos = uri.find_last_of('/');
+            if (pos == std::string::npos || pos == 0) {
+              break;
+            } else {
+              uri = uri.substr(0, pos);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<std::string> urls;
+  for (auto it = in.begin(), end = in.end(); it != end;
+       it = in.upper_bound(it->first)) {
+    urls.push_back(it->first);
+  }
+
+  for (auto const& url : urls) {
+    Builder body;  // host
+    body.openObject();
+    body.add("term", VPackValue(0));
+    body.add("index", VPackValue(0));
+    auto ret = in.equal_range(url);
+
+    for (auto it = ret.first; it != ret.second; ++it) {
+      body.add(it->second->key, VPackValue(VPackValueType::Object));
+      body.add(it->second->modified, VPackValue(VPackValueType::Object));
+      body.add("op", VPackValue(it->second->oper));
+      body.close();
+      body.close();
+    }
+
+    body.close();
+
+    std::string endpoint, path;
+    if (endpointPathFromUrl(url, endpoint, path)) {
+      auto headerFields =
+          std::make_unique<std::unordered_map<std::string, std::string>>();
+
+      ClusterCommResult res = arangodb::ClusterComm::instance()->asyncRequest(
+          "1", 1, endpoint, GeneralRequest::RequestType::POST, path,
+          std::make_shared<std::string>(body.toString()), headerFields,
+          std::make_shared<StoreCallback>(), 0.0, true);
+
+    } else {
+      LOG_TOPIC(WARN, Logger::AGENCY) << "Malformed URL " << url;
+    }
+  }
+
   return applied;
 }
 
-bool Store::check (VPackSlice const& slice) const {
-  if (slice.type() != VPackValueType::Object) {
-    LOG_TOPIC(WARN, Logger::AGENCY) << "Cannot check precondition: "
-                                    << slice.toJson();
+// Check precondition
+bool Store::check(VPackSlice const& slice) const {
+  if (!slice.isObject()) {  // Must be object
+    LOG_TOPIC(WARN, Logger::AGENCY)
+        << "Cannot check precondition: " << slice.toJson();
     return false;
   }
-  for (auto const& precond : VPackObjectIterator(slice)) {
+
+  for (auto const& precond : VPackObjectIterator(slice)) {  // Preconditions
     std::string path = precond.key.copyString();
     bool found = false;
-    Node node ("precond");
-    
+    Node node("precond");
+
     try {
       node = (*this)(path);
       found = true;
-    } catch (StoreException const&) {}
-    
-    if (precond.value.type() == VPackValueType::Object) { 
+    } catch (StoreException const&) {
+    }
+
+    if (precond.value.isObject()) {
       for (auto const& op : VPackObjectIterator(precond.value)) {
         std::string const& oper = op.key.copyString();
-        if (oper == "old") {                           // old
-          return (node == op.value);
-        } else if (oper == "isArray") {                // isArray
-          if (op.value.type()!=VPackValueType::Bool) { 
-            LOG (FATAL) << "Non boolsh expression for 'isArray' precondition";
+        if (oper == "old") {  // old
+          if (node != op.value) {
             return false;
           }
-          bool isArray =
-            (node.type() == LEAF &&
-             node.slice().type() == VPackValueType::Array);
-          return op.value.getBool() ? isArray : !isArray;
-        } else if (oper == "oldEmpty") {              // isEmpty
-          if (op.value.type()!=VPackValueType::Bool) { 
-            LOG (FATAL) << "Non boolsh expression for 'oldEmpty' precondition";
+        } else if (oper == "isArray") {  // isArray
+          if (!op.value.isBoolean()) {
+            LOG_TOPIC(ERR, Logger::AGENCY)
+                << "Non boolsh expression for 'isArray' precondition";
             return false;
           }
-          return op.value.getBool() ? !found : found;
+          bool isArray = (node.type() == LEAF && node.slice().isArray());
+          if (op.value.getBool() ? !isArray : isArray) {
+            return false;
+          }
+        } else if (oper == "oldEmpty") {  // isEmpty
+          if (!op.value.isBoolean()) {
+            LOG_TOPIC(ERR, Logger::AGENCY)
+                << "Non boolsh expression for 'oldEmpty' precondition";
+            return false;
+          }
+          if (op.value.getBool() ? found : !found) {
+            return false;
+          }
         }
       }
     } else {
-      return node == precond.value;
+      if (node != precond.value) {
+        return false;
+      }
     }
   }
-  
+
   return true;
 }
 
-std::vector<bool> Store::read (query_t const& queries, query_t& result) const { // list of list of paths
+// Read queries into result
+std::vector<bool> Store::read(query_t const& queries, query_t& result) const {
   std::vector<bool> success;
   MUTEX_LOCKER(storeLocker, _storeLock);
-  if (queries->slice().type() == VPackValueType::Array) {
-    result->add(VPackValue(VPackValueType::Array)); // top node array
+  if (queries->slice().isArray()) {
+    result->add(VPackValue(VPackValueType::Array));  // top node array
     for (auto const& query : VPackArrayIterator(queries->slice())) {
-      success.push_back(read (query, *result));
-    } 
+      success.push_back(read(query, *result));
+    }
     result->close();
   } else {
     LOG_TOPIC(ERR, Logger::AGENCY) << "Read queries to stores must be arrays";
@@ -563,120 +329,250 @@ std::vector<bool> Store::read (query_t const& queries, query_t& result) const { 
   return success;
 }
 
-bool Store::read (VPackSlice const& query, Builder& ret) const {
-
+// read single query into ret
+bool Store::read(VPackSlice const& query, Builder& ret) const {
   bool success = true;
-  
+
   // Collect all paths
   std::list<std::string> query_strs;
-  if (query.type() == VPackValueType::Array) {
-    for (auto const& sub_query : VPackArrayIterator(query))
+  if (query.isArray()) {
+    for (auto const& sub_query : VPackArrayIterator(query)) {
       query_strs.push_back(sub_query.copyString());
-  } else if (query.type() == VPackValueType::String) {
-    query_strs.push_back(query.copyString());
+    }
   } else {
     return false;
   }
-  query_strs.sort();     // sort paths
-  
+
   // Remove double ranges (inclusion / identity)
+  query_strs.sort();  // sort paths
   for (auto i = query_strs.begin(), j = i; i != query_strs.end(); ++i) {
-    if (i!=j && i->compare(0,j->size(),*j)==0) {
-      *i="";
+    if (i != j && i->compare(0, j->size(), *j) == 0) {
+      *i = "";
     } else {
       j = i;
     }
   }
   auto cut = std::remove_if(query_strs.begin(), query_strs.end(), Empty());
-  query_strs.erase (cut,query_strs.end());
-  
-  // Create response tree 
+  query_strs.erase(cut, query_strs.end());
+
+  // Create response tree
   Node copy("copy");
-  for (auto i = query_strs.begin(); i != query_strs.end(); ++i) {
+  for (auto const path : query_strs) {
     try {
-      copy(*i) = (*this)(*i);
+      copy(path) = (*this)(path);
     } catch (StoreException const&) {
-      if (query.type() == VPackValueType::String)
-        success = false;
+      std::vector<std::string> pv = split(path, '/');
+      while (!pv.empty()) {
+        std::string end = pv.back();
+        pv.pop_back();
+        copy(pv).removeChild(end);
+        try {
+          (*this)(pv);
+          break;
+        } catch (...) {
+        }
+      }
+      if (copy(pv).type() == LEAF && copy(pv).slice().isNone()) {
+        copy(pv) = arangodb::basics::VelocyPackHelper::EmptyObjectValue();
+      }
     }
   }
-  
-  // Assemble builder from response tree
-  if (query.type() == VPackValueType::String &&
-      copy(*query_strs.begin()).type() == LEAF) {
-    ret.add(copy(*query_strs.begin()).slice());
-  } else {
-    if (copy.type() == LEAF && copy.valueType() == VPackValueType::Null) {
-      ret.add(VPackValue(VPackValueType::Object));
-      ret.close();
-    } else {
-      copy.toBuilder(ret);
-    }
-  }
-  
+
+  // Into result builder
+  copy.toBuilder(ret);
+
   return success;
-  
 }
 
+// Shutdown
 void Store::beginShutdown() {
   Thread::beginShutdown();
   CONDITION_LOCKER(guard, _cv);
   guard.broadcast();
 }
 
-void Store::clearTimeTable () {
-  for (auto it = _time_table.cbegin(); it != _time_table.cend(); ++it) {
-    if (it->first < std::chrono::system_clock::now()) {
-      query_t tmp = std::make_shared<Builder>();
-      tmp->openArray(); tmp->openArray(); tmp->openObject();
-      tmp->add(it->second->uri(), VPackValue(VPackValueType::Object));
-      tmp->add("op",VPackValue("delete"));
-      tmp->close(); tmp->close(); tmp->close(); tmp->close();
-      _agent->write(tmp);
-    } else {
-      break;
+// TTL clear values from store
+query_t Store::clearExpired() const {
+  query_t tmp = std::make_shared<Builder>();
+  tmp->openArray();
+  {
+    MUTEX_LOCKER(storeLocker, _storeLock);
+    for (auto it = _timeTable.cbegin(); it != _timeTable.cend(); ++it) {
+      if (it->first < std::chrono::system_clock::now()) {
+        tmp->openArray();
+        tmp->openObject();
+        tmp->add(it->second, VPackValue(VPackValueType::Object));
+        tmp->add("op", VPackValue("delete"));
+        tmp->close();
+        tmp->close();
+        tmp->close();
+      } else {
+        break;
+      }
     }
   }
+  tmp->close();
+  return tmp;
 }
 
-
-void Store::dumpToBuilder (Builder& builder) const {
+// Dump internal data to builder
+void Store::dumpToBuilder(Builder& builder) const {
   MUTEX_LOCKER(storeLocker, _storeLock);
   toBuilder(builder);
   {
     VPackObjectBuilder guard(&builder);
-    for (auto const& i : _time_table) {
-      auto in_time_t = std::chrono::system_clock::to_time_t(i.first);
-      std::string ts = ctime(&in_time_t);
-      ts.resize(ts.size()-1);
-      builder.add(ts, VPackValue((size_t)i.second.get()));
+    for (auto const& i : _timeTable) {
+      auto ts = std::chrono::duration_cast<std::chrono::seconds>(
+                    i.first.time_since_epoch()).count();
+      builder.add(i.second, VPackValue(ts));
     }
   }
   {
-    VPackObjectBuilder guard(&builder);
-    for (auto const& i : _table_time) {
-      auto in_time_t = std::chrono::system_clock::to_time_t(i.second);
-      std::string ts = ctime(&in_time_t);
-      ts.resize(ts.size()-1);
-      builder.add(std::to_string((size_t)i.first.get()), VPackValue(ts));
+    VPackArrayBuilder garray(&builder);
+    for (auto const& i : _observerTable) {
+      VPackObjectBuilder guard(&builder);
+      builder.add(i.first, VPackValue(i.second));
+    }
+  }
+  {
+    VPackArrayBuilder garray(&builder);
+    for (auto const& i : _observedTable) {
+      VPackObjectBuilder guard(&builder);
+      builder.add(i.first, VPackValue(i.second));
     }
   }
 }
 
-bool Store::start () {
+size_t Store::matchPath(std::vector<std::string> const& pv) const {
+  //  Node* cur(this);
+  /*  for (size_t i = 0; i < pv.size(); ++i) {
+      if (cur.find(pv.at(i))) {
+      }
+      }*/
+  return 0;
+}
+
+// Start thread
+bool Store::start() {
   Thread::start();
   return true;
 }
 
-bool Store::start (Agent* agent) {
+// Start thread with agent
+bool Store::start(Agent* agent) {
   _agent = agent;
   return start();
 }
 
+// Work ttls and callbacks
 void Store::run() {
   CONDITION_LOCKER(guard, _cv);
-  while (!this->isStopping()) { // Check timetable and remove overage entries
-    _cv.wait(100000);           // better wait to next known time point
-    clearTimeTable();
+  while (!this->isStopping()) {  // Check timetable and remove overage entries
+
+    std::chrono::microseconds t{0};
+    query_t toClear;
+
+    {  // any entries in time table?
+      MUTEX_LOCKER(storeLocker, _storeLock);
+      if (!_timeTable.empty()) {
+        t = std::chrono::duration_cast<std::chrono::microseconds>(
+            _timeTable.begin()->first - std::chrono::system_clock::now());
+      }
+    }
+
+    if (t != std::chrono::microseconds{0}) {
+      _cv.wait(t.count());
+    } else {
+      _cv.wait();
+    }
+
+    toClear = clearExpired();
+    _agent->write(toClear);
+  }
+}
+
+bool Store::applies(arangodb::velocypack::Slice const& slice) {
+  return _node.applies(slice);
+}
+
+Store& Store::operator=(VPackSlice const& slice) {
+  TRI_ASSERT(slice.isArray());
+
+  MUTEX_LOCKER(storeLocker, _storeLock);
+  _node.applies(slice[0]);
+
+  TRI_ASSERT(slice[1].isObject());
+  for (auto const& entry : VPackObjectIterator(slice[1])) {
+    long long tse = entry.value.getInt();
+    _timeTable.emplace(std::pair<TimePoint, std::string>(
+        TimePoint(std::chrono::duration<int>(tse)), entry.key.copyString()));
+  }
+
+  TRI_ASSERT(slice[2].isArray());
+  for (auto const& entry : VPackArrayIterator(slice[2])) {
+    TRI_ASSERT(entry.isObject());
+    _observerTable.emplace(std::pair<std::string, std::string>(
+        entry.keyAt(0).copyString(), entry.valueAt(0).copyString()));
+  }
+
+  TRI_ASSERT(slice[3].isArray());
+  for (auto const& entry : VPackArrayIterator(slice[3])) {
+    TRI_ASSERT(entry.isObject());
+    _observedTable.emplace(std::pair<std::string, std::string>(
+        entry.keyAt(0).copyString(), entry.valueAt(0).copyString()));
+  }
+
+  return *this;
+}
+
+void Store::toBuilder(Builder& b) const { _node.toBuilder(b); }
+
+Node Store::operator()(std::vector<std::string> const& pv) { return _node(pv); }
+
+Node const Store::operator()(std::vector<std::string> const& pv) const {
+  return _node(pv);
+}
+
+Node Store::operator()(std::string const& path) { return _node(path); }
+
+Node const Store::operator()(std::string const& path) const {
+  return _node(path);
+}
+
+std::multimap<TimePoint, std::string>& Store::timeTable() { return _timeTable; }
+
+const std::multimap<TimePoint, std::string>& Store::timeTable() const {
+  return _timeTable;
+}
+
+std::multimap<std::string, std::string>& Store::observerTable() {
+  return _observerTable;
+}
+std::multimap<std::string, std::string> const& Store::observerTable() const {
+  return _observerTable;
+}
+
+std::multimap<std::string, std::string>& Store::observedTable() {
+  return _observedTable;
+}
+
+std::multimap<std::string, std::string> const& Store::observedTable() const {
+  return _observedTable;
+}
+
+Node const Store::get(std::string const& path) const {
+  MUTEX_LOCKER(storeLocker, _storeLock);
+  return _node(path);
+}
+
+void Store::removeTTL(std::string const& uri) {
+  if (!_timeTable.empty()) {
+    for (auto it = _timeTable.cbegin(); it != _timeTable.cend();) {
+      if (it->second == uri) {
+        _timeTable.erase(it++);
+      } else {
+        ++it;
+      }
+    }
   }
 }

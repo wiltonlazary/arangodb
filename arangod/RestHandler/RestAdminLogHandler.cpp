@@ -26,8 +26,9 @@
 #include <velocypack/Builder.h>
 #include <velocypack/velocypack-aliases.h>
 
-#include "Logger/Logger.h"
 #include "Basics/StringUtils.h"
+#include "Logger/LogBuffer.h"
+#include "Logger/Logger.h"
 #include "Rest/HttpRequest.h"
 
 using namespace arangodb;
@@ -44,13 +45,6 @@ bool RestAdminLogHandler::isDirect() const { return true; }
 ////////////////////////////////////////////////////////////////////////////////
 
 HttpHandler::status_t RestAdminLogHandler::execute() {
-  // "/log" can only be called for the _system database
-  if (_request->databaseName() != "_system") {
-    generateError(GeneralResponse::ResponseCode::FORBIDDEN,
-                  TRI_ERROR_ARANGO_USE_SYSTEM_DATABASE);
-    return status_t(HANDLER_DONE);
-  }
-
   // check the maximal log level to report
   bool found1;
   std::string const& upto =
@@ -137,7 +131,7 @@ HttpHandler::status_t RestAdminLogHandler::execute() {
       StringUtils::tolower(_request->value("search", search));
 
   // generate result
-  std::vector<LogBuffer> entries = Logger::bufferedEntries(ul, start, useUpto);
+  std::vector<LogBuffer> entries = LogBuffer::entries(ul, start, useUpto);
   std::vector<LogBuffer> clean;
 
   if (search) {
@@ -245,8 +239,7 @@ HttpHandler::status_t RestAdminLogHandler::execute() {
 
     result.close();  // Close the result object
 
-    VPackSlice slice = result.slice();
-    generateResult(slice);
+    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
   } catch (...) {
     // Not Enough memory to build everything up
     // Has been ignored thus far

@@ -21,28 +21,27 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_TRI_ZIP_H
-#define LIB_BASICS_TRI_ZIP_H 1
+#ifndef ARANGODB_BASICS_TRI__ZIP_H
+#define ARANGODB_BASICS_TRI__ZIP_H 1
 
 #ifdef _WIN32
 #include "Basics/win-utils.h"
 #endif
 
 #include "Basics/Common.h"
-#include "Basics/vector.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief zips a file
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_ZipFile(char const* filename, char const* chdir,
-                TRI_vector_string_t const*, char const*);
+                std::vector<std::string> const&, char const*);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief unzips a file
 ////////////////////////////////////////////////////////////////////////////////
 
-int TRI_UnzipFile(char const*, char const*, bool const, bool const, char const*,
+int TRI_UnzipFile(char const*, char const*, bool, bool, char const*,
                   std::string& errorMessage);
 
 #endif

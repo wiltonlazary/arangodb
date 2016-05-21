@@ -22,13 +22,12 @@
 /// @author Achim Brandt
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_REST_HTTP_REQUEST_H
-#define LIB_REST_HTTP_REQUEST_H 1
+#ifndef ARANGODB_REST_HTTP_REQUEST_H
+#define ARANGODB_REST_HTTP_REQUEST_H 1
 
 #include "Rest/GeneralRequest.h"
 
 #include "Basics/StringBuffer.h"
-#include "Basics/json.h"
 #include "Endpoint/ConnectionInfo.h"
 
 namespace arangodb {
@@ -39,18 +38,8 @@ struct Options;
 
 class HttpRequest : public GeneralRequest {
  public:
-  // hard-coded minetype for batch requests
-  static std::string const BATCH_CONTENT_TYPE;
-
-  // hard-coded minetype for multipart/form-data
-  static std::string const MULTI_PART_CONTENT_TYPE;
-
- public:
-  HttpRequest(ConnectionInfo const&, char const*, size_t, int32_t, bool);
+  HttpRequest(ConnectionInfo const&, char const*, size_t, bool);
   ~HttpRequest();
-
- public:
-  int32_t compatibility() override;
 
  public:
   // HTTP protocol version is 1.0
@@ -65,7 +54,7 @@ class HttpRequest : public GeneralRequest {
 
   std::string const& cookieValue(std::string const& key) const;
   std::string const& cookieValue(std::string const& key, bool& found) const;
-  std::map<std::string, std::string> cookieValues() const { return _cookies; }
+  std::unordered_map<std::string, std::string> cookieValues() const { return _cookies; }
 
   std::string const& body() const;
   void setBody(char const* body, size_t length);
@@ -73,21 +62,20 @@ class HttpRequest : public GeneralRequest {
   // the request body as VelocyPackBuilder
   std::shared_ptr<arangodb::velocypack::Builder> toVelocyPack(
       arangodb::velocypack::Options const*);
-
-  // the request body as TRI_json_t*
-  TRI_json_t* toJson(char**);
-
-  using GeneralRequest::setHeader;
+  
+  /// @brief sets a key/value header
+  void setHeader(char const* key, size_t keyLength, char const* value, size_t valueLength);
+  /// @brief sets a key-only header
+  void setHeader(char const* key, size_t keyLength);
 
  private:
   void parseHeader(size_t length);
-  void setHeader(char const* key, size_t keyLength, char const* value);
   void setValues(char* buffer, char* end);
   void setCookie(char* key, size_t length, char const* value);
-  void parseCookies(char const* buffer);
+  void parseCookies(char const* buffer, size_t length);
 
  private:
-  std::map<std::string, std::string> _cookies;
+  std::unordered_map<std::string, std::string> _cookies;
   int64_t _contentLength;
   char* _header;
   std::string _body;

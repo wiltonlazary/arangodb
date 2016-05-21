@@ -32,19 +32,15 @@ SubqueryBlock::SubqueryBlock(ExecutionEngine* engine, SubqueryNode const* en,
                              ExecutionBlock* subquery)
     : ExecutionBlock(engine, en),
       _outReg(ExecutionNode::MaxRegisterId),
-      _subquery(subquery) {
+      _subquery(subquery),
+      _subqueryIsConst(const_cast<SubqueryNode*>(en)->isConst()) {
   auto it = en->getRegisterPlan()->varInfo.find(en->_outVariable->id);
   TRI_ASSERT(it != en->getRegisterPlan()->varInfo.end());
   _outReg = it->second.registerId;
   TRI_ASSERT(_outReg < ExecutionNode::MaxRegisterId);
 }
 
-SubqueryBlock::~SubqueryBlock() {}
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief initialize, tell dependency and the subquery
-////////////////////////////////////////////////////////////////////////////////
-
 int SubqueryBlock::initialize() {
   int res = ExecutionBlock::initialize();
 
@@ -55,11 +51,9 @@ int SubqueryBlock::initialize() {
   return getSubquery()->initialize();
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief getSome
-////////////////////////////////////////////////////////////////////////////////
-
 AqlItemBlock* SubqueryBlock::getSome(size_t atLeast, size_t atMost) {
+  DEBUG_BEGIN_BLOCK();
   std::unique_ptr<AqlItemBlock> res(
       ExecutionBlock::getSomeWithoutRegisterClearout(atLeast, atMost));
 
@@ -69,10 +63,7 @@ AqlItemBlock* SubqueryBlock::getSome(size_t atLeast, size_t atMost) {
 
   bool const subqueryReturnsData =
       (_subquery->getPlanNode()->getType() == ExecutionNode::RETURN);
-
-  // TODO: constant and deterministic subqueries only need to be executed once
-  bool const subqueryIsConst = false;
-
+  
   std::vector<AqlItemBlock*>* subqueryResults = nullptr;
 
   for (size_t i = 0; i < res->size(); i++) {
@@ -82,7 +73,7 @@ AqlItemBlock* SubqueryBlock::getSome(size_t atLeast, size_t atMost) {
       THROW_ARANGO_EXCEPTION(ret);
     }
 
-    if (i > 0 && subqueryIsConst) {
+    if (i > 0 && _subqueryIsConst) {
       // re-use already calculated subquery result
       TRI_ASSERT(subqueryResults != nullptr);
       res->setValue(i, _outReg, AqlValue(subqueryResults));
@@ -122,12 +113,10 @@ AqlItemBlock* SubqueryBlock::getSome(size_t atLeast, size_t atMost) {
   // Clear out registers no longer needed later:
   clearRegisters(res.get());
   return res.release();
+  DEBUG_END_BLOCK();
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief shutdown, tell dependency and the subquery
-////////////////////////////////////////////////////////////////////////////////
-
 int SubqueryBlock::shutdown(int errorCode) {
   int res = ExecutionBlock::shutdown(errorCode);
 
@@ -138,17 +127,15 @@ int SubqueryBlock::shutdown(int errorCode) {
   return getSubquery()->shutdown(errorCode);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief execute the subquery and return its results
-////////////////////////////////////////////////////////////////////////////////
-
 std::vector<AqlItemBlock*>* SubqueryBlock::executeSubquery() {
+  DEBUG_BEGIN_BLOCK();
   auto results = new std::vector<AqlItemBlock*>;
 
   try {
     do {
       std::unique_ptr<AqlItemBlock> tmp(
-          _subquery->getSome(DefaultBatchSize, DefaultBatchSize));
+          _subquery->getSome(DefaultBatchSize(), DefaultBatchSize()));
 
       if (tmp.get() == nullptr) {
         break;
@@ -166,12 +153,10 @@ std::vector<AqlItemBlock*>* SubqueryBlock::executeSubquery() {
     destroySubqueryResults(results);
     throw;
   }
+  DEBUG_END_BLOCK();
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief destroy the results of a subquery
-////////////////////////////////////////////////////////////////////////////////
-
 void SubqueryBlock::destroySubqueryResults(
     std::vector<AqlItemBlock*>* results) {
   for (auto& x : *results) {

@@ -1,9 +1,11 @@
-div.headerDropdown {
+div.headerDropdown,
+.dropdownImport {
   background-color: $c-white;
   border: 1px solid $c-content-border;
-  border-radius: 3px;
+  border-radius: 2px;
   clear: both;
   display: none;
+  margin-bottom: 15px;
   padding: 10px;
   position: relative;
   width: auto;

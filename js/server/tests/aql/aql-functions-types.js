@@ -28,6 +28,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 var internal = require("internal");
+var db = require("@arangodb").db;
 var errors = internal.errors;
 var jsunity = require("jsunity");
 var helper = require("@arangodb/aql-helper");
@@ -39,7 +40,71 @@ var assertQueryError = helper.assertQueryError;
 ////////////////////////////////////////////////////////////////////////////////
 
 function ahuacatlTypesFunctionsTestSuite () {
+  var vn = "UnitTestsAhuacatlVertex";
+  var vertex = null;
+  var d = null;
+
   return {
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief set up
+////////////////////////////////////////////////////////////////////////////////
+
+    setUp : function () {
+      db._drop(vn);
+
+      vertex = db._create(vn);
+      d = vertex.save({ _key: "test1" });
+    },
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief tear down
+////////////////////////////////////////////////////////////////////////////////
+
+    tearDown : function () {
+      db._drop(vn);
+    },
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test typename function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testTypename : function () {
+      assertEqual([ "null" ], getQueryResults("RETURN TYPENAME(null)"));
+      assertEqual([ "bool" ], getQueryResults("RETURN TYPENAME(false)"));
+      assertEqual([ "bool" ], getQueryResults("RETURN TYPENAME(true)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(0)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(1)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(-99999)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(0.005)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(1334540.005)"));
+      assertEqual([ "number" ], getQueryResults("RETURN TYPENAME(3e32)"));
+      assertEqual([ "array" ], getQueryResults("RETURN TYPENAME(1..2)"));
+      assertEqual([ "array" ], getQueryResults("RETURN TYPENAME(99..0)"));
+      assertEqual([ "array" ], getQueryResults("RETURN TYPENAME(FOR i IN 1..10 RETURN i)"));
+      assertEqual([ "array" ], getQueryResults("RETURN TYPENAME([ ])"));
+      assertEqual([ "array" ], getQueryResults("RETURN TYPENAME([ 'foo ' ])"));
+      assertEqual([ "object" ], getQueryResults("RETURN TYPENAME({ })"));
+      assertEqual([ "object" ], getQueryResults("RETURN TYPENAME({ 'foo': 'bar' })"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('foo')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME(' ')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('0')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('1')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('true')"));
+      assertEqual([ "string" ], getQueryResults("RETURN TYPENAME('false')"));
+      assertEqual([ "number", "number" ], getQueryResults("FOR i IN 1..2 RETURN TYPENAME(i)"));
+      assertEqual([ "string", "string", "string", "number" ], getQueryResults("FOR i IN [ 'foo', 'bar', 'baz', 42 ] RETURN TYPENAME(i)"));
+    },
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test typename function, invalid arguments
+////////////////////////////////////////////////////////////////////////////////
+    
+    testTypenameInvalid : function () {
+      assertQueryError(errors.ERROR_QUERY_FUNCTION_ARGUMENT_NUMBER_MISMATCH.code, "RETURN TYPENAME()"); 
+      assertQueryError(errors.ERROR_QUERY_FUNCTION_ARGUMENT_NUMBER_MISMATCH.code, "RETURN TYPENAME('a', 'b')"); 
+    },
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief test is_string function
@@ -784,6 +849,16 @@ function ahuacatlTypesFunctionsTestSuite () {
     },
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief test to_bool
+////////////////////////////////////////////////////////////////////////////////
+    
+    testToBool24 : function () {
+      var expected = [ true ];
+      var actual = getQueryResults("RETURN TO_BOOL(DOCUMENT(" + vn + ", " + JSON.stringify(d._id) + "))");
+      assertEqual(expected, actual);
+    },
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief test to_number
 ////////////////////////////////////////////////////////////////////////////////
     
@@ -818,7 +893,7 @@ function ahuacatlTypesFunctionsTestSuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testToNumber4 : function () {
-      var expected = [ null ];
+      var expected = [ 0 ];
       var actual = getQueryResults("RETURN TO_NUMBER([ -1, 1 ])");
       assertEqual(expected, actual);
     },
@@ -828,7 +903,7 @@ function ahuacatlTypesFunctionsTestSuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testToNumber5 : function () {
-      var expected = [ null ];
+      var expected = [ 0 ];
       var actual = getQueryResults("RETURN TO_NUMBER({ })");
       assertEqual(expected, actual);
     },
@@ -838,7 +913,7 @@ function ahuacatlTypesFunctionsTestSuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testToNumber6 : function () {
-      var expected = [ null ];
+      var expected = [ 0 ];
       var actual = getQueryResults("RETURN TO_NUMBER({ \"2\" : \"3\" })");
       assertEqual(expected, actual);
     },
@@ -898,7 +973,7 @@ function ahuacatlTypesFunctionsTestSuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testToNumber12 : function () {
-      var expected = [ null ];
+      var expected = [ 0 ];
       var actual = getQueryResults("RETURN TO_NUMBER(\"3553.4er6\")");
       assertEqual(expected, actual);
     },
@@ -908,7 +983,7 @@ function ahuacatlTypesFunctionsTestSuite () {
 ////////////////////////////////////////////////////////////////////////////////
     
     testToNumber13 : function () {
-      var expected = [ null ];
+      var expected = [ 0 ];
       var actual = getQueryResults("RETURN TO_NUMBER(\"-wert324\")");
       assertEqual(expected, actual);
     },

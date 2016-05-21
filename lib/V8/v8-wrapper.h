@@ -46,8 +46,8 @@
 /// USE OR OTHER DEALINGS IN THE SOFTWARE.
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_V8_V8_WRAPPER_H
-#define LIB_V8_V8_WRAPPER_H 1
+#ifndef ARANGODB_V8_V8__WRAPPER_H
+#define ARANGODB_V8_V8__WRAPPER_H 1
 
 #include "Basics/Common.h"
 
@@ -132,7 +132,7 @@ class V8Wrapper {
   /// When an object with a "weak" reference changes from attached to detached
   /// state it will be freed. Be careful not to access the object after making
   /// this call as it might be gone!  (A "weak reference" means an object that
-  /// only has a persistant handle.)
+  /// only has a persistent handle.)
   ///
   /// DO NOT CALL THIS FROM DESTRUCTOR.
   //////////////////////////////////////////////////////////////////////////////

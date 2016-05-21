@@ -21,11 +21,11 @@
 /// @author Kaveh Vahedipour
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __ARANGODB_CONSENSUS_AGENT_CALLBACK__
-#define __ARANGODB_CONSENSUS_AGENT_CALLBACK__
+#ifndef ARANGOD_CONSENSUS_AGENT_CALLBACK_H
+#define ARANGOD_CONSENSUS_AGENT_CALLBACK_H 1
 
+#include "Agency/AgencyCommon.h"
 #include "Cluster/ClusterComm.h"
-#include "AgencyCommon.h"
 
 namespace arangodb {
 namespace consensus {
@@ -33,24 +33,21 @@ namespace consensus {
 class Agent;
 
 class AgentCallback : public arangodb::ClusterCommCallback {
-
-public:
-  
+ public:
   AgentCallback();
 
-  explicit AgentCallback(Agent* agent, id_t slave_id, index_t last);
+  AgentCallback(Agent*, arangodb::consensus::id_t, index_t);
 
   virtual bool operator()(arangodb::ClusterCommResult*) override final;
 
   void shutdown();
 
-private:
+ private:
   Agent* _agent;
   index_t _last;
-  id_t _slave_id;
-  
+  arangodb::consensus::id_t _slaveID;
 };
-
-}} // namespace
+}
+}  // namespace
 
 #endif

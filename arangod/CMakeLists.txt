@@ -11,7 +11,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/")
 # note that we check-in the generated FLEX/BISON files, therefore they are
 # generate inside the source tree
 
-if (USE_MAINTAINER_MODE)
+if (USE_MAINTAINER_MODE AND NOT MSVC)
   add_custom_command(
     OUTPUT
       ${CMAKE_CURRENT_SOURCE_DIR}/Aql/tokens.cpp
@@ -62,20 +62,37 @@ if (MSVC)
     VERSION_REVISION ${BUILD_ID}
   )
 endif ()
+  
+if (USE_ROCKSDB) 
+  set(ROCKSDB_FILES
+    Indexes/RocksDBFeature.cpp
+    Indexes/RocksDBIndex.cpp
+    Indexes/RocksDBKeyComparator.cpp
+  )
+else ()
+  set(ROCKSDB_FILES "")
+endif ()
 
 add_executable(${BIN_ARANGOD}
   ${ARANGO_MSVC}
   ${ProductVersionFiles}
+  ${ROCKSDB_FILES}
+  Actions/ActionFeature.cpp
   Actions/RestActionHandler.cpp
   Actions/actions.cpp
+  Agency/AgencyFeature.cpp
   Agency/Agent.cpp
-  Agency/ApplicationAgency.cpp
+  Agency/AgentCallback.cpp
   Agency/Constituent.cpp
+  Agency/NotifierThread.cpp
+  Agency/NotifyCallback.cpp
+  Agency/Node.cpp
+  Agency/Supervision.cpp
+  Agency/RestAgencyHandler.cpp
+  Agency/RestAgencyPrivHandler.cpp
   Agency/State.cpp
   Agency/Store.cpp
-  Agency/AgentCallback.cpp
-  ApplicationServer/ApplicationFeature.cpp
-  ApplicationServer/ApplicationServer.cpp
+  Agency/StoreCallback.cpp
   Aql/Aggregator.cpp
   Aql/AqlItemBlock.cpp
   Aql/AqlItemBlockManager.cpp
@@ -108,7 +125,6 @@ add_executable(${BIN_ARANGOD}
   Aql/Function.cpp
   Aql/Functions.cpp
   Aql/Graphs.cpp
-  Aql/Index.cpp
   Aql/IndexBlock.cpp
   Aql/IndexNode.cpp
   Aql/ModificationBlocks.cpp
@@ -139,19 +155,22 @@ add_executable(${BIN_ARANGOD}
   Aql/VariableGenerator.cpp
   Aql/grammar.cpp
   Aql/tokens.cpp
+  Cluster/AgencyCallback.cpp
+  Cluster/AgencyCallbackRegistry.cpp
   Cluster/AgencyComm.cpp
-  Cluster/ApplicationCluster.cpp
   Cluster/ClusterComm.cpp
+  Cluster/ClusterFeature.cpp
   Cluster/ClusterInfo.cpp
   Cluster/ClusterMethods.cpp
   Cluster/ClusterTraverser.cpp
   Cluster/HeartbeatThread.cpp
+  Cluster/RestAgencyCallbacksHandler.cpp
   Cluster/RestShardHandler.cpp
   Cluster/ServerJob.cpp
   Cluster/ServerState.cpp
   Cluster/v8-cluster.cpp
-  Dispatcher/ApplicationDispatcher.cpp
   Dispatcher/Dispatcher.cpp
+  Dispatcher/DispatcherFeature.cpp
   Dispatcher/DispatcherQueue.cpp
   Dispatcher/DispatcherThread.cpp
   Dispatcher/Job.cpp
@@ -160,9 +179,7 @@ add_executable(${BIN_ARANGOD}
   FulltextIndex/fulltext-list.cpp
   FulltextIndex/fulltext-query.cpp
   FulltextIndex/fulltext-result.cpp
-  FulltextIndex/fulltext-wordlist.cpp
   GeoIndex/GeoIndex.cpp
-  HttpServer/ApplicationEndpointServer.cpp
   HttpServer/AsyncJobManager.cpp
   HttpServer/HttpCommTask.cpp
   HttpServer/HttpHandler.cpp
@@ -173,8 +190,6 @@ add_executable(${BIN_ARANGOD}
   HttpServer/HttpsCommTask.cpp
   HttpServer/HttpsServer.cpp
   HttpServer/PathHandler.cpp
-  IndexOperators/index-operator.cpp
-  Indexes/CapConstraint.cpp
   Indexes/EdgeIndex.cpp
   Indexes/FulltextIndex.cpp
   Indexes/GeoIndex2.cpp
@@ -189,14 +204,12 @@ add_executable(${BIN_ARANGOD}
   Replication/InitialSyncer.cpp
   Replication/Syncer.cpp
   RestHandler/RestAdminLogHandler.cpp
-  RestHandler/RestAgencyHandler.cpp
-  RestHandler/RestAgencyPrivHandler.cpp
   RestHandler/RestBaseHandler.cpp
   RestHandler/RestBatchHandler.cpp
   RestHandler/RestCursorHandler.cpp
   RestHandler/RestDebugHandler.cpp
   RestHandler/RestDocumentHandler.cpp
-  RestHandler/RestEdgeHandler.cpp
+  RestHandler/RestEchoHandler.cpp
   RestHandler/RestEdgesHandler.cpp
   RestHandler/RestExportHandler.cpp
   RestHandler/RestImportHandler.cpp
@@ -212,14 +225,28 @@ add_executable(${BIN_ARANGOD}
   RestHandler/RestVersionHandler.cpp
   RestHandler/RestVocbaseBaseHandler.cpp
   RestHandler/WorkMonitorHandler.cpp
-  RestServer/ArangoServer.cpp
+  RestServer/AffinityFeature.cpp
+  RestServer/BootstrapFeature.cpp
+  RestServer/CheckVersionFeature.cpp
+  RestServer/ConsoleFeature.cpp
   RestServer/ConsoleThread.cpp
+  RestServer/DatabaseFeature.cpp
+  RestServer/DatabaseServerFeature.cpp
+  RestServer/EndpointFeature.cpp
+  RestServer/FileDescriptorsFeature.cpp
+  RestServer/FrontendFeature.cpp
+  RestServer/QueryRegistryFeature.cpp
+  RestServer/RestServerFeature.cpp
+  RestServer/ScriptFeature.cpp
+  RestServer/ServerFeature.cpp
+  RestServer/UnitTestsFeature.cpp
+  RestServer/UpgradeFeature.cpp
   RestServer/VocbaseContext.cpp
   RestServer/arangod.cpp
-  Scheduler/ApplicationScheduler.cpp
   Scheduler/ListenTask.cpp
   Scheduler/PeriodicTask.cpp
   Scheduler/Scheduler.cpp
+  Scheduler/SchedulerFeature.cpp
   Scheduler/SchedulerLibev.cpp
   Scheduler/SchedulerThread.cpp
   Scheduler/SignalTask.cpp
@@ -227,65 +254,59 @@ add_executable(${BIN_ARANGOD}
   Scheduler/Task.cpp
   Scheduler/TaskManager.cpp
   Scheduler/TimerTask.cpp
+  Statistics/StatisticsFeature.cpp
   Statistics/statistics.cpp
-  Storage/Marker.cpp
-  Storage/Options.cpp
+  Utils/AqlTransaction.cpp
   Utils/CollectionExport.cpp
   Utils/CollectionKeys.cpp
   Utils/CollectionKeysRepository.cpp
   Utils/Cursor.cpp
   Utils/CursorRepository.cpp
-  Utils/DocumentHelper.cpp
-  Utils/ShapedJsonTransformer.cpp
+  Utils/OperationCursor.cpp
+  Utils/SingleCollectionTransaction.cpp
   Utils/StandaloneTransactionContext.cpp
   Utils/Transaction.cpp
   Utils/TransactionContext.cpp
   Utils/V8TransactionContext.cpp
   Utils/WorkMonitorArangod.cpp
-  V8Server/ApplicationV8.cpp
+  V8Server/FoxxQueuesFeature.cpp
+  V8Server/V8Context.cpp
+  V8Server/V8DealerFeature.cpp
   V8Server/V8Job.cpp
   V8Server/V8PeriodicTask.cpp
   V8Server/V8QueueJob.cpp
   V8Server/V8TimerTask.cpp
   V8Server/V8Traverser.cpp
+  V8Server/V8VPackWrapper.cpp
   V8Server/v8-actions.cpp
   V8Server/v8-collection-util.cpp
   V8Server/v8-collection.cpp
   V8Server/v8-dispatcher.cpp
   V8Server/v8-query.cpp
   V8Server/v8-replication.cpp
-  V8Server/v8-shape-conv.cpp
   V8Server/v8-statistics.cpp
   V8Server/v8-user-structures.cpp
   V8Server/v8-util.cpp
   V8Server/v8-vocbase.cpp
   V8Server/v8-voccursor.cpp
   V8Server/v8-vocindex.cpp
-  V8Server/v8-wrapshapedjson.cpp
   VocBase/DatafileStatistics.cpp
   VocBase/Ditch.cpp
-  VocBase/DocumentAccessor.cpp
   VocBase/ExampleMatcher.cpp
   VocBase/Graphs.cpp
   VocBase/KeyGenerator.cpp
-  VocBase/Legends.cpp
-  VocBase/Shaper.cpp
   VocBase/Traverser.cpp
-  VocBase/VocShaper.cpp
   VocBase/auth.cpp
   VocBase/cleanup.cpp
   VocBase/collection.cpp
   VocBase/compactor.cpp
   VocBase/datafile.cpp
   VocBase/document-collection.cpp
-  VocBase/edge-collection.cpp
-  VocBase/headers.cpp
+  VocBase/MasterPointers.cpp
   VocBase/replication-applier.cpp
   VocBase/replication-common.cpp
   VocBase/replication-dump.cpp
   VocBase/server.cpp
-  VocBase/shape-accessor.cpp
-  VocBase/shaped-json.cpp
   VocBase/transaction.cpp
   VocBase/vocbase-defaults.cpp
   VocBase/vocbase.cpp
@@ -293,8 +314,8 @@ add_executable(${BIN_ARANGOD}
   Wal/CollectorThread.cpp
   Wal/Logfile.cpp
   Wal/LogfileManager.cpp
-  Wal/Marker.cpp
   Wal/RecoverState.cpp
+  Wal/RecoveryFeature.cpp
   Wal/RemoverThread.cpp
   Wal/Slot.cpp
   Wal/Slots.cpp
@@ -309,6 +330,7 @@ target_link_libraries(${BIN_ARANGOD}
   ${LINENOISE_LIBS}
   ${MSVC_LIBS}
   ${V8_LIBS}
+  ${ROCKSDB_LIBS}
   ${SYSTEM_LIBRARIES}
 )
 

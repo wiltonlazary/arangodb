@@ -22,11 +22,7 @@
 
 #include "RestoreFeature.h"
 
-#include <iostream>
-
-#include <velocypack/Options.h>
-#include <velocypack/velocypack-aliases.h>
-
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/FileUtils.h"
 #include "Basics/StringUtils.h"
 #include "Basics/VelocyPackHelper.h"
@@ -34,13 +30,19 @@
 #include "Basics/terminal-utils.h"
 #include "Basics/tri-strings.h"
 #include "Endpoint/Endpoint.h"
-#include "ProgramOptions2/ProgramOptions.h"
+#include "ProgramOptions/ProgramOptions.h"
 #include "Rest/HttpResponse.h"
 #include "Rest/InitializeRest.h"
-#include "Rest/SslInterface.h"
+#include "Rest/Version.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
+#include "Ssl/SslInterface.h"
+
+#include <velocypack/Options.h>
+#include <velocypack/velocypack-aliases.h>
+
+#include <iostream>
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -64,7 +66,8 @@ RestoreFeature::RestoreFeature(application_features::ApplicationServer* server,
       _force(false),
       _clusterMode(false),
       _defaultNumberOfShards(1),
-      _result(result) {
+      _result(result),
+      _stats{ 0, 0, 0 } {
   requiresElevatedPrivileges(false);
   setOptional(false);
   startsAfter("Client");
@@ -76,11 +79,6 @@ RestoreFeature::RestoreFeature(application_features::ApplicationServer* server,
 
 void RestoreFeature::collectOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addOption(
       "--collection",
       "restrict to collection name (can be specified multiple times)",
@@ -111,7 +109,7 @@ void RestoreFeature::collectOptions(
                      new BooleanParameter(&_progress));
 
   options->addOption("--overwrite", "overwrite collections if they exist",
-                     new BooleanParameter(&_overwrite, false));
+                     new BooleanParameter(&_overwrite));
 
   options->addOption("--recycle-ids",
                      "recycle collection and revision ids from dump",
@@ -123,22 +121,20 @@ void RestoreFeature::collectOptions(
 
   options->addOption(
       "--force", "continue restore even in the face of some server-side errors",
-      new BooleanParameter(&_force, false));
+      new BooleanParameter(&_force));
 }
 
 void RestoreFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::validateOptions";
-
   auto const& positionals = options->processingResult()._positionals;
   size_t n = positionals.size();
 
   if (1 == n) {
     _inputDirectory = positionals[0];
   } else if (1 < n) {
-    LOG(ERR) << "expecting at most one directory, got " +
-                    StringUtils::join(positionals, ", ");
-    abortInvalidParameters();
+    LOG(FATAL) << "expecting at most one directory, got " +
+                      StringUtils::join(positionals, ", ");
+    FATAL_ERROR_EXIT();
   }
 
   // use a minimum value for batches
@@ -148,8 +144,6 @@ void RestoreFeature::validateOptions(
 }
 
 void RestoreFeature::prepare() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::prepare";
-
   if (!_inputDirectory.empty() &&
       _inputDirectory.back() == TRI_DIR_SEPARATOR_CHAR) {
     // trim trailing slash from path because it may cause problems on ...
@@ -176,18 +170,18 @@ void RestoreFeature::prepare() {
 
 int RestoreFeature::tryCreateDatabase(ClientFeature* client,
                                       std::string const& name) {
-  arangodb::basics::Json json(arangodb::basics::Json::Object);
-  json("name", arangodb::basics::Json(name));
+  VPackBuilder builder;
+  builder.openObject();
+  builder.add("name", VPackValue(name));
+  builder.add("users", VPackValue(VPackValueType::Array));
+  builder.openObject();
+  builder.add("username", VPackValue(client->username()));
+  builder.add("passwd", VPackValue(client->password()));
+  builder.close();
+  builder.close();
+  builder.close();
 
-  arangodb::basics::Json user(arangodb::basics::Json::Object);
-  user("username", arangodb::basics::Json(client->username()));
-  user("passwd", arangodb::basics::Json(client->password()));
-
-  arangodb::basics::Json users(arangodb::basics::Json::Array);
-  users.add(user);
-  json("users", users);
-
-  std::string const body(arangodb::basics::JsonHelper::toString(json.json()));
+  std::string const body = builder.slice().toJson();
 
   std::unique_ptr<SimpleHttpResult> response(
       _httpClient->request(GeneralRequest::RequestType::POST, "/_api/database",
@@ -199,12 +193,13 @@ int RestoreFeature::tryCreateDatabase(ClientFeature* client,
 
   auto returnCode = response->getHttpReturnCode();
 
-  if (returnCode == (int)GeneralResponse::ResponseCode::OK ||
-      returnCode == (int)GeneralResponse::ResponseCode::CREATED) {
+  if (returnCode == static_cast<int>(GeneralResponse::ResponseCode::OK) ||
+      returnCode == static_cast<int>(GeneralResponse::ResponseCode::CREATED)) {
     // all ok
     return TRI_ERROR_NO_ERROR;
-  } else if (returnCode == (int)GeneralResponse::ResponseCode::UNAUTHORIZED ||
-             returnCode == (int)GeneralResponse::ResponseCode::FORBIDDEN) {
+  } 
+  if (returnCode == static_cast<int>(GeneralResponse::ResponseCode::UNAUTHORIZED) ||
+      returnCode == static_cast<int>(GeneralResponse::ResponseCode::FORBIDDEN)) {
     // invalid authorization
     _httpClient->setErrorMessage(getHttpErrorMessage(response.get(), nullptr),
                                  false);
@@ -328,8 +323,8 @@ int RestoreFeature::sendRestoreData(std::string const& cname,
 }
 
 static bool SortCollections(VPackSlice const& l, VPackSlice const& r) {
-  VPackSlice const& left = l.get("parameters");
-  VPackSlice const& right = r.get("parameters");
+  VPackSlice const left = l.get("parameters");
+  VPackSlice const right = r.get("parameters");
 
   int leftType =
       arangodb::basics::VelocyPackHelper::getNumericValue<int>(left, "type", 0);
@@ -632,10 +627,7 @@ int RestoreFeature::processInputDirectory(std::string& errorMsg) {
 }
 
 void RestoreFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
-  ClientFeature* client =
-      dynamic_cast<ClientFeature*>(server()->feature("Client"));
+  ClientFeature* client = application_features::ApplicationServer::getFeature<ClientFeature>("Client");
 
   int ret = EXIT_SUCCESS;
   *_result = ret;
@@ -649,11 +641,11 @@ void RestoreFeature::start() {
 
   std::string dbName = client->databaseName();
 
-  _httpClient->setLocationRewriter((void*)client, &rewriteLocation);
+  _httpClient->setLocationRewriter(static_cast<void*>(client), &rewriteLocation);
   _httpClient->setUserNamePassword("/", client->username(), client->password());
 
-  int err;
-  std::string versionString = getArangoVersion(&err);
+  int err = TRI_ERROR_NO_ERROR;
+  std::string versionString = _httpClient->getServerVersion(&err);
 
   if (_createDatabase && err == TRI_ERROR_ARANGO_DATABASE_NOT_FOUND) {
     // database not found, but database creation requested
@@ -673,7 +665,7 @@ void RestoreFeature::start() {
     client->setDatabaseName(dbName);
 
     // re-fetch version
-    versionString = getArangoVersion(nullptr);
+    versionString = _httpClient->getServerVersion(nullptr);
   }
 
   if (!_httpClient->isConnected()) {
@@ -687,15 +679,9 @@ void RestoreFeature::start() {
   std::cout << "Server version: " << versionString << std::endl;
 
   // validate server version
-  int major = 0;
-  int minor = 0;
+  std::pair<int, int> version = Version::parseVersionString(versionString);
 
-  if (sscanf(versionString.c_str(), "%d.%d", &major, &minor) != 2) {
-    LOG(FATAL) << "Error: invalid server version '" << versionString << "'";
-    FATAL_ERROR_EXIT();
-  }
-
-  if (major != 3) {
+  if (version.first < 3) {
     // we can connect to 3.x
     LOG(ERR) << "got incompatible server version '" << versionString << "'";
 
@@ -705,17 +691,13 @@ void RestoreFeature::start() {
     }
   }
 
-  if (major >= 2) {
-    // Version 1.4 did not yet have a cluster mode
-    _clusterMode = getArangoIsCluster(nullptr);
-  }
+  // Version 1.4 did not yet have a cluster mode
+  _clusterMode = getArangoIsCluster(nullptr);
 
   if (_progress) {
     std::cout << "# Connected to ArangoDB '"
               << _httpClient->getEndpointSpecification() << "'" << std::endl;
   }
-
-  memset(&_stats, 0, sizeof(_stats));
 
   std::string errorMsg = "";
 
@@ -750,4 +732,6 @@ void RestoreFeature::start() {
                 << std::endl;
     }
   }
+  
+  *_result = ret;
 }

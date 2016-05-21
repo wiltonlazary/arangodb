@@ -22,12 +22,11 @@
 /// @author Achim Brandt
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_REST_GENERAL_REQUEST_H
-#define LIB_REST_GENERAL_REQUEST_H 1
+#ifndef ARANGODB_REST_GENERAL_REQUEST_H
+#define ARANGODB_REST_GENERAL_REQUEST_H 1
 
 #include "Basics/Common.h"
 
-#include "Basics/Dictionary.h"
 #include "Basics/StringBuffer.h"
 #include "Basics/json.h"
 #include "Endpoint/ConnectionInfo.h"
@@ -38,9 +37,6 @@ class RequestContext;
 class GeneralRequest {
   GeneralRequest(GeneralRequest const&) = delete;
   GeneralRequest& operator=(GeneralRequest const&) = delete;
-
- public:
-  static int32_t const MIN_COMPATIBILITY;
 
  public:
   // VSTREAM_CRED: This method is used for sending Authentication
@@ -84,10 +80,9 @@ class GeneralRequest {
   static RequestType findRequestType(char const*, size_t const);
 
  public:
-  GeneralRequest(ConnectionInfo const& connectionInfo,
-                 int32_t defaultApiCompatibility)
+  explicit GeneralRequest(ConnectionInfo const& connectionInfo)
       : _version(ProtocolVersion::UNKNOWN),
-        _defaultApiCompatibility(defaultApiCompatibility),
+        _protocol(""),
         _connectionInfo(connectionInfo),
         _clientTaskId(0),
         _requestContext(nullptr),
@@ -100,10 +95,8 @@ class GeneralRequest {
   ProtocolVersion protocolVersion() const { return _version; }
 
   // http, https or vpp
-  std::string const& protocol() const { return _protocol; }
-  void setProtocol(std::string const& protocol) { _protocol = protocol; }
-
-  virtual int32_t compatibility() = 0;
+  char const* protocol() const { return _protocol; }
+  void setProtocol(char const* protocol) { _protocol = protocol; }
 
   ConnectionInfo const& connectionInfo() const { return _connectionInfo; }
   void setConnectionInfo(ConnectionInfo const& connectionInfo) {
@@ -121,6 +114,7 @@ class GeneralRequest {
   // the authenticated user
   std::string const& user() const { return _user; }
   void setUser(std::string const& user) { _user = user; }
+  void setUser(std::string&& user) { _user = std::move(user); }
 
   RequestContext* requestContext() const { return _requestContext; }
   void setRequestContext(RequestContext*, bool);
@@ -143,28 +137,28 @@ class GeneralRequest {
   // with all the remaining arguments.
   std::string prefix() const { return _prefix; }
   void setPrefix(std::string const& prefix) { _prefix = prefix; }
+  void setPrefix(std::string&& prefix) { _prefix = std::move(prefix); }
 
   std::vector<std::string> const& suffix() const { return _suffix; }
-  void addSuffix(std::string const& part);
+  void addSuffix(std::string&& part);
 
   // The key must be lowercase.
   std::string const& header(std::string const& key) const;
   std::string const& header(std::string const& key, bool& found) const;
-  std::map<std::string, std::string> const& headers() const { return _headers; }
-  void setHeader(std::string const& key, std::string const& value) {
-    _headers[key] = value;
-  }
+  std::unordered_map<std::string, std::string> const& headers() const { return _headers; }
 
   std::string const& value(std::string const& key) const;
   std::string const& value(std::string const& key, bool& found) const;
-  std::map<std::string, std::string> values() const {
+  std::unordered_map<std::string, std::string> values() const {
     return _values;
   }
 
-  std::map<std::string, std::vector<std::string>> arrayValues() const {
+  std::unordered_map<std::string, std::vector<std::string>> arrayValues() const {
     return _arrayValues;
   }
   void setArrayValue(std::string const& key, std::string const& value);
+
+  bool velocyPackResponse () const;
 
  protected:
   void setValue(char const* key, char const* value);
@@ -172,8 +166,7 @@ class GeneralRequest {
 
  protected:
   ProtocolVersion _version;
-  std::string _protocol;
-  int32_t _defaultApiCompatibility;
+  char const* _protocol;
 
   // connection info
   ConnectionInfo _connectionInfo;
@@ -191,9 +184,9 @@ class GeneralRequest {
   std::string _requestPath;
   std::string _prefix;
   std::vector<std::string> _suffix;
-  std::map<std::string, std::string> _headers;
-  std::map<std::string, std::string> _values;
-  std::map<std::string, std::vector<std::string>> _arrayValues;
+  std::unordered_map<std::string, std::string> _headers;
+  std::unordered_map<std::string, std::string> _values;
+  std::unordered_map<std::string, std::vector<std::string>> _arrayValues;
 };
 }
 

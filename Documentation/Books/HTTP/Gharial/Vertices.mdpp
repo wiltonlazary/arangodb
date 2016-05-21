@@ -1,0 +1,12 @@
+!CHAPTER Handling Vertices
+
+Examples will explain the REST API to the [graph module](../../Users/Graphs/index.html)
+on the [social graph](../../Users/Graphs/index.html#the-social-graph):
+
+![Social Example Graph](../../Users/Graphs/social_graph.png)
+
+@startDocuBlock JSF_general_graph_vertex_create_http_examples
+@startDocuBlock JSF_general_graph_vertex_get_http_examples
+@startDocuBlock JSF_general_graph_vertex_modify_http_examples
+@startDocuBlock JSF_general_graph_vertex_replace_http_examples
+@startDocuBlock JSF_general_graph_vertex_delete_http_examples

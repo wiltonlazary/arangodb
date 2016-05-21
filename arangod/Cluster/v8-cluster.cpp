@@ -32,6 +32,9 @@
 #include "V8/v8-utils.h"
 #include "V8/v8-vpack.h"
 #include "VocBase/server.h"
+#include <velocypack/Iterator.h>
+#include <velocypack/velocypack-aliases.h>
+
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -52,8 +55,16 @@ static void CreateAgencyException(
 
   std::string const errorDetails = result.errorDetails();
   v8::Handle<v8::String> errorMessage = TRI_V8_STD_STRING(errorDetails);
+  if (errorMessage.IsEmpty()) {
+    isolate->ThrowException(v8::Object::New(isolate));
+    return;
+  }
   v8::Handle<v8::Object> errorObject =
       v8::Exception::Error(errorMessage)->ToObject();
+  if (errorObject.IsEmpty()) {
+    isolate->ThrowException(v8::Object::New(isolate));
+    return;
+  }
 
   errorObject->Set(TRI_V8_ASCII_STRING("code"),
                    v8::Number::New(isolate, result.httpCode()));
@@ -170,7 +181,7 @@ static void JS_IsEnabledAgency(
     TRI_V8_THROW_EXCEPTION_USAGE("isEnabled()");
   }
 
-  std::string const prefix = AgencyComm::prefix();
+  std::string const prefix = AgencyComm::prefixPath();
 
   if (!prefix.empty()) {
     TRI_V8_RETURN_TRUE();
@@ -213,138 +224,34 @@ static void JS_GetAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
   v8::HandleScope scope(isolate);
 
   if (args.Length() < 1) {
-    TRI_V8_THROW_EXCEPTION_USAGE("get(<key>, <recursive>, <withIndexes>)");
+    TRI_V8_THROW_EXCEPTION_USAGE("get(<key>)");
   }
 
   std::string const key = TRI_ObjectToString(args[0]);
-  bool recursive = false;
-  bool withIndexes = false;
-
-  if (args.Length() > 1) {
-    recursive = TRI_ObjectToBoolean(args[1]);
-  }
-  if (args.Length() > 2) {
-    withIndexes = TRI_ObjectToBoolean(args[2]);
-  }
-
   AgencyComm comm;
-  AgencyCommResult result = comm.getValues(key, recursive);
+  AgencyCommResult result = comm.getValues(key);
 
   if (!result.successful()) {
     THROW_AGENCY_EXCEPTION(result);
   }
 
-  result.parse("", false);
-
   v8::Handle<v8::Object> l = v8::Object::New(isolate);
 
-  if (withIndexes) {
-    std::map<std::string, AgencyCommResultEntry>::const_iterator it =
-        result._values.begin();
-
-    while (it != result._values.end()) {
-      std::string const key = (*it).first;
-      VPackSlice const slice = it->second._vpack->slice();
-      std::string const idx = StringUtils::itoa((*it).second._index);
-
-      if (!slice.isNone()) {
-        v8::Handle<v8::Object> sub = v8::Object::New(isolate);
-
-        sub->Set(TRI_V8_ASCII_STRING("value"), TRI_VPackToV8(isolate, slice));
-        sub->Set(TRI_V8_ASCII_STRING("index"), TRI_V8_STD_STRING(idx));
-
-        l->Set(TRI_V8_STD_STRING(key), sub);
-      }
-
-      ++it;
-    }
-  } else {
-    // return just the value for each key
-    std::map<std::string, AgencyCommResultEntry>::const_iterator it =
-        result._values.begin();
-
-    while (it != result._values.end()) {
-      std::string const key = (*it).first;
-      VPackSlice const slice = it->second._vpack->slice();
-
+  // return just the value for each key
+  
+  for (auto const& a : VPackArrayIterator(result.slice())) {
+    for (auto const& o : VPackObjectIterator(a)) {
+      
+      std::string const key = o.key.copyString();
+      VPackSlice const slice = o.value;
+      
       if (!slice.isNone()) {
         l->ForceSet(TRI_V8_STD_STRING(key), TRI_VPackToV8(isolate, slice));
       }
-
-      ++it;
     }
   }
 
   TRI_V8_RETURN(l);
-  TRI_V8_TRY_CATCH_END
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief lists a directory from the agency
-////////////////////////////////////////////////////////////////////////////////
-
-static void JS_ListAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
-  TRI_V8_TRY_CATCH_BEGIN(isolate)
-  v8::HandleScope scope(isolate);
-
-  if (args.Length() < 1) {
-    TRI_V8_THROW_EXCEPTION_USAGE("list(<key>, <recursive>, <flat>)");
-  }
-
-  std::string const key = TRI_ObjectToString(args[0]);
-  bool recursive = false;
-
-  if (args.Length() > 1) {
-    recursive = TRI_ObjectToBoolean(args[1]);
-  }
-
-  bool flat = false;
-  if (args.Length() > 2) {
-    flat = TRI_ObjectToBoolean(args[2]);
-  }
-
-  AgencyComm comm;
-  AgencyCommResult result = comm.getValues(key, recursive);
-
-  if (!result.successful()) {
-    THROW_AGENCY_EXCEPTION(result);
-  }
-
-  // return just the value for each key
-  result.parse("", true);
-  std::map<std::string, AgencyCommResultEntry>::const_iterator it =
-      result._values.begin();
-
-  // skip first entry
-  if (it != result._values.end()) {
-    ++it;
-  }
-
-  if (flat) {
-    v8::Handle<v8::Array> l = v8::Array::New(isolate);
-
-    uint32_t i = 0;
-    while (it != result._values.end()) {
-      std::string const key = (*it).first;
-
-      l->Set(i++, TRI_V8_STD_STRING(key));
-      ++it;
-    }
-    TRI_V8_RETURN(l);
-  }
-
-  else {
-    v8::Handle<v8::Object> l = v8::Object::New(isolate);
-
-    while (it != result._values.end()) {
-      std::string const key = (*it).first;
-      bool const isDirectory = (*it).second._isDir;
-
-      l->Set(TRI_V8_STD_STRING(key), v8::Boolean::New(isolate, isDirectory));
-      ++it;
-    }
-    TRI_V8_RETURN(l);
-  }
   TRI_V8_TRY_CATCH_END
 }
 
@@ -545,67 +452,6 @@ static void JS_SetAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief watches a value in the agency
-////////////////////////////////////////////////////////////////////////////////
-
-static void JS_WatchAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
-  TRI_V8_TRY_CATCH_BEGIN(isolate);
-  v8::HandleScope scope(isolate);
-
-  if (args.Length() < 1) {
-    TRI_V8_THROW_EXCEPTION_USAGE(
-        "watch(<key>, <waitIndex>, <timeout>, <recursive>)");
-  }
-
-  std::string const key = TRI_ObjectToString(args[0]);
-  double timeout = 1.0;
-  uint64_t waitIndex = 0;
-  bool recursive = false;
-
-  if (args.Length() > 1) {
-    waitIndex = TRI_ObjectToUInt64(args[1], true);
-  }
-  if (args.Length() > 2) {
-    timeout = TRI_ObjectToDouble(args[2]);
-  }
-  if (args.Length() > 3) {
-    recursive = TRI_ObjectToBoolean(args[3]);
-  }
-
-  AgencyComm comm;
-  AgencyCommResult result = comm.watchValue(key, waitIndex, timeout, recursive);
-
-  if (result._statusCode == 0) {
-    // watch timed out
-    TRI_V8_RETURN_FALSE();
-  }
-
-  if (!result.successful()) {
-    THROW_AGENCY_EXCEPTION(result);
-  }
-
-  result.parse("", false);
-  std::map<std::string, AgencyCommResultEntry>::const_iterator it =
-      result._values.begin();
-
-  v8::Handle<v8::Object> l = v8::Object::New(isolate);
-
-  while (it != result._values.end()) {
-    std::string const key = (*it).first;
-    VPackSlice const slice = it->second._vpack->slice();
-
-    if (!slice.isNone()) {
-      l->Set(TRI_V8_STD_STRING(key), TRI_VPackToV8(isolate, slice));
-    }
-
-    ++it;
-  }
-
-  TRI_V8_RETURN(l);
-  TRI_V8_TRY_CATCH_END
-}
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief returns the agency endpoints
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -653,7 +499,7 @@ static void JS_PrefixAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
     strip = TRI_ObjectToBoolean(args[0]);
   }
 
-  std::string const prefix = AgencyComm::prefix();
+  std::string const prefix = AgencyComm::prefixPath();
 
   if (strip && prefix.size() > 2) {
     TRI_V8_RETURN_PAIR_STRING(prefix.c_str() + 1, (int)prefix.size() - 2);
@@ -693,15 +539,13 @@ static void JS_UniqidAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  if (args.Length() < 1 || args.Length() > 3) {
-    TRI_V8_THROW_EXCEPTION_USAGE("uniqid(<key>, <count>, <timeout>)");
+  if (args.Length() > 2) {
+    TRI_V8_THROW_EXCEPTION_USAGE("uniqid(<count>, <timeout>)");
   }
 
-  std::string const key = TRI_ObjectToString(args[0]);
-
   uint64_t count = 1;
-  if (args.Length() > 1) {
-    count = TRI_ObjectToUInt64(args[1], true);
+  if (args.Length() > 0) {
+    count = TRI_ObjectToUInt64(args[0], true);
   }
 
   if (count < 1 || count > 10000000) {
@@ -709,18 +553,14 @@ static void JS_UniqidAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
   }
 
   double timeout = 0.0;
-  if (args.Length() > 2) {
-    timeout = TRI_ObjectToDouble(args[2]);
+  if (args.Length() > 1) {
+    timeout = TRI_ObjectToDouble(args[1]);
   }
 
   AgencyComm comm;
-  AgencyCommResult result = comm.uniqid(key, count, timeout);
+  uint64_t result = comm.uniqid(count, timeout);
 
-  if (!result.successful() || result._index == 0) {
-    THROW_AGENCY_EXCEPTION(result);
-  }
-
-  std::string const value = StringUtils::itoa(result._index);
+  std::string const value = StringUtils::itoa(result);
 
   TRI_V8_RETURN_STD_STRING(value);
   TRI_V8_TRY_CATCH_END
@@ -772,15 +612,15 @@ static void JS_DoesDatabaseExistClusterInfo(
 /// @brief get the list of databases in the cluster
 ////////////////////////////////////////////////////////////////////////////////
 
-static void JS_ListDatabases(v8::FunctionCallbackInfo<v8::Value> const& args) {
+static void JS_Databases(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
   if (args.Length() != 0) {
-    TRI_V8_THROW_EXCEPTION_USAGE("listDatabases()");
+    TRI_V8_THROW_EXCEPTION_USAGE("databases()");
   }
 
-  std::vector<DatabaseID> res = ClusterInfo::instance()->listDatabases(true);
+  std::vector<DatabaseID> res = ClusterInfo::instance()->databases(true);
   v8::Handle<v8::Array> a = v8::Array::New(isolate, (int)res.size());
   std::vector<DatabaseID>::iterator it;
   int count = 0;
@@ -855,8 +695,6 @@ static void JS_GetCollectionInfoClusterInfo(
               v8::Number::New(isolate, ci->journalSize()));
   result->Set(TRI_V8_ASCII_STRING("replicationFactor"),
               v8::Number::New(isolate, ci->replicationFactor()));
-  result->Set(TRI_V8_ASCII_STRING("replicationQuorum"),
-              v8::Number::New(isolate, ci->replicationQuorum()));
 
   std::vector<std::string> const& sks = ci->shardKeys();
   v8::Handle<v8::Array> shardKeys = v8::Array::New(isolate, (int)sks.size());
@@ -877,7 +715,7 @@ static void JS_GetCollectionInfoClusterInfo(
   }
   result->Set(TRI_V8_ASCII_STRING("shards"), shardIds);
 
-  v8::Handle<v8::Value> indexes = TRI_ObjectJson(isolate, ci->getIndexes());
+  v8::Handle<v8::Value> indexes = TRI_VPackToV8(isolate, ci->getIndexes());
   result->Set(TRI_V8_ASCII_STRING("indexes"), indexes);
 
   TRI_V8_RETURN(result);
@@ -917,8 +755,8 @@ static void JS_GetCollectionInfoCurrentClusterInfo(
   result->Set(TRI_V8_ASCII_STRING("type"),
               v8::Number::New(isolate, (int)ci->type()));
 
-  TRI_json_t const* json = cic->getIndexes(shardID);
-  v8::Handle<v8::Value> indexes = TRI_ObjectJson(isolate, json);
+  VPackSlice slice = cic->getIndexes(shardID);
+  v8::Handle<v8::Value> indexes = TRI_VPackToV8(isolate, slice);
   result->Set(TRI_V8_ASCII_STRING("indexes"), indexes);
 
   // Finally, report any possible error:
@@ -931,6 +769,13 @@ static void JS_GetCollectionInfoCurrentClusterInfo(
     result->Set(TRI_V8_ASCII_STRING("errorMessage"),
                 TRI_V8_STD_STRING(errorMessage));
   }
+  auto servers = cic->servers(shardID);
+  v8::Handle<v8::Array> list = v8::Array::New(isolate, static_cast<int>(servers.size()));
+  uint32_t pos = 0;
+  for (auto const& s : servers) {
+    list->Set(pos++, TRI_V8_STD_STRING(s));
+  }
+  result->Set(TRI_V8_ASCII_STRING("servers"), list);
 
   TRI_V8_RETURN(result);
   TRI_V8_TRY_CATCH_END
@@ -989,17 +834,18 @@ static void JS_GetResponsibleShardClusterInfo(
     documentIsComplete = TRI_ObjectToBoolean(args[2]);
   }
 
-  std::unique_ptr<TRI_json_t> json(TRI_ObjectToJson(isolate, args[1]));
+  VPackBuilder builder;
+  int res = TRI_V8ToVPack(isolate, builder, args[1], false);
 
-  if (json == nullptr) {
-    TRI_V8_THROW_EXCEPTION_MEMORY();
+  if (res != TRI_ERROR_NO_ERROR) {
+    TRI_V8_THROW_EXCEPTION(res);
   }
 
   ShardID shardId;
   CollectionID collectionId = TRI_ObjectToString(args[0]);
   bool usesDefaultShardingAttributes;
-  int res = ClusterInfo::instance()->getResponsibleShard(
-      collectionId, json.get(), documentIsComplete, shardId,
+  res = ClusterInfo::instance()->getResponsibleShard(
+      collectionId, builder.slice(), documentIsComplete, shardId,
       usesDefaultShardingAttributes);
 
   if (res != TRI_ERROR_NO_ERROR) {
@@ -1150,7 +996,7 @@ static void JS_UniqidClusterInfo(
     TRI_V8_THROW_EXCEPTION_PARAMETER("<count> is invalid");
   }
 
-  uint64_t value = ClusterInfo::instance()->uniqid();
+  uint64_t value = ClusterInfo::instance()->uniqid(count);
 
   if (value == 0) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
@@ -1557,7 +1403,7 @@ static void PrepareClusterCommRequest(
     v8::FunctionCallbackInfo<v8::Value> const& args,
     arangodb::GeneralRequest::RequestType& reqType, std::string& destination,
     std::string& path, std::string& body,
-    std::map<std::string, std::string>& headerFields,
+    std::unordered_map<std::string, std::string>& headerFields,
     ClientTransactionID& clientTransactionID,
     CoordTransactionID& coordTransactionID, double& timeout,
     bool& singleRequest) {
@@ -1758,12 +1604,11 @@ static void Return_PrepareClusterCommResultForJS(
       TRI_GET_GLOBAL_STRING(StatusKey);
       r->Set(StatusKey, TRI_V8_ASCII_STRING("RECEIVED"));
       TRI_ASSERT(res.answer != nullptr);
-      std::map<std::string, std::string> headers = res.answer->headers();
+      std::unordered_map<std::string, std::string> headers = res.answer->headers();
       headers["content-length"] =
           StringUtils::itoa(res.answer->contentLength());
-      std::map<std::string, std::string>::iterator i;
-      for (i = headers.begin(); i != headers.end(); ++i) {
-        h->Set(TRI_V8_STD_STRING(i->first), TRI_V8_STD_STRING(i->second));
+      for (auto& it : headers) {
+        h->Set(TRI_V8_STD_STRING(it.first), TRI_V8_STD_STRING(it.second));
       }
       r->Set(TRI_V8_ASCII_STRING("headers"), h);
 
@@ -1812,8 +1657,7 @@ static void JS_AsyncRequest(v8::FunctionCallbackInfo<v8::Value> const& args) {
   std::string destination;
   std::string path;
   auto body = std::make_shared<std::string>();
-  std::unique_ptr<std::map<std::string, std::string>> headerFields(
-      new std::map<std::string, std::string>());
+  auto headerFields = std::make_unique<std::unordered_map<std::string, std::string>>();
   ClientTransactionID clientTransactionID;
   CoordTransactionID coordTransactionID;
   double timeout;
@@ -1875,8 +1719,7 @@ static void JS_SyncRequest(v8::FunctionCallbackInfo<v8::Value> const& args) {
   std::string destination;
   std::string path;
   std::string body;
-  std::unique_ptr<std::map<std::string, std::string>> headerFields(
-      new std::map<std::string, std::string>());
+  auto headerFields = std::make_unique<std::unordered_map<std::string, std::string>>();
   ClientTransactionID clientTransactionID;
   CoordTransactionID coordTransactionID;
   double timeout;
@@ -2097,7 +1940,6 @@ void TRI_InitV8Cluster(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
                        JS_IsEnabledAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("increaseVersion"),
                        JS_IncreaseVersionAgency);
-  TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("list"), JS_ListAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("lockRead"),
                        JS_LockReadAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("lockWrite"),
@@ -2105,8 +1947,6 @@ void TRI_InitV8Cluster(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("remove"),
                        JS_RemoveAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("set"), JS_SetAgency);
-  TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("watch"),
-                       JS_WatchAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("endpoints"),
                        JS_EndpointsAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("prefix"),
@@ -2136,9 +1976,9 @@ void TRI_InitV8Cluster(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
                                  TRI_V8_ASCII_STRING("ArangoAgency"), aa);
   }
 
-  // .............................................................................
+  // ...........................................................................
   // generate the cluster info template
-  // .............................................................................
+  // ...........................................................................
 
   ft = v8::FunctionTemplate::New(isolate);
   ft->SetClassName(TRI_V8_ASCII_STRING("ArangoClusterInfo"));
@@ -2148,8 +1988,8 @@ void TRI_InitV8Cluster(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
 
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("doesDatabaseExist"),
                        JS_DoesDatabaseExistClusterInfo);
-  TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("listDatabases"),
-                       JS_ListDatabases);
+  TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("databases"),
+                       JS_Databases);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("flush"),
                        JS_FlushClusterInfo, true);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("getCollectionInfo"),

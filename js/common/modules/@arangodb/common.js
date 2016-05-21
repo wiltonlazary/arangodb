@@ -28,11 +28,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 var internal = require("internal");
-
 var fs = require("fs");
-
-var mimetypes = require("@arangodb/mimetypes").mimeTypes;
-
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -43,6 +39,33 @@ var mimetypes = require("@arangodb/mimetypes").mimeTypes;
 Object.keys(internal.errors).forEach(function (key) {
   exports[key] = internal.errors[key].code;
 });
+
+exports.aql = function (strings, ...args) {
+  const bindVars = {};
+  const bindVals = [];
+  let query = strings[0];
+  for (let i = 0; i < args.length; i++) {
+    const rawValue = args[i];
+    let value = rawValue;
+    if (rawValue && typeof rawValue.toAQL === 'function') {
+      query += `${rawValue.toAQL()}${strings[i + 1]}`;
+      continue;
+    }
+    const index = bindVals.indexOf(rawValue);
+    const isKnown = index !== -1;
+    let name = `value${isKnown ? index : bindVals.length}`;
+    if (rawValue && rawValue.isArangoCollection) {
+      name = `@${name}`;
+      value = rawValue.name();
+    }
+    if (!isKnown) {
+      bindVals.push(rawValue);
+      bindVars[name] = value;
+    }
+    query += `@${name}${strings[i + 1]}`;
+  }
+  return {query, bindVars};
+};
 
 exports.errors = internal.errors;
 
@@ -80,37 +103,6 @@ exports.defineModule = function (path, file) {
   else {
     mc.replace(m, { path: path, content: content });
   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief guessContentType
-////////////////////////////////////////////////////////////////////////////////
-
-exports.guessContentType = function (filename, defaultValue) {
-  var re = /\.([a-zA-Z0-9]+)$/;
-  var match = re.exec(filename);
-
-  if (match !== null) {
-    var extension = match[1];
-
-    if (mimetypes.hasOwnProperty(extension)) {
-      var type = mimetypes[extension];
-
-      if (type[1]) {
-        // append charset
-        return type[0] + "; charset=utf-8";
-      }
-
-      return type[0];
-    }
-    // fall-through intentional
-  }
-
-  // default mimetype
-  if (defaultValue) {
-    return defaultValue;
-  }
-  return "text/plain; charset=utf-8";
 };
 
 ////////////////////////////////////////////////////////////////////////////////

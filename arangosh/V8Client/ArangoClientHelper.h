@@ -20,8 +20,8 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef APPLICATION_FEATURES_ARANGO_CLIENT_HELPER_H
-#define APPLICATION_FEATURES_ARANGO_CLIENT_HELPER_H 1
+#ifndef ARANGODB_V8CLIENT_ARANGO_CLIENT_HELPER_H
+#define ARANGODB_V8CLIENT_ARANGO_CLIENT_HELPER_H 1
 
 #include "Basics/Common.h"
 
@@ -41,7 +41,6 @@ class ArangoClientHelper {
 
  public:
   std::string getHttpErrorMessage(httpclient::SimpleHttpResult*, int* err);
-  std::string getArangoVersion(int* err);
   bool getArangoIsCluster(int* err);
 
  protected:

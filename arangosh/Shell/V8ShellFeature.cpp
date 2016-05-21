@@ -29,8 +29,8 @@
 #include "Basics/Utf8Helper.h"
 #include "Basics/shell-colors.h"
 #include "Logger/Logger.h"
-#include "ProgramOptions2/ProgramOptions.h"
-#include "ProgramOptions2/Section.h"
+#include "ProgramOptions/ProgramOptions.h"
+#include "ProgramOptions/Section.h"
 #include "Rest/HttpResponse.h"
 #include "Rest/Version.h"
 #include "Shell/V8ClientConnection.h"
@@ -52,7 +52,7 @@ V8ShellFeature::V8ShellFeature(application_features::ApplicationServer* server,
     : ApplicationFeature(server, "V8Shell"),
       _startupDirectory("js"),
       _currentModuleDirectory(true),
-      _gcInterval(10),
+      _gcInterval(50),
       _name(name),
       _isolate(nullptr),
       _console(nullptr) {
@@ -65,8 +65,6 @@ V8ShellFeature::V8ShellFeature(application_features::ApplicationServer* server,
 }
 
 void V8ShellFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
   options->addSection("javascript", "Configure the Javascript engine");
 
   options->addHiddenOption("--javascript.startup-directory",
@@ -85,11 +83,10 @@ void V8ShellFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
 
 void V8ShellFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::validateOptions";
 
   if (_startupDirectory.empty()) {
     LOG(FATAL) << "'--javascript.startup-directory' is empty, giving up";
-    abortInvalidParameters();
+    FATAL_ERROR_EXIT();
   }
 
   LOG_TOPIC(DEBUG, Logger::V8) << "using Javascript startup files at '"
@@ -97,11 +94,8 @@ void V8ShellFeature::validateOptions(
 }
 
 void V8ShellFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
-  _console = dynamic_cast<ConsoleFeature*>(server()->feature("Console"));
-  auto platform =
-      dynamic_cast<V8PlatformFeature*>(server()->feature("V8Platform"));
+  _console = application_features::ApplicationServer::getFeature<ConsoleFeature>("Console");
+  auto platform = application_features::ApplicationServer::getFeature<V8PlatformFeature>("V8Platform");
 
   v8::Isolate::CreateParams createParams;
   createParams.array_buffer_allocator = platform->arrayBufferAllocator();
@@ -137,7 +131,22 @@ void V8ShellFeature::start() {
 }
 
 void V8ShellFeature::stop() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::stop";
+  {
+    v8::Locker locker{_isolate};
+
+    v8::Isolate::Scope isolate_scope(_isolate);
+    v8::HandleScope handle_scope(_isolate);
+
+    v8::Local<v8::Context> context =
+        v8::Local<v8::Context>::New(_isolate, _context);
+
+    v8::Context::Scope context_scope{context};
+    
+    // remove any objects stored in _last global value  
+    context->Global()->Delete(TRI_V8_ASCII_STRING2(_isolate, "_last"));
+
+    TRI_RunGarbageCollectionV8(_isolate, 2500.0);
+  }
 
   {
     v8::Locker locker{_isolate};
@@ -221,7 +230,7 @@ bool V8ShellFeature::printHello(V8ClientConnection* v8connection) {
         if (!v8connection->lastErrorMessage().empty()) {
           std::ostringstream is2;
 
-          is2 << "Error message '" << v8connection->lastErrorMessage() << "'";
+          is2 << "Error message: '" << v8connection->lastErrorMessage() << "'";
 
           _console->printErrorLine(is2.str());
         }
@@ -398,8 +407,10 @@ int V8ShellFeature::runShell(std::vector<std::string> const& positionals) {
     }
   }
 
-  _console->printLine("");
-  _console->printByeBye();
+  if (!_console->quiet()) {
+    _console->printLine("");
+    _console->printByeBye();
+  }
 
   return promptError ? TRI_ERROR_INTERNAL : TRI_ERROR_NO_ERROR;
 }
@@ -662,15 +673,11 @@ static void JS_PagerOutput(v8::FunctionCallbackInfo<v8::Value> const& args) {
   v8::HandleScope scope(isolate);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ConsoleFeature* console = (ConsoleFeature*)(wrap->Value());
+  ConsoleFeature* console = static_cast<ConsoleFeature*>(wrap->Value());
 
   for (int i = 0; i < args.Length(); i++) {
     // extract the next argument
-    v8::Handle<v8::Value> val = args[i];
-
-    std::string str = TRI_ObjectToString(val);
-
-    console->print(str);
+    console->print(TRI_ObjectToString(args[i]));
   }
 
   TRI_V8_RETURN_UNDEFINED();
@@ -687,7 +694,7 @@ static void JS_StartOutputPager(
   v8::HandleScope scope(isolate);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ConsoleFeature* console = (ConsoleFeature*)(wrap->Value());
+  ConsoleFeature* console = static_cast<ConsoleFeature*>(wrap->Value());
 
   if (console->pager()) {
     console->print("Using pager already.\n");
@@ -712,7 +719,7 @@ static void JS_StopOutputPager(
   v8::HandleScope scope(isolate);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ConsoleFeature* console = (ConsoleFeature*)(wrap->Value());
+  ConsoleFeature* console = static_cast<ConsoleFeature*>(wrap->Value());
 
   if (console->pager()) {
     console->print("Stopping pager.\n");
@@ -897,10 +904,6 @@ void V8ShellFeature::loadModules(ShellFeature::RunMode runMode) {
                                                            // console
   files.push_back(
       "common/bootstrap/modules.js");  // must come last before patches
-
-  if (runMode != ShellFeature::RunMode::JSLINT) {
-    files.push_back("common/bootstrap/monkeypatches.js");
-  }
 
   files.push_back("client/client.js");  // needs internal
 

@@ -21,37 +21,39 @@
 /// @author Kaveh Vahedipour
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __ARANGODB_CONSENSUS_AGENT__
-#define __ARANGODB_CONSENSUS_AGENT__
+#ifndef ARANGOD_CONSENSUS_AGENT_H
+#define ARANGOD_CONSENSUS_AGENT_H 1
 
-#include "AgencyCommon.h"
-#include "AgentCallback.h"
-#include "Constituent.h"
-#include "State.h"
-#include "Store.h"
+#include "Agency/AgencyCommon.h"
+#include "Agency/AgentConfiguration.h"
+#include "Agency/AgentCallback.h"
+#include "Agency/Constituent.h"
+#include "Agency/Supervision.h"
+#include "Agency/State.h"
+#include "Agency/Store.h"
+
+struct TRI_server_t;
+struct TRI_vocbase_t;
 
 namespace arangodb {
 namespace consensus {
-
 class Agent : public arangodb::Thread {
  public:
-  /// @brief Default ctor
-  Agent();
-
   /// @brief Construct with program options
   explicit Agent(config_t const&);
 
   /// @brief Clean up
-  virtual ~Agent();
+  ~Agent();
 
   /// @brief Get current term
   term_t term() const;
 
   /// @brief Get current term
-  id_t id() const;
+  arangodb::consensus::id_t id() const;
 
   /// @brief Vote request
-  priv_rpc_ret_t requestVote(term_t, id_t, index_t, index_t, query_t const&);
+  priv_rpc_ret_t requestVote(term_t, arangodb::consensus::id_t, index_t,
+                             index_t, query_t const&);
 
   /// @brief Provide configuration
   config_t const& config() const;
@@ -59,15 +61,19 @@ class Agent : public arangodb::Thread {
   /// @brief Start thread
   bool start();
 
+  /// @brief My endpoint
+  std::string const& endpoint() const;
+
   /// @brief Verbose print of myself
-  ////
   void print(arangodb::LoggerStream&) const;
 
   /// @brief Are we fit to run?
   bool fitness() const;
 
   /// @brief Leader ID
-  id_t leaderID() const;
+  arangodb::consensus::id_t leaderID() const;
+
+  /// @brief Are we leading?
   bool leading() const;
 
   /// @brief Pick up leadership tasks
@@ -82,15 +88,15 @@ class Agent : public arangodb::Thread {
   /// @brief Read from agency
   read_ret_t read(query_t const&) const;
 
-  /// @brief Received by followers to replicate log entries (§5.3);
-  ///        also used as heartbeat (§5.2).
-  bool recvAppendEntriesRPC(term_t term, id_t leaderId, index_t prevIndex,
-                            term_t prevTerm, index_t lastCommitIndex,
-                            query_t const& queries);
+  /// @brief Received by followers to replicate log entries ($5.3);
+  ///        also used as heartbeat ($5.2).
+  bool recvAppendEntriesRPC(term_t term, arangodb::consensus::id_t leaderId,
+                            index_t prevIndex, term_t prevTerm,
+                            index_t lastCommitIndex, query_t const& queries);
 
-  /// @brief Invoked by leader to replicate log entries (§5.3);
-  ///        also used as heartbeat (§5.2).
-  append_entries_t sendAppendEntriesRPC(id_t slave_id);
+  /// @brief Invoked by leader to replicate log entries ($5.3);
+  ///        also used as heartbeat ($5.2).
+  append_entries_t sendAppendEntriesRPC(arangodb::consensus::id_t slave_id);
 
   /// @brief 1. Deal with appendEntries to slaves.
   ///        2. Report success of write processes.
@@ -100,10 +106,10 @@ class Agent : public arangodb::Thread {
   void beginShutdown() override final;
 
   /// @brief Report appended entries from AgentCallback
-  void reportIn(id_t id, index_t idx);
+  void reportIn(arangodb::consensus::id_t id, index_t idx);
 
   /// @brief Wait for slaves to confirm appended entries
-  bool waitFor(index_t last_entry, duration_t timeout = duration_t(2000));
+  bool waitFor(index_t last_entry, double timeout = 2.0);
 
   /// @brief Convencience size of agency
   size_t size() const;
@@ -114,14 +120,8 @@ class Agent : public arangodb::Thread {
   /// @brief Last log entry
   log_t const& lastLog() const;
 
-  /// @brief Pipe configuration to ostream
-  friend std::ostream& operator<<(std::ostream& o, Agent const& a) {
-    o << a.config();
-    return o;
-  }
-
   /// @brief Persist term
-  void persist (term_t, id_t);
+  void persist(term_t, arangodb::consensus::id_t);
 
   /// @brief State machine
   State const& state() const;
@@ -130,26 +130,55 @@ class Agent : public arangodb::Thread {
   Store const& readDB() const;
 
   /// @brief Get spearhead store
-  Store const& spearhead() const; 
+  Store const& spearhead() const;
+
+  friend class State;
 
  private:
-  Constituent _constituent; /**< @brief Leader election delegate */
-  State _state;             /**< @brief Log replica              */
-  config_t _config;         /**< @brief Command line arguments   */
+  Agent& operator=(VPackSlice const&);
 
-  std::atomic<index_t> _last_commit_index; /**< @brief Last commit index */
+  /// @brief This server (need endpoint)
+  TRI_server_t* _server;
 
-  arangodb::Mutex _uncommitedLock; /**< @brief  */
+  /// @brief Vocbase for agency persistence
+  TRI_vocbase_t* _vocbase;
 
-  Store _spearhead; /**< @brief Spearhead key value store */
-  Store _read_db;   /**< @brief Read key value store */
+  /// @brief Query registry for agency persistence
+  aql::QueryRegistry* _queryRegistry;
 
-  arangodb::basics::ConditionVariable _cv; /**< @brief Internal callbacks */
-  arangodb::basics::ConditionVariable _rest_cv; /**< @brief Rest handler */
+  /// @brief Leader election delegate
+  Constituent _constituent;
 
-  std::vector<index_t>
-      _confirmed;          /**< @brief Confirmed log index of each slave */
+  /// @brief Cluster supervision module
+  Supervision _supervision;
+
+  /// @brief State machine
+  State _state;
+
+  /// @brief Configuration of command line options
+  config_t _config;
+
+  /// @brief Last commit index (raft)
+  index_t _lastCommitIndex;
+
+  /// @brief Spearhead (write) kv-store
+  Store _spearhead;
+
+  /// @brief Commited (read) kv-store
+  Store _readDB;
+
+  /// @brief Condition variable for appendEntries
+  arangodb::basics::ConditionVariable _appendCV;
+
+  /// @brief Condition variable for waitFor
+  arangodb::basics::ConditionVariable _waitForCV;
+
+  /// @brief Confirmed indices of all members of agency
+  std::vector<index_t> _confirmed;
   arangodb::Mutex _ioLock; /**< @brief Read/Write lock */
+
+  /// @brief Next compaction after
+  arangodb::consensus::index_t _nextCompationAfter;
 };
 }
 }

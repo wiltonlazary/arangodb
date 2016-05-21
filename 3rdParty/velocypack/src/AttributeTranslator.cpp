@@ -33,9 +33,13 @@
 
 using namespace arangodb::velocypack;
 
+AttributeTranslator::~AttributeTranslator() {
+  delete _builder;
+}
+
 void AttributeTranslator::add(std::string const& key, uint64_t id) {
   if (_builder == nullptr) {
-    _builder.reset(new Builder);
+    _builder = new Builder;
     _builder->add(Value(ValueType::Object));
   }
 
@@ -89,7 +93,7 @@ uint8_t const* AttributeTranslator::translate(uint64_t id) const {
   auto it = _idToKey.find(id);
 
   if (it == _idToKey.end()) {
-    throw Exception(Exception::KeyNotFound);
+    return nullptr;
   }
 
   return (*it).second;

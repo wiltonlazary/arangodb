@@ -26,7 +26,10 @@
 
 #include "Basics/Common.h"
 #include "Basics/StringBuffer.h"
+#include "Aql/QueryResult.h"
 #include "VocBase/voc-types.h"
+
+#include <velocypack/Iterator.h>
 
 struct TRI_vocbase_t;
 
@@ -107,14 +110,13 @@ class Cursor {
   bool _isUsed;
 };
 
-class JsonCursor : public Cursor {
+class VelocyPackCursor : public Cursor {
  public:
-  JsonCursor(TRI_vocbase_t*, CursorId,
-             std::shared_ptr<arangodb::velocypack::Builder>, size_t,
-             std::shared_ptr<arangodb::velocypack::Builder>, double, bool,
-             bool);
+  VelocyPackCursor(TRI_vocbase_t*, CursorId, aql::QueryResult&&, size_t,
+                   std::shared_ptr<arangodb::velocypack::Builder>, double,
+                   bool);
 
-  ~JsonCursor();
+  ~VelocyPackCursor();
 
  public:
   bool hasNext() override final;
@@ -126,12 +128,9 @@ class JsonCursor : public Cursor {
   void dump(arangodb::basics::StringBuffer&) override final;
 
  private:
-  void freeJson();
-
- private:
   TRI_vocbase_t* _vocbase;
-  std::shared_ptr<arangodb::velocypack::Builder> _json;
-  size_t const _size;
+  aql::QueryResult _result;
+  arangodb::velocypack::ArrayIterator _iterator;
   bool _cached;
 };
 

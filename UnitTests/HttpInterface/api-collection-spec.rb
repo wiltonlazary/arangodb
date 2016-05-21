@@ -36,10 +36,7 @@ describe ArangoDB do
         doc.parsed_response['error'].should eq(false)
         doc.parsed_response['code'].should eq(200)
 
-        collections = doc.parsed_response['collections']
-        names = doc.parsed_response['names']
-
-        collections.length.should eq(names.length)
+        collections = doc.parsed_response["result"];
 
         total = 0
         realCollections = [ ]
@@ -50,21 +47,8 @@ describe ArangoDB do
           total = total + 1
         }
 
-        realNames = { }
-        names.each do |name, collection| 
-          if [ "units", "employees", "locations" ].include? name
-            realNames[name] = collection
-          end
-        end
-
-        for collection in realCollections do
-          realNames[collection['name']].should eq(collection)
-        end
-        
         realCollections.length.should eq(3)
-        realNames.length.should eq(3)
         total.should be > 3
-
       end
 
       it "returns all collections, exclude system collections" do
@@ -76,10 +60,7 @@ describe ArangoDB do
         doc.parsed_response['error'].should eq(false)
         doc.parsed_response['code'].should eq(200)
         
-        collections = doc.parsed_response['collections']
-        names = doc.parsed_response['names']
-        collections.length.should eq(names.length)
-
+        collections = doc.parsed_response["result"]
         realCollections = [ ]
 
         total = 0
@@ -90,16 +71,7 @@ describe ArangoDB do
           total = total + 1
         }
 
-        realNames = { }
-        names.each do |name, collection| 
-          if [ "units", "employees", "locations" ].include? name
-            realNames[name] = collection
-          end
-        end
-
         realCollections.length.should eq(3)
-        realNames.length.should eq(3)
-        
         total.should >= 3
       end
 
@@ -169,7 +141,7 @@ describe ArangoDB do
         doc.parsed_response['error'].should eq(true)
         doc.parsed_response['code'].should eq(400)
         doc.parsed_response['errorNum'].should eq(600)
-        doc.parsed_response['errorMessage'].should eq("SyntaxError: Unexpected token n")
+        doc.parsed_response['errorMessage'].should eq("SyntaxError: Unexpected token n in JSON at position 2")
       end
 
       it "creating a collection with a null body" do
@@ -310,10 +282,6 @@ describe ArangoDB do
         doc.parsed_response['figures']['dead']['count'].should eq(0)
         doc.parsed_response['figures']['alive']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['alive']['count'].should eq(0)
-        doc.parsed_response['figures']['shapes']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapes']['count'].should eq(0)
-        doc.parsed_response['figures']['attributes']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['attributes']['count'].should >= 0
         doc.parsed_response['figures']['datafiles']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['datafiles']['fileSize'].should be_kind_of(Integer)
         doc.parsed_response['figures']['datafiles']['count'].should eq(0)
@@ -323,12 +291,9 @@ describe ArangoDB do
         doc.parsed_response['figures']['compactors']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['compactors']['fileSize'].should be_kind_of(Integer)
         doc.parsed_response['figures']['compactors']['count'].should eq(0)
-        doc.parsed_response['figures']['shapefiles']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapefiles']['fileSize'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapefiles']['count'].should eq(0)
         doc.parsed_response['journalSize'].should be_kind_of(Integer)
               
-        # create a few documents, this should increase counts and number of shapes
+        # create a few documents, this should increase counts
         (0...10).each{|i|
           body = "{ \"test\" : " + i.to_s + " }"
           doc = ArangoDB.log_post("#{prefix}-get-collection-figures", "/_api/document/?collection=" + @cn, :body => body)
@@ -349,12 +314,10 @@ describe ArangoDB do
         doc.parsed_response['figures']['dead']['count'].should eq(0)
         doc.parsed_response['figures']['alive']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['alive']['count'].should eq(10)
-        doc.parsed_response['figures']['shapes']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapes']['count'].should eq(1)
         doc.parsed_response['figures']['datafiles']['count'].should eq(0)
         doc.parsed_response['figures']['journals']['count'].should eq(1)
 
-        # create a few different documents, this should increase counts and number of shapes
+        # create a few different documents, this should increase counts
         (0...10).each{|i|
           body = "{ \"test" + i.to_s + "\" : 1 }"
           doc = ArangoDB.log_post("#{prefix}-get-collection-figures", "/_api/document/?collection=" + @cn, :body => body)
@@ -375,8 +338,6 @@ describe ArangoDB do
         doc.parsed_response['figures']['dead']['count'].should eq(0)
         doc.parsed_response['figures']['alive']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['alive']['count'].should eq(20)
-        doc.parsed_response['figures']['shapes']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapes']['count'].should eq(11)
         doc.parsed_response['figures']['datafiles']['count'].should eq(0)
         doc.parsed_response['figures']['journals']['count'].should eq(1)
         
@@ -401,8 +362,6 @@ describe ArangoDB do
         doc.parsed_response['figures']['dead']['count'].should eq(2)
         doc.parsed_response['figures']['alive']['count'].should be_kind_of(Integer)
         doc.parsed_response['figures']['alive']['count'].should eq(18)
-        doc.parsed_response['figures']['shapes']['count'].should be_kind_of(Integer)
-        doc.parsed_response['figures']['shapes']['count'].should eq(11)
         doc.parsed_response['figures']['datafiles']['count'].should eq(0)
         doc.parsed_response['figures']['journals']['count'].should eq(1)
       end

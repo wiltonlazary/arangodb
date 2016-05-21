@@ -52,7 +52,6 @@
   load(`${startupPath}/server/bootstrap/modules/internal.js`); // deps: internal, fs, console
   load(`${startupPath}/common/bootstrap/modules/vm.js`); // deps: internal
   load(`${startupPath}/common/bootstrap/modules.js`); // must come last before patches
-  load(`${startupPath}/common/bootstrap/monkeypatches.js`);
 }());
 
 // common globals
@@ -64,29 +63,8 @@ global.clearInterval = function () {};
 global.setTimeout = function () {};
 global.clearTimeout = function () {};
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief template string generator for building an AQL query
-////////////////////////////////////////////////////////////////////////////////
-
-global.aqlQuery = function () {
-  let strings = arguments[0];
-  const bindVars = {};
-  let query = strings[0];
-  for (let i = 1; i < arguments.length; i++) {
-    let value = arguments[i];
-    let name = `value${i - 1}`;
-    if (value && value.constructor && value.constructor.name === 'ArangoCollection') {
-      name = `@${name}`;
-      value = value.name();
-    }
-    bindVars[name] = value;
-    query += `@${name}${strings[i]}`;
-  }
-  return {query, bindVars};
-};
-
-// extend prototypes for internally defined classes
-require('@arangodb');
+// template string generator for building an AQL query
+global.aqlQuery = require('@arangodb').aql;
 
 // load the actions from the actions directory
 require('@arangodb/actions').startup();

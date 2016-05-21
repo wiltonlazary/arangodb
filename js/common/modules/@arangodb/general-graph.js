@@ -87,6 +87,11 @@ var findOrCreateCollectionByName = function (name, type, noCreate) {
     err.errorNum = arangodb.errors.ERROR_GRAPH_NOT_AN_ARANGO_COLLECTION.code;
     err.errorMessage = name + arangodb.errors.ERROR_GRAPH_NOT_AN_ARANGO_COLLECTION.message;
     throw err;
+  } else if (type === ArangoCollection.TYPE_EDGE && col.type() !== type) {
+     var err2 = new ArangoError();
+     err2.errorNum = arangodb.errors.ERROR_ARANGO_COLLECTION_TYPE_INVALID.code;
+     err2.errorMessage = name + " cannot be used as relation. It is not an edge collection";
+     throw err2;
   }
   return res;
 };
@@ -562,7 +567,7 @@ AQLGenerator.prototype.neighbors = function(vertexExample, options) {
     + this.stack.length + ')';
   var opts;
   if (options) {
-    opts = _.extend({}, options);
+    opts = Object.assign({}, options);
   } else {
     opts = {};
   }
@@ -722,6 +727,13 @@ AQLGenerator.prototype.hasNext = function() {
 AQLGenerator.prototype.next = function() {
   this._createCursor();
   return this.cursor.next();
+};
+
+AQLGenerator.prototype[Symbol.iterator] = function* () {
+  this._createCursor();
+  for (const item of this.cursor) {
+    yield item;
+  }
 };
 
 
@@ -1035,6 +1047,15 @@ var bindEdgeCollections = function(self, edgeCollections) {
     // save
     var old_save = wrap.save;
     wrap.save = function(from, to, data) {
+      if (typeof from === 'object' && to === undefined) {
+        data = from;
+        from = data._from;
+        to = data._to;
+      } else if (typeof from === 'string' && typeof to === 'string' && typeof data === 'object') {
+        data._from = from;
+        data._to = to;
+      }
+
       if (typeof from !== 'string' || 
           from.indexOf('/') === -1 ||
           typeof to !== 'string' ||
@@ -1063,7 +1084,7 @@ var bindEdgeCollections = function(self, edgeCollections) {
           }
         }
       );
-      return old_save(from, to, data);
+      return old_save(data);
     };
 
     // remove
@@ -1329,7 +1350,7 @@ var _renameCollection = function(oldName, newName) {
         return;
       }
       gdb.toArray().forEach(function(doc) {
-        var c = _.extend({}, doc), i, j, changed = false;
+        var c = Object.assign({}, doc), i, j, changed = false;
         if (c.edgeDefinitions) {
           for (i = 0; i < c.edgeDefinitions.length; ++i) {
             var def = c.edgeDefinitions[i];

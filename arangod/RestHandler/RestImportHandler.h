@@ -25,14 +25,15 @@
 #define ARANGOD_REST_HANDLER_REST_IMPORT_HANDLER_H 1
 
 #include "Basics/Common.h"
-
 #include "RestHandler/RestVocbaseBaseHandler.h"
-#include "Utils/transactions.h"
 
-#define RestImportTransaction \
-  arangodb::SingleCollectionWriteTransaction<UINT64_MAX>
+#include <velocypack/Builder.h>
+#include <velocypack/Slice.h>
+#include <velocypack/velocypack-aliases.h>
 
 namespace arangodb {
+struct OperationOptions;
+class SingleCollectionTransaction;
 
 struct RestImportResult {
  public:
@@ -67,23 +68,6 @@ class RestImportHandler : public RestVocbaseBaseHandler {
   status_t execute() override final;
 
  private:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief determine the collection type from the request
-  //////////////////////////////////////////////////////////////////////////////
-
-  TRI_col_type_e getCollectionType();
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief extracts the "overwrite" value
-  //////////////////////////////////////////////////////////////////////////////
-
-  bool extractOverwrite() const;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief extracts the "complete" value
-  //////////////////////////////////////////////////////////////////////////////
-
-  bool extractComplete() const;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief create a position string
@@ -107,8 +91,11 @@ class RestImportHandler : public RestVocbaseBaseHandler {
   /// @brief process a single VelocyPack document
   //////////////////////////////////////////////////////////////////////////////
 
-  int handleSingleDocument(RestImportTransaction&, RestImportResult&,
-                           char const*, VPackSlice const&, bool, bool, size_t);
+  int handleSingleDocument(SingleCollectionTransaction&, RestImportResult&,
+                           arangodb::velocypack::Builder& builder,
+                           char const*, arangodb::velocypack::Slice,
+                           std::string const&,
+                           bool, OperationOptions const&, size_t);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief creates documents by JSON objects
@@ -153,8 +140,9 @@ class RestImportHandler : public RestVocbaseBaseHandler {
   /// @brief builds a VPackBuilder object from a key and value list
   //////////////////////////////////////////////////////////////////////////////
 
-  std::shared_ptr<VPackBuilder> createVelocyPackObject(VPackSlice const&,
-                                                       VPackSlice const&,
+  std::shared_ptr<arangodb::velocypack::Builder> createVelocyPackObject(
+                                                       arangodb::velocypack::Slice const&,
+                                                       arangodb::velocypack::Slice const&,
                                                        std::string&, size_t);
 
   //////////////////////////////////////////////////////////////////////////////
@@ -162,7 +150,7 @@ class RestImportHandler : public RestVocbaseBaseHandler {
   /// strings.
   //////////////////////////////////////////////////////////////////////////////
 
-  bool checkKeys(VPackSlice const&) const;
+  bool checkKeys(arangodb::velocypack::Slice const&) const;
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -183,6 +171,13 @@ class RestImportHandler : public RestVocbaseBaseHandler {
   //////////////////////////////////////////////////////////////////////////////
 
   OnDuplicateActionType _onDuplicateAction;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief prefixes for edge collections
+  //////////////////////////////////////////////////////////////////////////////
+
+  std::string _fromPrefix;
+  std::string _toPrefix;
 };
 }
 

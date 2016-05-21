@@ -21,43 +21,48 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "v8-utils.h"
+
 #ifdef _WIN32
 #include "Basics/win-utils.h"
 #endif
 
-#include "v8-utils.h"
-#include "v8-buffer.h"
-
 #include <fstream>
 #include <iostream>
 
+#include "unicode/normalizer2.h"
+#include "3rdParty/valgrind/valgrind.h"
+
+#include "ApplicationFeatures/ApplicationFeature.h"
+#include "ApplicationFeatures/ApplicationServer.h"
+#include "ApplicationFeatures/HttpEndpointProvider.h"
 #include "Basics/Exceptions.h"
-#include "Basics/files.h"
 #include "Basics/FileUtils.h"
-#include "Logger/Logger.h"
 #include "Basics/Nonce.h"
-#include "Basics/process-utils.h"
-#include "Basics/ProgramOptions.h"
-#include "Basics/RandomGenerator.h"
+#include "Basics/StaticStrings.h"
 #include "Basics/StringBuffer.h"
 #include "Basics/StringUtils.h"
+#include "Basics/Utf8Helper.h"
+#include "Basics/files.h"
+#include "Basics/process-utils.h"
 #include "Basics/tri-strings.h"
 #include "Basics/tri-zip.h"
-#include "Basics/Utf8Helper.h"
+#include "Logger/Logger.h"
+#include "Random/RandomGenerator.h"
+#include "Random/UniformCharacter.h"
 #include "Rest/HttpRequest.h"
-#include "Rest/SslInterface.h"
 #include "Rest/Version.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
+#include "Ssl/SslInterface.h"
+#include "V8/v8-buffer.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-globals.h"
-
-#include "unicode/normalizer2.h"
-
-#include "3rdParty/valgrind/valgrind.h"
+#include "V8/v8-vpack.h"
 
 using namespace arangodb;
+using namespace arangodb::application_features;
 using namespace arangodb::basics;
 using namespace arangodb::httpclient;
 using namespace arangodb::rest;
@@ -67,10 +72,10 @@ using namespace arangodb::rest;
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace {
-static Random::UniformCharacter JSAlphaNumGenerator(
+static UniformCharacter JSAlphaNumGenerator(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-static Random::UniformCharacter JSNumGenerator("0123456789");
-static Random::UniformCharacter JSSaltGenerator(
+static UniformCharacter JSNumGenerator("0123456789");
+static UniformCharacter JSSaltGenerator(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*(){}"
     "[]:;<>,.?/|");
 }
@@ -297,18 +302,10 @@ static void JS_Options(v8::FunctionCallbackInfo<v8::Value> const& args) {
     TRI_V8_THROW_EXCEPTION_USAGE("options()");
   }
 
-  auto json = arangodb::basics::ProgramOptions::getJson();
+  VPackBuilder builder = ApplicationServer::server->options({"server.password"});
+  auto result = TRI_VPackToV8(isolate, builder.slice());
 
-  if (json != nullptr) {
-    auto result = TRI_ObjectJson(isolate, json);
-
-    // remove this variable
-    result->ToObject()->Delete(TRI_V8_STRING("server.password"));
-
-    TRI_V8_RETURN(result);
-  }
-
-  TRI_V8_RETURN(v8::Object::New(isolate));
+  TRI_V8_RETURN(result);
   TRI_V8_TRY_CATCH_END
 }
 
@@ -550,52 +547,42 @@ static void JS_Download(v8::FunctionCallbackInfo<v8::Value> const& args) {
   std::string url = TRI_ObjectToString(args[0]);
 
   if (!url.empty() && url[0] == '/') {
+    std::vector<std::string> endpoints;
+
+    // check if we are a server
+    try {
+      HttpEndpointProvider* server = 
+          ApplicationServer::getFeature<HttpEndpointProvider>("Endpoint");
+      endpoints = server->httpEndpoints();
+    } catch (...) {
+      HttpEndpointProvider* client = 
+          ApplicationServer::getFeature<HttpEndpointProvider>("Client");
+      endpoints = client->httpEndpoints();
+    }
+
     // a relative url. now make this an absolute URL if possible
-    auto json = arangodb::basics::ProgramOptions::getJson();
+    for (auto const& endpoint : endpoints) {
+      std::string fullurl = endpoint;
 
-    if (json != nullptr) {
-      // check if there are endpoints defined in the server options
-      auto eps = TRI_LookupObjectJson(json, "server.endpoint");
+      // ipv4: replace 0.0.0.0 with 127.0.0.1
+      auto pos = fullurl.find("//0.0.0.0");
 
-      // endpoints should be an array
-      if (TRI_IsArrayJson(eps)) {
-        // it is. now iterate over the list and pick the first one
-        for (size_t i = 0; i < TRI_LengthArrayJson(eps); ++i) {
-          auto ep = static_cast<TRI_json_t const*>(
-              TRI_AtVector(&eps->_value._objects, i));
+      if (pos != std::string::npos) {
+        fullurl.replace(pos, strlen("//0.0.0.0"), "//127.0.0.1");
+      }
 
-          if (TRI_IsStringJson(ep)) {
-            // prepend host and port to relative URL
-            url = std::string(ep->_value._string.data,
-                              ep->_value._string.length - 1) +
-                  url;
+      // ipv6: replace [::] with [::1]
+      else {
+        pos = fullurl.find("//[::]");
 
-            // ipv4: replace 0.0.0.0 with 127.0.0.1
-            auto pos = url.find("0.0.0.0");
-            if (pos != std::string::npos) {
-              url.replace(pos, strlen("0.0.0.0"), "127.0.0.1");
-            }
-            // ipv6: replace [::] with [::1]
-            pos = url.find("[::]");
-            if (pos != std::string::npos) {
-              url.replace(pos, strlen("[::]"), "[::1]");
-            }
-
-            if (url.substr(0, 4) == "tcp:") {
-              url = "http:" + url.substr(4);
-            } else if (url.substr(0, 4) == "ssl:") {
-              url = "https:" + url.substr(4);
-            }
-            // note: there can be endpoints not starting with tcp:// or ssl://,
-            // e.g. unix://...
-            // for these endpoints, the generated URL will be invalid, and this
-            // will trigger an
-            // "unsupport URL error" below
-
-            break;
-          }
+        if (pos != std::string::npos) {
+          fullurl.replace(pos, strlen("//[::]"), "//[::1]");
         }
       }
+
+      url = fullurl + url;
+
+      break;
     }
   }
 
@@ -623,7 +610,7 @@ static void JS_Download(v8::FunctionCallbackInfo<v8::Value> const& args) {
   // options
   // ------------------------------------------------------------------------
 
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
   double timeout = 10.0;
   bool returnBodyAsBuffer = false;
   bool followRedirects = true;
@@ -808,7 +795,8 @@ static void JS_Download(v8::FunctionCallbackInfo<v8::Value> const& args) {
 
     SimpleHttpClient client(connection.get(), timeout, false);
     client.setSupportDeflate(false);
-    client.setExposeArangoDB(false);
+    // security by obscurity won't work. Github requires a useragent nowadays.
+    client.setExposeArangoDB(true);
 
     v8::Handle<v8::Object> result = v8::Object::New(isolate);
 
@@ -843,7 +831,7 @@ static void JS_Download(v8::FunctionCallbackInfo<v8::Value> const& args) {
       if (followRedirects &&
           (returnCode == 301 || returnCode == 302 || returnCode == 307)) {
         bool found;
-        url = response->getHeaderField(std::string("location"), found);
+        url = response->getHeaderField(StaticStrings::Location, found);
 
         if (!found) {
           TRI_V8_THROW_EXCEPTION_INTERNAL("caught invalid redirect URL");
@@ -1400,16 +1388,12 @@ static void JS_ListTree(v8::FunctionCallbackInfo<v8::Value> const& args) {
 
   // constructed listing
   v8::Handle<v8::Array> result = v8::Array::New(isolate);
-  TRI_vector_string_t list = TRI_FullTreeDirectory(*name);
+  std::vector<std::string> files(TRI_FullTreeDirectory(*name));
 
-  uint32_t j = 0;
-
-  for (size_t i = 0; i < list._length; ++i) {
-    char const* f = list._buffer[i];
-    result->Set(j++, TRI_V8_STRING(f));
+  uint32_t i = 0;
+  for (auto const& it : files) {
+    result->Set(i++, TRI_V8_STD_STRING(it));
   }
-
-  TRI_DestroyVectorString(&list);
 
   // return result
   TRI_V8_RETURN(result);
@@ -1471,9 +1455,9 @@ static void JS_MakeDirectoryRecursive(
   }
   long systemError = 0;
   std::string systemErrorStr;
-  bool res = TRI_CreateRecursiveDirectory(*name, systemError, systemErrorStr);
+  int res = TRI_CreateRecursiveDirectory(*name, systemError, systemErrorStr);
 
-  if (!res) {
+  if (res != TRI_ERROR_NO_ERROR) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(res, systemErrorStr);
   }
 
@@ -1551,15 +1535,12 @@ static void JS_ZipFile(v8::FunctionCallbackInfo<v8::Value> const& args) {
   v8::Handle<v8::Array> files = v8::Handle<v8::Array>::Cast(args[2]);
 
   int res = TRI_ERROR_NO_ERROR;
-  TRI_vector_string_t filenames;
-  TRI_InitVectorString(&filenames, TRI_UNKNOWN_MEM_ZONE);
+  std::vector<std::string> filenames;
 
   for (uint32_t i = 0; i < files->Length(); ++i) {
     v8::Handle<v8::Value> file = files->Get(i);
     if (file->IsString()) {
-      std::string fname = TRI_ObjectToString(file);
-      TRI_PushBackVectorString(
-          &filenames, TRI_DuplicateString(TRI_UNKNOWN_MEM_ZONE, fname.c_str()));
+      filenames.emplace_back(TRI_ObjectToString(file));
     } else {
       res = TRI_ERROR_BAD_PARAMETER;
       break;
@@ -1567,8 +1548,6 @@ static void JS_ZipFile(v8::FunctionCallbackInfo<v8::Value> const& args) {
   }
 
   if (res != TRI_ERROR_NO_ERROR) {
-    TRI_DestroyVectorString(&filenames);
-
     TRI_V8_THROW_EXCEPTION_USAGE(
         "zipFile(<filename>, <chdir>, <files>, <password>)");
   }
@@ -1580,8 +1559,7 @@ static void JS_ZipFile(v8::FunctionCallbackInfo<v8::Value> const& args) {
     p = password.c_str();
   }
 
-  res = TRI_ZipFile(filename.c_str(), dir.c_str(), &filenames, p);
-  TRI_DestroyVectorString(&filenames);
+  res = TRI_ZipFile(filename.c_str(), dir.c_str(), filenames, p);
 
   if (res == TRI_ERROR_NO_ERROR) {
     TRI_V8_RETURN_TRUE();
@@ -2072,10 +2050,10 @@ static void JS_CopyRecursive(v8::FunctionCallbackInfo<v8::Value> const& args) {
   }
   std::string systemErrorStr;
   long errorNo;
-  bool res = TRI_CreateRecursiveDirectory(destination.c_str(), errorNo,
+  int res = TRI_CreateRecursiveDirectory(destination.c_str(), errorNo,
                                           systemErrorStr);
 
-  if (!res) {
+  if (res != TRI_ERROR_NO_ERROR) {
     std::string errMsg = "cannot copy file [" + source + "] to [" +
                          destination + " ] : " + std::to_string(errorNo) +
                          " - Unable to create target directory: " +
@@ -3203,7 +3181,7 @@ static void JS_ExecuteExternal(
     TRI_V8_THROW_TYPE_ERROR("<filename> must be a string");
   }
 
-  char** arguments = 0;
+  char** arguments = nullptr;
   uint32_t n = 0;
 
   if (2 <= args.Length()) {
@@ -3213,8 +3191,7 @@ static void JS_ExecuteExternal(
       v8::Handle<v8::Array> arr = v8::Handle<v8::Array>::Cast(a);
 
       n = arr->Length();
-      arguments =
-          (char**)TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false);
+      arguments = static_cast<char**>(TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false));
 
       for (uint32_t i = 0; i < n; ++i) {
         TRI_Utf8ValueNFC arg(TRI_UNKNOWN_MEM_ZONE, arr->Get(i));
@@ -3227,8 +3204,7 @@ static void JS_ExecuteExternal(
       }
     } else {
       n = 1;
-      arguments =
-          (char**)TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false);
+      arguments = static_cast<char**>(TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false));
 
       TRI_Utf8ValueNFC arg(TRI_UNKNOWN_MEM_ZONE, a);
 
@@ -3245,9 +3221,9 @@ static void JS_ExecuteExternal(
   }
 
   TRI_external_id_t external;
-  TRI_CreateExternalProcess(*name, (char const**)arguments, (size_t)n, usePipes,
+  TRI_CreateExternalProcess(*name, const_cast<char const**>(arguments), (size_t)n, usePipes,
                             &external);
-  if (arguments != 0) {
+  if (arguments != nullptr) {
     for (uint32_t i = 0; i < n; ++i) {
       TRI_FreeString(TRI_CORE_MEM_ZONE, arguments[i]);
     }
@@ -3260,7 +3236,7 @@ static void JS_ExecuteExternal(
   v8::Handle<v8::Object> result = v8::Object::New(isolate);
   result->Set(TRI_V8_ASCII_STRING("pid"),
               v8::Number::New(isolate, external._pid));
-// Now report about possible stdin and stdout pipes:
+  // Now report about possible stdin and stdout pipes:
 #ifndef _WIN32
   if (external._readPipe >= 0) {
     result->Set(TRI_V8_ASCII_STRING("readPipe"),
@@ -3392,7 +3368,7 @@ static void JS_ExecuteAndWaitExternal(
     TRI_V8_THROW_TYPE_ERROR("<filename> must be a string");
   }
 
-  char** arguments = 0;
+  char** arguments = nullptr;
   uint32_t n = 0;
 
   if (2 <= args.Length()) {
@@ -3402,8 +3378,7 @@ static void JS_ExecuteAndWaitExternal(
       v8::Handle<v8::Array> arr = v8::Handle<v8::Array>::Cast(a);
 
       n = arr->Length();
-      arguments =
-          (char**)TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false);
+      arguments = static_cast<char**>(TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false));
 
       for (uint32_t i = 0; i < n; ++i) {
         TRI_Utf8ValueNFC arg(TRI_UNKNOWN_MEM_ZONE, arr->Get(i));
@@ -3416,8 +3391,7 @@ static void JS_ExecuteAndWaitExternal(
       }
     } else {
       n = 1;
-      arguments =
-          (char**)TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false);
+      arguments = static_cast<char**>(TRI_Allocate(TRI_CORE_MEM_ZONE, n * sizeof(char*), false));
 
       TRI_Utf8ValueNFC arg(TRI_UNKNOWN_MEM_ZONE, a);
 
@@ -3434,9 +3408,9 @@ static void JS_ExecuteAndWaitExternal(
   }
 
   TRI_external_id_t external;
-  TRI_CreateExternalProcess(*name, (char const**)arguments, (size_t)n, usePipes,
+  TRI_CreateExternalProcess(*name, const_cast<char const**>(arguments), static_cast<size_t>(n), usePipes,
                             &external);
-  if (arguments != 0) {
+  if (arguments != nullptr) {
     for (uint32_t i = 0; i < n; ++i) {
       TRI_FreeString(TRI_CORE_MEM_ZONE, arguments[i]);
     }
@@ -3541,30 +3515,82 @@ static void JS_KillExternal(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  v8::Handle<v8::String> pidname = TRI_V8_ASCII_STRING("pid");
-
   // extract the arguments
-  if (args.Length() != 1 || !args[0]->IsObject()) {
+  if (args.Length() != 1) {
     TRI_V8_THROW_EXCEPTION_USAGE("killExternal(<external-identifier>)");
   }
 
-  v8::Handle<v8::Object> obj = v8::Handle<v8::Object>::Cast(args[0]);
-  if (!obj->Has(pidname)) {
-    TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_BAD_PARAMETER,
-                                   "statusExternal: pid must be given");
-  }
   TRI_external_id_t pid;
   memset(&pid, 0, sizeof(TRI_external_id_t));
 
 #ifndef _WIN32
-  pid._pid =
-      static_cast<TRI_pid_t>(TRI_ObjectToUInt64(obj->Get(pidname), true));
+  pid._pid = static_cast<TRI_pid_t>(TRI_ObjectToUInt64(args[0], true));
 #else
-  pid._pid = static_cast<DWORD>(TRI_ObjectToUInt64(obj->Get(pidname), true));
+  pid._pid = static_cast<DWORD>(TRI_ObjectToUInt64(args[0], true));
 #endif
 
   // return the result
   if (TRI_KillExternalProcess(pid)) {
+    TRI_V8_RETURN_TRUE();
+  }
+  TRI_V8_RETURN_FALSE();
+  TRI_V8_TRY_CATCH_END
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief suspends an external process, only Unix
+////////////////////////////////////////////////////////////////////////////////
+
+static void JS_SuspendExternal(v8::FunctionCallbackInfo<v8::Value> const& args) {
+  TRI_V8_TRY_CATCH_BEGIN(isolate);
+  v8::HandleScope scope(isolate);
+
+  // extract the arguments
+  if (args.Length() != 1) {
+    TRI_V8_THROW_EXCEPTION_USAGE("suspendExternal(<external-identifier>)");
+  }
+
+  TRI_external_id_t pid;
+  memset(&pid, 0, sizeof(TRI_external_id_t));
+
+#ifndef _WIN32
+  pid._pid = static_cast<TRI_pid_t>(TRI_ObjectToUInt64(args[0], true));
+#else
+  pid._pid = static_cast<DWORD>(TRI_ObjectToUInt64(args[0], true));
+#endif
+
+  // return the result
+  if (TRI_SuspendExternalProcess(pid)) {
+    TRI_V8_RETURN_TRUE();
+  }
+  TRI_V8_RETURN_FALSE();
+  TRI_V8_TRY_CATCH_END
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief continues an external process
+////////////////////////////////////////////////////////////////////////////////
+
+static void JS_ContinueExternal(v8::FunctionCallbackInfo<v8::Value> const& args) {
+  TRI_V8_TRY_CATCH_BEGIN(isolate);
+  v8::HandleScope scope(isolate);
+
+  // extract the arguments
+  if (args.Length() != 1) {
+    TRI_V8_THROW_EXCEPTION_USAGE("continueExternal(<external-identifier>)");
+  }
+
+  TRI_external_id_t pid;
+  memset(&pid, 0, sizeof(TRI_external_id_t));
+
+#ifndef _WIN32
+  pid._pid = static_cast<TRI_pid_t>(TRI_ObjectToUInt64(args[0], true));
+#else
+  pid._pid = static_cast<DWORD>(TRI_ObjectToUInt64(args[0], true));
+#endif
+
+  // return the result
+  if (TRI_ContinueExternalProcess(pid)) {
     TRI_V8_RETURN_TRUE();
   }
   TRI_V8_RETURN_FALSE();
@@ -3686,6 +3712,57 @@ static void JS_IsIP(v8::FunctionCallbackInfo<v8::Value> const& args) {
   } else {
     TRI_V8_RETURN(v8::Number::New(isolate, 0));
   }
+  TRI_V8_TRY_CATCH_END
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief SplitWordlist - splits words via the tokenizer
+////////////////////////////////////////////////////////////////////////////////
+
+static void JS_SplitWordlist(v8::FunctionCallbackInfo<v8::Value> const& args) {
+  TRI_V8_TRY_CATCH_BEGIN(isolate);
+  v8::HandleScope scope(isolate);
+
+  if ((args.Length() < 2) || (args.Length() > 4)) {
+    TRI_V8_THROW_EXCEPTION_USAGE("SplitWordlist(<value>, minLength, [<maxLength>, [<lowerCase>]])");
+  }
+
+  std::string stringToTokenize = TRI_ObjectToString(args[0]);
+
+  size_t minLength = static_cast<size_t>(TRI_ObjectToUInt64(args[1], true));
+
+  size_t maxLength = 40;// -> TRI_FULLTEXT_MAX_WORD_LENGTH;
+  if (args.Length() > 2) {
+    maxLength = static_cast<size_t>(TRI_ObjectToUInt64(args[2], true));
+  }
+
+  bool lowerCase = false;
+  if (args.Length() > 3) {
+    lowerCase = TRI_ObjectToBoolean(args[3]);
+  }
+
+  std::vector<std::string> wordList;
+
+  if (!Utf8Helper::DefaultUtf8Helper.getWords(wordList,
+                                              stringToTokenize,
+                                              minLength,
+                                              maxLength,
+                                              lowerCase)) {
+    TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "SplitWordlist failed!");
+  }
+
+  v8::Handle<v8::Array> v8WordList =
+    v8::Array::New(isolate, static_cast<int>(wordList.size()));
+
+
+  size_t const n = static_cast<uint32_t>(wordList.size());
+
+  for (uint32_t i = 0; i < n; i++) {
+    v8::Handle<v8::String> oneWord = TRI_V8_STD_STRING(wordList[i]);
+    v8WordList->Set(i, oneWord);
+  }
+
+  TRI_V8_RETURN(v8WordList);
   TRI_V8_TRY_CATCH_END
 }
 
@@ -4250,8 +4327,16 @@ void TRI_InitV8Utils(v8::Isolate* isolate, v8::Handle<v8::Context> context,
   TRI_AddGlobalFunctionVocbase(isolate, context,
                                TRI_V8_ASCII_STRING("SYS_IS_IP"), JS_IsIP);
   TRI_AddGlobalFunctionVocbase(isolate, context,
+                               TRI_V8_ASCII_STRING("SYS_SPLIT_WORDS_ICU"), JS_SplitWordlist);
+  TRI_AddGlobalFunctionVocbase(isolate, context,
                                TRI_V8_ASCII_STRING("SYS_KILL_EXTERNAL"),
                                JS_KillExternal);
+  TRI_AddGlobalFunctionVocbase(isolate, context,
+                               TRI_V8_ASCII_STRING("SYS_SUSPEND_EXTERNAL"),
+                               JS_SuspendExternal);
+  TRI_AddGlobalFunctionVocbase(isolate, context,
+                               TRI_V8_ASCII_STRING("SYS_CONTINUE_EXTERNAL"),
+                               JS_ContinueExternal);
   TRI_AddGlobalFunctionVocbase(isolate, context,
                                TRI_V8_ASCII_STRING("SYS_LOAD"), JS_Load);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_LOG"),

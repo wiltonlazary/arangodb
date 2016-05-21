@@ -23,6 +23,7 @@
 
 #include "RestBatchHandler.h"
 
+#include "Basics/StaticStrings.h"
 #include "Basics/StringUtils.h"
 #include "Logger/Logger.h"
 #include "HttpServer/HttpHandlerFactory.h"
@@ -68,11 +69,11 @@ HttpHandler::status_t RestBatchHandler::execute() {
   size_t errors = 0;
 
   // get authorization header. we will inject this into the subparts
-  std::string const& authorization = _request->header("authorization");
+  std::string const& authorization = _request->header(StaticStrings::Authorization);
 
   // create the response
   createResponse(GeneralResponse::ResponseCode::OK);
-  _response->setContentType(_request->header("content-type"));
+  _response->setContentType(_request->header(StaticStrings::ContentTypeHeader));
 
   // setup some auxiliary structures to parse the multipart message
   std::string const& bodyStr = _request->body();
@@ -81,7 +82,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
 
   SearchHelper helper;
   helper.message = &message;
-  helper.searchStart = (char*)message.messageStart;
+  helper.searchStart = message.messageStart;
 
   // iterate over all parts of the multipart message
   while (true) {
@@ -102,12 +103,12 @@ HttpHandler::status_t RestBatchHandler::execute() {
     size_t const partLength = helper.foundLength;
 
     char const* headerStart = partStart;
-    char* bodyStart = nullptr;
+    char const* bodyStart = nullptr;
     size_t headerLength = 0;
     size_t bodyLength = 0;
 
     // assume Windows linebreak \r\n\r\n as delimiter
-    char* p = strstr((char*)headerStart, "\r\n\r\n");
+    char const* p = strstr(headerStart, "\r\n\r\n");
 
     if (p != nullptr && p + 4 <= partEnd) {
       headerLength = p - partStart;
@@ -115,7 +116,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
       bodyLength = partEnd - bodyStart;
     } else {
       // test Unix linebreak
-      p = strstr((char*)headerStart, "\n\n");
+      p = strstr(headerStart, "\n\n");
 
       if (p != nullptr && p + 2 <= partEnd) {
         headerLength = p - partStart;
@@ -131,7 +132,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
     LOG(TRACE) << "part header is: " << std::string(headerStart, headerLength);
     HttpRequest* request =
         new HttpRequest(_request->connectionInfo(), headerStart, headerLength,
-                        _request->compatibility(), false);
+                        false);
 
     if (request == nullptr) {
       generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
@@ -154,14 +155,15 @@ HttpHandler::status_t RestBatchHandler::execute() {
       request->setBody(bodyStart, bodyLength);
     }
 
-    if (authorization.size()) {
+    if (!authorization.empty()) {
       // inject Authorization header of multipart message into part message
-      request->setHeader("authorization", authorization);
+      request->setHeader(StaticStrings::Authorization.c_str(), StaticStrings::Authorization.size(), 
+                         authorization.c_str(), authorization.size());
     }
 
     HttpHandler* handler = _server->createHandler(request);
 
-    if (!handler) {
+    if (handler == nullptr) {
       delete request;
 
       generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_INTERNAL,
@@ -191,7 +193,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
         return status_t(HttpHandler::HANDLER_FAILED);
       }
 
-      const GeneralResponse::ResponseCode code = partResponse->responseCode();
+      GeneralResponse::ResponseCode const code = partResponse->responseCode();
 
       // count everything above 400 as error
       if (int(code) >= 400) {
@@ -200,7 +202,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
 
       // append the boundary for this subpart
       _response->body().appendText(boundary + "\r\nContent-Type: ");
-      _response->body().appendText(HttpRequest::BATCH_CONTENT_TYPE);
+      _response->body().appendText(StaticStrings::BatchContentType);
 
       // append content-id if it is present
       if (helper.contentId != 0) {
@@ -212,12 +214,8 @@ HttpHandler::status_t RestBatchHandler::execute() {
       _response->body().appendText(TRI_CHAR_LENGTH_PAIR("\r\n\r\n"));
 
       // remove some headers we don't need
-      static std::string const connection = "connection";
-      static std::string const server = "server";
-      static std::string const empty = "";
-
-      partResponse->setHeaderNC(connection, empty);
-      partResponse->setHeaderNC(server, empty);
+      partResponse->setConnectionType(HttpResponse::CONNECTION_NONE);
+      partResponse->setHeaderNC(StaticStrings::Server, "");
 
       // append the part response header
       partResponse->writeHeader(&_response->body());
@@ -237,8 +235,7 @@ HttpHandler::status_t RestBatchHandler::execute() {
   _response->body().appendText(boundary + "--");
 
   if (errors > 0) {
-    _response->setHeaderNC(HttpResponse::BATCH_ERROR_HEADER,
-                           StringUtils::itoa(errors));
+    _response->setHeaderNC(StaticStrings::Errors, StringUtils::itoa(errors));
   }
 
   // success
@@ -292,13 +289,13 @@ bool RestBatchHandler::getBoundaryBody(std::string* result) {
 bool RestBatchHandler::getBoundaryHeader(std::string* result) {
   // extract content type
   std::string const contentType =
-      StringUtils::trim(_request->header("content-type"));
+      StringUtils::trim(_request->header(StaticStrings::ContentTypeHeader));
 
   // content type is expect to contain a boundary like this:
   // "Content-Type: multipart/form-data; boundary=<boundary goes here>"
   std::vector<std::string> parts = StringUtils::split(contentType, ';');
 
-  if (parts.size() != 2 || parts[0] != HttpRequest::MULTI_PART_CONTENT_TYPE) {
+  if (parts.size() != 2 || parts[0] != StaticStrings::MultiPartContentType) {
     // content-type is not formatted as expected
     return false;
   }
@@ -363,7 +360,7 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
   }
 
   // search for boundary
-  char* found = strstr(helper->searchStart, helper->message->boundary);
+  char const* found = strstr(helper->searchStart, helper->message->boundary);
 
   if (found == nullptr) {
     // not contained. this is an error
@@ -412,7 +409,7 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
     // try Windows linebreak first
     breakLength = 2;
 
-    char* eol = strstr(found, "\r\n");
+    char const* eol = strstr(found, "\r\n");
 
     if (eol == nullptr) {
       breakLength = 1;
@@ -422,7 +419,7 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
         break;
       }
     } else {
-      char* eol2 = strchr(found, '\n');
+      char const* eol2 = strchr(found, '\n');
 
       if (eol2 != nullptr && eol2 < eol) {
         breakLength = 1;
@@ -435,7 +432,7 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
     }
 
     // split key/value of header
-    char* colon = (char*)memchr(found, (int)':', eol - found);
+    char const* colon = static_cast<char const*>(memchr(found, (int)':', eol - found));
 
     if (nullptr == colon) {
       // invalid header, not containing ':'
@@ -457,17 +454,17 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
         ++colon;
       }
 
-      if ("content-type" == key) {
+      if (key == StaticStrings::ContentTypeHeader) {
         // extract the value, too
         std::string value(colon, eol - colon);
         StringUtils::trimInPlace(value);
 
-        if (HttpRequest::BATCH_CONTENT_TYPE == value) {
+        if (value == StaticStrings::BatchContentType) {
           hasTypeHeader = true;
         } else {
           LOG(WARN) << "unexpected content-type '" << value
                     << "' for multipart-message. expected: '"
-                    << HttpRequest::BATCH_CONTENT_TYPE << "'";
+                    << StaticStrings::BatchContentType << "'";
         }
       } else if ("content-id" == key) {
         helper->contentId = colon;
@@ -500,7 +497,7 @@ bool RestBatchHandler::extractPart(SearchHelper* helper) {
 
   helper->foundLength = found - helper->foundStart;
 
-  char* p = found + helper->message->boundaryLength;
+  char const* p = found + helper->message->boundaryLength;
 
   if (p + 2 > searchEnd) {
     // end of boundary is outside the buffer

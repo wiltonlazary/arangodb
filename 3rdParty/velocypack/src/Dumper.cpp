@@ -226,6 +226,8 @@ void Dumper::dumpString(char const* src, ValueLength len) {
       0,    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
       0,    0,   0,   0};
 
+  _sink->reserve(len);
+
   uint8_t const* p = reinterpret_cast<uint8_t const*>(src);
   uint8_t const* e = p + len;
   while (p < e) {
@@ -292,11 +294,6 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
   }
 
   switch (slice->type()) {
-    case ValueType::None: {
-      handleUnsupportedType(slice);
-      break;
-    }
-
     case ValueType::Null: {
       _sink->append("null", 4);
       break;
@@ -312,14 +309,14 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
     }
 
     case ValueType::Array: {
-      ArrayIterator it(*slice);
+      ArrayIterator it(*slice, true);
       _sink->push_back('[');
       if (options->prettyPrint) {
         _sink->push_back('\n');
         ++_indentation;
         while (it.valid()) {
           indent();
-          dumpValue(it.value(), base);
+          dumpValue(it.value(), slice);
           if (!it.isLast()) {
             _sink->push_back(',');
           }
@@ -333,7 +330,7 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
           if (!it.isFirst()) {
             _sink->push_back(',');
           }
-          dumpValue(it.value(), base);
+          dumpValue(it.value(), slice);
           it.next();
         }
       }
@@ -349,9 +346,9 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
         ++_indentation;
         while (it.valid()) {
           indent();
-          dumpValue(it.key().makeKey(), base);
+          dumpValue(it.key().makeKey(), slice);
           _sink->append(" : ", 3);
-          dumpValue(it.value(), base);
+          dumpValue(it.value(), slice);
           if (!it.isLast()) {
             _sink->push_back(',');
           }
@@ -365,9 +362,9 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
           if (!it.isFirst()) {
             _sink->push_back(',');
           }
-          dumpValue(it.key().makeKey(), base);
+          dumpValue(it.key().makeKey(), slice);
           _sink->push_back(':');
-          dumpValue(it.value(), base);
+          dumpValue(it.value(), slice);
           it.next();
         }
       }
@@ -382,23 +379,6 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
       } else {
         appendDouble(v);
       }
-      break;
-    }
-
-    case ValueType::UTCDate: {
-      handleUnsupportedType(slice);
-      break;
-    }
-
-    case ValueType::External: {
-      Slice const external(slice->getExternal(), slice->options);
-      dumpValue(&external, base);
-      break;
-    }
-
-    case ValueType::MinKey:
-    case ValueType::MaxKey: {
-      handleUnsupportedType(slice);
       break;
     }
 
@@ -418,8 +398,19 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
       _sink->push_back('"');
       break;
     }
+    
+    case ValueType::External: {
+      Slice const external(slice->getExternal());
+      dumpValue(&external, base);
+      break;
+    }
 
-    case ValueType::Binary: {
+    case ValueType::UTCDate: 
+    case ValueType::None: 
+    case ValueType::Binary: 
+    case ValueType::Illegal:
+    case ValueType::MinKey:
+    case ValueType::MaxKey: {
       handleUnsupportedType(slice);
       break;
     }
@@ -431,9 +422,9 @@ void Dumper::dumpValue(Slice const* slice, Slice const* base) {
 
     case ValueType::Custom: {
       if (options->customTypeHandler == nullptr) {
-        handleUnsupportedType(slice);
+        throw Exception(Exception::NeedCustomTypeHandler);
       } else {
-        options->customTypeHandler->toJson(*slice, this, *base);
+        options->customTypeHandler->dump(*slice, this, *base);
       }
       break;
     }

@@ -35,8 +35,6 @@
 @import 'login';
 // query view
 @import 'queryView';
-// query view2
-@import 'queryView2';
 // some general stuff
 @import 'general';
 // The views containing tabs
@@ -71,9 +69,14 @@
 @import 'progressView';
 // spotlight view
 @import 'spotlightView';
+// cluster view
+@import 'clusterView';
 // application detail view
 @import 'applicationDetailView';
-
+// new modal alternative (modal -> subview)
+@import 'subViewModal';
+// pure responsive components
+@import 'pure';
 // screen hotkeys
 @import 'hotkeys';
 
@@ -81,6 +84,10 @@
 @import 'arangoTable';
 //arangoTabbar Template
 @import 'arangoTabbar';
+//Sub Navigation
+@import 'subNavbar';
+//Help View
+@import 'help';
 
 // Data Tables, TODO: might all be superflous
 @import 'dataTables';

@@ -579,8 +579,6 @@ function ReplicationSuite() {
       );
     }
 
-    // done
-
   };
 }
 

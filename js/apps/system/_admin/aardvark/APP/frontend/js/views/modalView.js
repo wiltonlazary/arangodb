@@ -135,7 +135,7 @@
           $('.createModalDialog .modal-footer button').first().focus();
         }
         else if (direction === 'right') {
-          $('..createModalDialog .modal-footer button').last().focus();
+          $('.createModalDialog .modal-footer button').last().focus();
         }
       }
       else if (hasFocus === true) {
@@ -242,7 +242,8 @@
       };
     },
 
-    show: function(templateName, title, buttons, tableContent, advancedContent, extraInfo, events, noConfirm, tabBar) {
+    show: function(templateName, title, buttons, tableContent, advancedContent,
+                   extraInfo, events, noConfirm, tabBar, divID) {
       var self = this, lastBtn, confirmMsg, closeButtonFound = false;
       buttons = buttons || [];
       noConfirm = Boolean(noConfirm);
@@ -265,13 +266,35 @@
       } else {
         buttons.push(self.createCloseButton('Close'));
       }
-      $(this.el).html(this.baseTemplate.render({
-        title: title,
-        buttons: buttons,
-        hideFooter: this.hideFooter,
-        confirm: confirmMsg,
-        tabBar: tabBar
-      }));
+      if (!divID) {
+        $(this.el).html(this.baseTemplate.render({
+          title: title,
+          buttons: buttons,
+          hideFooter: this.hideFooter,
+          confirm: confirmMsg,
+          tabBar: tabBar
+        }));
+      }
+      else {
+        //render into custom div
+        $('#' + divID).html(this.baseTemplate.render({
+          title: title,
+          buttons: buttons,
+          hideFooter: this.hideFooter,
+          confirm: confirmMsg,
+          tabBar: tabBar
+        }));
+        //remove not needed modal elements
+        $('#' + divID + " #modal-dialog").removeClass("fade hide modal");
+        $('#' + divID + " .modal-header").remove();
+        $('#' + divID + " .modal-tabbar").remove();
+        $('#' + divID + " .modal-tabbar").remove();
+        $('#' + divID + " .button-close").remove();
+        if ($('#' + divID + " .modal-footer").children().length === 0) {
+          $('#' + divID + " .modal-footer").remove();
+        }
+
+      }
       _.each(buttons, function(b, i) {
         if (b.disabled || !b.callback) {
           return;
@@ -294,11 +317,20 @@
       var template;
       if (typeof templateName === 'string') {
         template = templateEngine.createTemplate(templateName);
-        $(".createModalDialog .modal-body").html(template.render({
-          content: tableContent,
-          advancedContent: advancedContent,
-          info: extraInfo
-        }));
+        if (divID) {
+          $('#' + divID + " .createModalDialog .modal-body").html(template.render({
+            content: tableContent,
+            advancedContent: advancedContent,
+            info: extraInfo
+          }));
+        }
+        else {
+          $("#modalPlaceholder .createModalDialog .modal-body").html(template.render({
+            content: tableContent,
+            advancedContent: advancedContent,
+            info: extraInfo
+          }));
+        }
       }
       else {
         var counter = 0;
@@ -366,7 +398,9 @@
         }, 100);
       }
 
-      $("#modal-dialog").modal("show");
+      if (!divID) {
+        $("#modal-dialog").modal("show");
+      }
 
       //enable modal hotkeys after rendering is complete
       if (this.enabledHotkey === false) {
@@ -388,7 +422,7 @@
                 $(focus[0]).focus();
               }
           }
-        }, 800);
+        }, 400);
       }
 
     },

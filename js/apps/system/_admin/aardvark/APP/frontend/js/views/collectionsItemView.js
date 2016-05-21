@@ -8,11 +8,11 @@
   window.CollectionListItemView = Backbone.View.extend({
 
     tagName: "div",
-    className: "tile",
+    className: "tile pure-u-1-1 pure-u-sm-1-2 pure-u-md-1-3 pure-u-lg-1-4 pure-u-xl-1-6",
     template: templateEngine.createTemplate("collectionsItemView.ejs"),
 
-    initialize: function () {
-      this.collectionsView = this.options.collectionsView;
+    initialize: function (options) {
+      this.collectionsView = options.collectionsView;
     },
 
     events: {
@@ -528,7 +528,7 @@
     //index functions
     resetIndexForms: function () {
       $('#indexHeader input').val('').prop("checked", false);
-      $('#newIndexType').val('Cap').prop('selected',true);
+      $('#newIndexType').val('Geo').prop('selected',true);
       this.selectIndexType();
     },
 
@@ -542,15 +542,6 @@
       var sparse;
 
       switch (indexType) {
-        case 'Cap':
-          var size = parseInt($('#newCapSize').val(), 10) || 0;
-        var byteSize = parseInt($('#newCapByteSize').val(), 10) || 0;
-        postParameter = {
-          type: 'cap',
-          size: size,
-          byteSize: byteSize
-        };
-        break;
         case 'Geo':
           //HANDLE ARRAY building
           fields = $('#newGeoFields').val();

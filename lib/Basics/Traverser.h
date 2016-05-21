@@ -21,16 +21,15 @@
 /// @author Michael Hackstein
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_TRAVERSER_H
-#define LIB_BASICS_TRAVERSER_H 1
+#ifndef ARANGODB_BASICS_TRAVERSER_H
+#define ARANGODB_BASICS_TRAVERSER_H 1
 
 #include "Basics/Common.h"
 #include "Basics/Exceptions.h"
-#include "Basics/hashes.h"
+#include "Basics/Mutex.h"
+#include "Basics/MutexLocker.h"
 
 #include <deque>
-#include <functional>
-#include <mutex>
 #include <stack>
 #include <thread>
 
@@ -435,7 +434,7 @@ class PathFinder {
 
     Step() : _done(false) {}
 
-    Step(VertexId& vert, VertexId& pred, EdgeWeight weig, EdgeId const& edge)
+    Step(VertexId const& vert, VertexId const& pred, EdgeWeight weig, EdgeId const& edge)
         : _weight(weig),
           _vertex(vert),
           _predecessor(pred),
@@ -456,10 +455,10 @@ class PathFinder {
   typedef enum { FORWARD, BACKWARD } Direction;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief callback to find neighbours
+  /// @brief callback to find neighbors
   //////////////////////////////////////////////////////////////////////////////
 
-  typedef std::function<void(VertexId& V, std::vector<Step*>& result)>
+  typedef std::function<void(VertexId const&, std::vector<Step*>&)>
       ExpanderFunction;
 
   //////////////////////////////////////////////////////////////////////////////
@@ -474,7 +473,7 @@ class PathFinder {
 
   struct ThreadInfo {
     PQueue _pq;
-    std::mutex _mutex;
+    arangodb::Mutex _mutex;
   };
 
   //////////////////////////////////////////////////////////////////////////////
@@ -506,7 +505,8 @@ class PathFinder {
 
    private:
     void insertNeighbor(Step* step, EdgeWeight newWeight) {
-      std::lock_guard<std::mutex> guard(_myInfo._mutex);
+      MUTEX_LOCKER(locker, _myInfo._mutex);
+
       Step* s = _myInfo._pq.find(step->_vertex);
 
       // Not found, so insert it:
@@ -533,7 +533,8 @@ class PathFinder {
     ////////////////////////////////////////////////////////////////////////////////
 
     void lookupPeer(VertexId& vertex, EdgeWeight weight) {
-      std::lock_guard<std::mutex> guard(_peerInfo._mutex);
+      MUTEX_LOCKER(locker, _peerInfo._mutex);
+
       Step* s = _peerInfo._pq.find(vertex);
       if (s == nullptr) {
         // Not found, nothing more to do
@@ -542,7 +543,8 @@ class PathFinder {
       EdgeWeight total = s->weight() + weight;
 
       // Update the highscore:
-      std::lock_guard<std::mutex> guard2(_pathFinder->_resultMutex);
+      MUTEX_LOCKER(resultLocker, _pathFinder->_resultMutex);
+
       if (!_pathFinder->_highscoreSet || total < _pathFinder->_highscore) {
         _pathFinder->_highscoreSet = true;
         _pathFinder->_highscore = total;
@@ -591,7 +593,7 @@ class PathFinder {
         Step* s;
         bool b;
         {
-          std::lock_guard<std::mutex> guard(_myInfo._mutex);
+          MUTEX_LOCKER(locker, _myInfo._mutex);
           b = _myInfo._pq.popMinimal(v, s, true);
         }
 
@@ -607,7 +609,7 @@ class PathFinder {
           }
           lookupPeer(v, s->weight());
 
-          std::lock_guard<std::mutex> guard(_myInfo._mutex);
+          MUTEX_LOCKER(locker, _myInfo._mutex);
           Step* s2 = _myInfo._pq.find(v);
           s2->_done = true;
           b = _myInfo._pq.popMinimal(v, s, true);
@@ -815,7 +817,7 @@ class PathFinder {
     _bingo = false;
 
     // Forward with initialization:
-    VertexId emptyVertex(0, "");
+    VertexId emptyVertex;
     EdgeId emptyEdge;
     ThreadInfo forward;
     forward._pq.insert(start, new Step(start, emptyVertex, 0, emptyEdge));
@@ -856,8 +858,7 @@ class PathFinder {
     // FORWARD Go path back from intermediate -> start.
     // Insert all vertices and edges at front of vector
     // Do NOT! insert the intermediate vertex
-    while (s->_predecessor.key != nullptr &&
-           strcmp(s->_predecessor.key, "") != 0) {
+    while (!s->_predecessor.isNone()) {
       r_edges.push_front(s->_edge);
       r_vertices.push_front(s->_predecessor);
       s = forward._pq.find(s->_predecessor);
@@ -867,9 +868,7 @@ class PathFinder {
     // Insert all vertices and edges at back of vector
     // Also insert the intermediate vertex
     s = backward._pq.find(_intermediate);
-    while (s->_predecessor.key != nullptr &&
-           strcmp(s->_predecessor.key, "") != 0) {
-      r_edges.emplace_back(s->_edge);
+    while (!s->_predecessor.isNone()) {
       r_vertices.emplace_back(s->_predecessor);
       s = backward._pq.find(s->_predecessor);
     }
@@ -947,8 +946,7 @@ class PathFinder {
     // FORWARD Go path back from intermediate -> start.
     // Insert all vertices and edges at front of vector
     // Do NOT! insert the intermediate vertex
-    while (s->_predecessor.key != nullptr &&
-           strcmp(s->_predecessor.key, "") != 0) {
+    while (!s->_predecessor.isNone()) {
       r_edges.push_front(s->_edge);
       r_vertices.push_front(s->_predecessor);
       s = forward._pq.find(s->_predecessor);
@@ -958,8 +956,7 @@ class PathFinder {
     // Insert all vertices and edges at back of vector
     // Also insert the intermediate vertex
     s = backward._pq.find(_intermediate);
-    while (s->_predecessor.key != nullptr &&
-           strcmp(s->_predecessor.key, "") != 0) {
+    while (!s->_predecessor.isNone()) {
       r_edges.emplace_back(s->_edge);
       r_vertices.emplace_back(s->_predecessor);
       s = backward._pq.find(s->_predecessor);
@@ -1072,7 +1069,7 @@ class PathFinder {
   /// @brief _resultMutex, this is used to protect access to the result data
   //////////////////////////////////////////////////////////////////////////////
 
-  std::mutex _resultMutex;
+  arangodb::Mutex _resultMutex;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief _intermediate, one vertex on the shortest path found, flag
@@ -1140,6 +1137,13 @@ class PathEnumerator {
   std::function<bool(edgeIdentifier const&, vertexIdentifier const&, size_t,
                      vertexIdentifier&)> _getVertex;
 
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Indicates if we issue next() the first time.
+  ///        It shall return an empty path in this case.
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool _isFirst;
+
  public:
   PathEnumerator(
       std::function<void(vertexIdentifier const&, std::vector<edgeIdentifier>&,
@@ -1147,7 +1151,7 @@ class PathEnumerator {
       std::function<bool(edgeIdentifier const&, vertexIdentifier const&, size_t,
                          vertexIdentifier&)> getVertex,
       vertexIdentifier const& startVertex)
-      : _getEdge(getEdge), _getVertex(getVertex) {
+      : _getEdge(getEdge), _getVertex(getVertex), _isFirst(true) {
     _enumeratedPath.vertices.push_back(startVertex);
     _lastEdges.push(nullptr);
     _lastEdgesDir.push(false);
@@ -1164,6 +1168,10 @@ class PathEnumerator {
   //////////////////////////////////////////////////////////////////////////////
 
   const EnumeratedPath<edgeIdentifier, vertexIdentifier>& next() {
+    if (_isFirst) {
+      _isFirst = false;
+      return _enumeratedPath;
+    }
     // Avoid tail recusion. May crash on high search depth
     while (true) {
       if (_lastEdges.empty()) {
@@ -1220,7 +1228,7 @@ class PathEnumerator {
   }
 };
 
-template <typename VertexId, typename EdgeId>
+template <typename VertexId, typename EdgeId, typename HashFuncType, typename EqualFuncType>
 class ConstDistanceFinder {
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -1239,7 +1247,7 @@ class ConstDistanceFinder {
   };
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief callback to find neighbours
+  /// @brief callback to find neighbors
   //////////////////////////////////////////////////////////////////////////////
 
   typedef std::function<void(VertexId& V, std::vector<EdgeId>& edges,
@@ -1254,10 +1262,10 @@ class ConstDistanceFinder {
     PathSnippet(VertexId& pred, EdgeId& path) : _pred(pred), _path(path) {}
   };
 
-  std::unordered_map<VertexId, PathSnippet*> _leftFound;
+  std::unordered_map<VertexId, PathSnippet*, HashFuncType, EqualFuncType> _leftFound;
   std::deque<VertexId> _leftClosure;
 
-  std::unordered_map<VertexId, PathSnippet*> _rightFound;
+  std::unordered_map<VertexId, PathSnippet*, HashFuncType, EqualFuncType> _rightFound;
   std::deque<VertexId> _rightClosure;
 
   ExpanderFunction _leftNeighborExpander;
@@ -1303,12 +1311,13 @@ class ConstDistanceFinder {
           _leftNeighborExpander(v, edges, neighbors);
           TRI_ASSERT(edges.size() == neighbors.size());
           for (size_t i = 0; i < neighbors.size(); ++i) {
-            VertexId n = neighbors.at(i);
+            VertexId const n = neighbors.at(i);
             if (_leftFound.find(n) == _leftFound.end()) {
-              _leftFound.emplace(n, new PathSnippet(v, edges.at(i)));
-              if (_rightFound.find(n) != _rightFound.end()) {
+              auto leftFoundIt = _leftFound.emplace(n, new PathSnippet(v, edges.at(i))).first;
+              auto rightFoundIt = _rightFound.find(n);
+              if (rightFoundIt != _rightFound.end()) {
                 res->vertices.emplace_back(n);
-                auto it = _leftFound.find(n);
+                auto it = leftFoundIt;
                 VertexId next;
                 while (it->second != nullptr) {
                   next = it->second->_pred;
@@ -1316,7 +1325,7 @@ class ConstDistanceFinder {
                   res->edges.push_front(it->second->_path);
                   it = _leftFound.find(next);
                 }
-                it = _rightFound.find(n);
+                it = rightFoundIt;
                 while (it->second != nullptr) {
                   next = it->second->_pred;
                   res->vertices.emplace_back(next);
@@ -1339,12 +1348,13 @@ class ConstDistanceFinder {
           _rightNeighborExpander(v, edges, neighbors);
           TRI_ASSERT(edges.size() == neighbors.size());
           for (size_t i = 0; i < neighbors.size(); ++i) {
-            VertexId n = neighbors.at(i);
+            VertexId const n = neighbors.at(i);
             if (_rightFound.find(n) == _rightFound.end()) {
-              _rightFound.emplace(n, new PathSnippet(v, edges.at(i)));
-              if (_leftFound.find(n) != _leftFound.end()) {
+              auto rightFoundIt = _rightFound.emplace(n, new PathSnippet(v, edges.at(i))).first;
+              auto leftFoundIt = _leftFound.find(n);
+              if (leftFoundIt != _leftFound.end()) {
                 res->vertices.emplace_back(n);
-                auto it = _leftFound.find(n);
+                auto it = leftFoundIt;
                 VertexId next;
                 while (it->second != nullptr) {
                   next = it->second->_pred;
@@ -1352,7 +1362,7 @@ class ConstDistanceFinder {
                   res->edges.push_front(it->second->_path);
                   it = _leftFound.find(next);
                 }
-                it = _rightFound.find(n);
+                it = rightFoundIt;
                 while (it->second != nullptr) {
                   next = it->second->_pred;
                   res->vertices.emplace_back(next);

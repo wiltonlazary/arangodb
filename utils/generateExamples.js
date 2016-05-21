@@ -19,7 +19,9 @@ const yaml = require("js-yaml");
 const documentationSourceDirs = [
   fs.join(fs.makeAbsolute(''), "Documentation/Examples/setup-arangosh.js"),
   fs.join(fs.makeAbsolute(''), "Documentation/DocuBlocks"),
-  fs.join(fs.makeAbsolute(''), "Documentation/Books/Users")
+  fs.join(fs.makeAbsolute(''), "Documentation/Books/Users"),
+  fs.join(fs.makeAbsolute(''), "Documentation/Books/AQL"),
+  fs.join(fs.makeAbsolute(''), "Documentation/Books/HTTP")
 ];
 
 const theScript = 'utils/generateExamples.py';
@@ -32,14 +34,8 @@ const scriptArguments = {
 let ARANGOD;
 let ARANGOSH;
 
-if (fs.exists("bin")) {
-  ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "bin/arangod");
-  ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "bin/arangosh");
-}
-else {
-  ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangod");
-  ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangosh");
-}
+ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangod");
+ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangosh");
 
 function endpointToURL(endpoint) {
   if (endpoint.substr(0, 6) === "ssl://") {
@@ -70,6 +66,10 @@ function findFreePort() {
 
 function main(argv) {
   let thePython = 'python';
+  if (fs.exists('build/CMakeCache.txt')) {
+    let CMakeCache = fs.readFileSync('build/CMakeCache.txt');
+    thePython = CMakeCache.toString().match(/^PYTHON_EXECUTABLE:FILEPATH=(.*)$/m)[1];
+  }
   let options = {};
   let serverEndpoint = '';
   let startServer = true;
@@ -129,13 +129,13 @@ function main(argv) {
     serverArgs["javascript.app-path"] = fs.join(tmpDataDir, "apps");
     serverArgs["javascript.startup-directory"] = "js";
     serverArgs["log.file"] = fs.join(tmpDataDir, "log");
-    serverArgs["server.disable-authentication"] = "true";
+    serverArgs["server.authentication"] = "false";
     serverArgs["server.endpoint"] = serverEndpoint;
     serverArgs["server.threads"] = "3";
 
     print("================================================================================");
     print(toArgv(serverArgs));
-    instanceInfo.pid = executeExternal(ARANGOD, toArgv(serverArgs));
+    instanceInfo.pid = executeExternal(ARANGOD, toArgv(serverArgs)).pid;
 
     // Wait until the server is up:
     count = 0;

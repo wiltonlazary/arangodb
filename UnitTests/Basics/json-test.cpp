@@ -25,10 +25,21 @@
 /// @author Copyright 2012, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "Basics/Common.h"
+
+#define BOOST_TEST_INCLUDED
 #include <boost/test/unit_test.hpp>
 
 #include "Basics/json.h"
 #include "Basics/StringBuffer.h"
+#include "Basics/Utf8Helper.h"
+
+#if _WIN32
+#include "Basics/win-utils.h"
+#define FIX_ICU_ENV     TRI_FixIcuDataEnv()
+#else
+#define FIX_ICU_ENV
+#endif
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                    private macros
@@ -46,6 +57,18 @@
 
 struct CJsonSetup {
   CJsonSetup () {
+    FIX_ICU_ENV;
+    if (!arangodb::basics::Utf8Helper::DefaultUtf8Helper.setCollatorLanguage("")) {
+      std::string msg =
+        "cannot initialize ICU; please make sure ICU*dat is available; "
+        "the variable ICU_DATA='";
+      if (getenv("ICU_DATA") != nullptr) {
+        msg += getenv("ICU_DATA");
+      }
+      msg += "' should point the directory containing the ICU*dat file.";
+      BOOST_TEST_MESSAGE(msg);
+      BOOST_CHECK_EQUAL(false, true);
+    }
     BOOST_TEST_MESSAGE("setup json");
   }
 
@@ -241,129 +264,6 @@ BOOST_AUTO_TEST_CASE (tst_json_string2) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief test string reference value
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_json_string_reference) {
-  INIT_BUFFER
-
-  const char* data = "The Quick Brown Fox";
-  char copy[64];
-
-  memset(copy, 0, sizeof(copy));
-  memcpy(copy, data, strlen(data));
-
-  TRI_json_t* json = TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy, strlen(copy));
-  BOOST_CHECK_EQUAL(true, TRI_IsStringJson(json));
-
-  STRINGIFY
-  BOOST_CHECK_EQUAL("\"The Quick Brown Fox\"", STRING_VALUE);
-  FREE_BUFFER
-  
-  FREE_JSON
-
-  // freeing JSON should not affect our string  
-  BOOST_CHECK_EQUAL("The Quick Brown Fox", copy);
-
-  json = TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy, strlen(copy));
-  BOOST_CHECK_EQUAL(true, TRI_IsStringJson(json));
-
-  // modify the string we're referring to
-  copy[0] = '*';
-  copy[1] = '/';
-  copy[2] = '+';
-  copy[strlen(copy) - 1] = '!';
-  
-  sb = TRI_CreateStringBuffer(TRI_UNKNOWN_MEM_ZONE);
-  STRINGIFY
-  BOOST_CHECK_EQUAL("\"*/+ Quick Brown Fo!\"", STRING_VALUE);
-  FREE_BUFFER
-  
-  BOOST_CHECK_EQUAL("*/+ Quick Brown Fo!", copy);
-
-  FREE_JSON
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test string reference value
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_json_string_reference2) {
-  INIT_BUFFER
-
-  const char* data1 = "The first Brown Fox";
-  const char* data2 = "The second Brown Fox";
-  char copy1[64];
-  char copy2[64];
-  TRI_json_t* json;
-  size_t len1 = strlen(data1);
-  size_t len2 = strlen(data2);
-
-  memset(copy1, 0, sizeof(copy1));
-  memcpy(copy1, data1, len1);
-
-  memset(copy2, 0, sizeof(copy2));
-  memcpy(copy2, data2, len2);
-
-  json = TRI_CreateObjectJson(TRI_UNKNOWN_MEM_ZONE);
-
-  TRI_Insert3ObjectJson(TRI_UNKNOWN_MEM_ZONE, json, "first",
-                       TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy1, strlen(copy1)));
-
-  TRI_Insert3ObjectJson(TRI_UNKNOWN_MEM_ZONE, json, "second",
-                       TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy2, len2));
-
-  BOOST_CHECK_EQUAL(true, TRI_IsObjectJson(json));
-
-  STRINGIFY
-  BOOST_CHECK_EQUAL("{\"first\":\"The first Brown Fox\",\"second\":\"The second Brown Fox\"}", STRING_VALUE);
-  FREE_BUFFER
-  
-  FREE_JSON
-
-  // freeing JSON should not affect our string  
-  BOOST_CHECK_EQUAL("The first Brown Fox", copy1);
-  BOOST_CHECK_EQUAL("The second Brown Fox", copy2);
-
-  json = TRI_CreateObjectJson(TRI_UNKNOWN_MEM_ZONE);
-
-  TRI_Insert3ObjectJson(TRI_UNKNOWN_MEM_ZONE, json, "first",
-                       TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy1, strlen(copy1)));
-
-  TRI_Insert3ObjectJson(TRI_UNKNOWN_MEM_ZONE, json, "second",
-                       TRI_CreateStringReferenceJson(TRI_UNKNOWN_MEM_ZONE, copy2, len2));
-
-  BOOST_CHECK_EQUAL(true, TRI_IsObjectJson(json));
-
-  // modify the string we're referring to
-  copy1[0] = '*';
-  copy1[1] = '/';
-  copy1[2] = '+';
-  copy1[len1 - 1] = '!';
-
-  copy2[0] = '*';
-  copy2[1] = '/';
-  copy2[2] = '+';
-  copy2[len2 - 1] = '!';
-
-  BOOST_CHECK_EQUAL("*/+ first Brown Fo!", copy1);
-  BOOST_CHECK_EQUAL("*/+ second Brown Fo!", copy2);
-
-  sb = TRI_CreateStringBuffer(TRI_UNKNOWN_MEM_ZONE);
-  STRINGIFY
-  BOOST_CHECK_EQUAL("{\"first\":\"*/+ first Brown Fo!\",\"second\":\"*/+ second Brown Fo!\"}", STRING_VALUE);
-
-  FREE_BUFFER
-  
-  // freeing JSON should not affect our string  
-  BOOST_CHECK_EQUAL("*/+ first Brown Fo!", copy1);
-  BOOST_CHECK_EQUAL("*/+ second Brown Fo!", copy2);
-
-  FREE_JSON
-}
-
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief test string value (escaped)
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -448,75 +348,6 @@ BOOST_AUTO_TEST_CASE (tst_json_list_empty) {
   FREE_BUFFER
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test remove from array
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_remove_from_array_empty) {
-  TRI_json_t* json = TRI_CreateArrayJson(TRI_UNKNOWN_MEM_ZONE);
- 
-  BOOST_CHECK_EQUAL(0ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 0));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 10));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 5));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 2));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 1));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 0));
-
-  FREE_JSON
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test remove from array
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_remove_from_array_nonempty1) {
-  TRI_json_t* json = TRI_CreateArrayJson(TRI_UNKNOWN_MEM_ZONE);
-  TRI_PushBack3ArrayJson(TRI_UNKNOWN_MEM_ZONE, json, TRI_CreateNullJson(TRI_UNKNOWN_MEM_ZONE));
-  TRI_PushBack3ArrayJson(TRI_UNKNOWN_MEM_ZONE, json, TRI_CreateNumberJson(TRI_UNKNOWN_MEM_ZONE, 3.5));
- 
-  BOOST_CHECK_EQUAL(2ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 10));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 5));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 2));
-  
-  BOOST_CHECK_EQUAL(true, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 1));
-  BOOST_CHECK_EQUAL(static_cast<TRI_json_t*>(0), TRI_LookupArrayJson(json, 1));
-  BOOST_CHECK_EQUAL(1ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(true, TRI_IsNullJson(TRI_LookupArrayJson(json, 0)));
-
-  BOOST_CHECK_EQUAL(true, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 0));
-  BOOST_CHECK_EQUAL(0ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(static_cast<TRI_json_t*>(0), TRI_LookupArrayJson(json, 0));
-
-  FREE_JSON
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief test remove from array
-////////////////////////////////////////////////////////////////////////////////
-
-BOOST_AUTO_TEST_CASE (tst_remove_from_array_nonempty2) {
-  TRI_json_t* json = TRI_CreateArrayJson(TRI_UNKNOWN_MEM_ZONE);
-  TRI_PushBack3ArrayJson(TRI_UNKNOWN_MEM_ZONE, json, TRI_CreateNullJson(TRI_UNKNOWN_MEM_ZONE));
-  TRI_PushBack3ArrayJson(TRI_UNKNOWN_MEM_ZONE, json, TRI_CreateNumberJson(TRI_UNKNOWN_MEM_ZONE, 3.5));
- 
-  BOOST_CHECK_EQUAL(2ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 10));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 5));
-  BOOST_CHECK_EQUAL(false, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 2));
-
-  BOOST_CHECK_EQUAL(true, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 0));
-  BOOST_CHECK_EQUAL(1ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(static_cast<TRI_json_t*>(0), TRI_LookupArrayJson(json, 1));
-  BOOST_CHECK_EQUAL(true, TRI_IsNumberJson(TRI_LookupArrayJson(json, 0)));
-
-  BOOST_CHECK_EQUAL(true, TRI_DeleteArrayJson(TRI_UNKNOWN_MEM_ZONE, json, 0));
-  BOOST_CHECK_EQUAL(0ULL, TRI_LengthArrayJson(json));
-  BOOST_CHECK_EQUAL(static_cast<TRI_json_t*>(0), TRI_LookupArrayJson(json, 0));
-
-  FREE_JSON
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief test json list mixed

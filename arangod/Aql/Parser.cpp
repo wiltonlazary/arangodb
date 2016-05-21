@@ -27,10 +27,7 @@
 
 using namespace arangodb::aql;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief create the parser
-////////////////////////////////////////////////////////////////////////////////
-
 Parser::Parser(Query* query)
     : _query(query),
       _ast(query->ast()),
@@ -44,16 +41,10 @@ Parser::Parser(Query* query)
   _stack.reserve(4);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief destroy the parser
-////////////////////////////////////////////////////////////////////////////////
-
 Parser::~Parser() {}
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief set data for write queries
-////////////////////////////////////////////////////////////////////////////////
-
 bool Parser::configureWriteQuery(AstNode const* collectionNode,
                                  AstNode* optionNode) {
   // now track which collection is going to be modified
@@ -69,10 +60,7 @@ bool Parser::configureWriteQuery(AstNode const* collectionNode,
   return true;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief parse the query
-////////////////////////////////////////////////////////////////////////////////
-
 QueryResult Parser::parse(bool withDetails) {
   char const* q = queryString();
 
@@ -108,7 +96,11 @@ QueryResult Parser::parse(bool withDetails) {
   }
 
   // end main scope
-  scopes->endCurrent();
+  TRI_ASSERT(scopes->numActive() > 0);
+
+  while (scopes->numActive() > 0) {
+    scopes->endCurrent();
+  }
 
   TRI_ASSERT(scopes->numActive() == 0);
 
@@ -117,16 +109,13 @@ QueryResult Parser::parse(bool withDetails) {
   if (withDetails) {
     result.collectionNames = _query->collectionNames();
     result.bindParameters = _ast->bindParameters();
-    result.json = _ast->toJson(TRI_UNKNOWN_MEM_ZONE, false);
+    result.result = _ast->toVelocyPack(false);
   }
 
   return result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief register a parse error, position is specified as line / column
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::registerParseError(int errorCode, char const* format,
                                 char const* data, int line, int column) {
   char buffer[512];
@@ -139,10 +128,7 @@ void Parser::registerParseError(int errorCode, char const* format,
   return registerParseError(errorCode, buffer, line, column);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief register a parse error, position is specified as line / column
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::registerParseError(int errorCode, char const* data, int line,
                                 int column) {
   TRI_ASSERT(errorCode != TRI_ERROR_NO_ERROR);
@@ -175,38 +161,26 @@ void Parser::registerParseError(int errorCode, char const* data, int line,
   registerError(errorCode, errorMessage.str().c_str());
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief register a non-parse error
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::registerError(int errorCode, char const* data) {
   _query->registerError(errorCode, data);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief register a warning
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::registerWarning(int errorCode, char const* data, int line,
                              int column) {
   // ignore line and column for now
   _query->registerWarning(errorCode, data);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief push an AstNode into the array element on top of the stack
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::pushArrayElement(AstNode* node) {
   auto array = static_cast<AstNode*>(peekStack());
   TRI_ASSERT(array->type == NODE_TYPE_ARRAY);
   array->addMember(node);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief push an AstNode into the object element on top of the stack
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::pushObjectElement(char const* attributeName, size_t nameLength,
                                AstNode* node) {
   auto object = static_cast<AstNode*>(peekStack());
@@ -215,10 +189,7 @@ void Parser::pushObjectElement(char const* attributeName, size_t nameLength,
   object->addMember(element);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief push an AstNode into the object element on top of the stack
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::pushObjectElement(AstNode* attributeName, AstNode* node) {
   auto object = static_cast<AstNode*>(peekStack());
   TRI_ASSERT(object->type == NODE_TYPE_OBJECT);
@@ -226,16 +197,10 @@ void Parser::pushObjectElement(AstNode* attributeName, AstNode* node) {
   object->addMember(element);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief push a temporary value on the parser's stack
-////////////////////////////////////////////////////////////////////////////////
-
 void Parser::pushStack(void* value) { _stack.emplace_back(value); }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief pop a temporary value from the parser's stack
-////////////////////////////////////////////////////////////////////////////////
-
 void* Parser::popStack() {
   TRI_ASSERT(!_stack.empty());
 
@@ -244,10 +209,7 @@ void* Parser::popStack() {
   return result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief peek at a temporary value from the parser's stack
-////////////////////////////////////////////////////////////////////////////////
-
 void* Parser::peekStack() {
   TRI_ASSERT(!_stack.empty());
 

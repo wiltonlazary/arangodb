@@ -21,8 +21,8 @@
 /// @author Max Neunhoeffer
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_SIMPLE_HTTP_CLIENT_CONNECTION_MANAGER_H
-#define LIB_SIMPLE_HTTP_CLIENT_CONNECTION_MANAGER_H 1
+#ifndef ARANGODB_SIMPLE_HTTP_CLIENT_CONNECTION_MANAGER_H
+#define ARANGODB_SIMPLE_HTTP_CLIENT_CONNECTION_MANAGER_H 1
 
 #include "Basics/Common.h"
 #include "Basics/ReadWriteLock.h"
@@ -30,11 +30,15 @@
 
 #include <list>
 
-// TODO: change to constexpr when feasible
-#define CONNECTION_MANAGER_BUCKETS 8
 
 namespace arangodb {
 namespace httpclient {
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief number of buckets
+////////////////////////////////////////////////////////////////////////////////
+
+constexpr size_t ConnectionManagerBuckets() { return 8; }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief options for connections
@@ -187,7 +191,7 @@ class ConnectionManager {
   //////////////////////////////////////////////////////////////////////////////
 
   size_t bucket(std::string const& endpoint) const {
-    return std::hash<std::string>()(endpoint) % CONNECTION_MANAGER_BUCKETS;
+    return std::hash<std::string>()(endpoint) % ConnectionManagerBuckets();
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -207,7 +211,7 @@ class ConnectionManager {
     arangodb::basics::ReadWriteLock _lock;
   };
 
-  ConnectionsBucket _connectionsBuckets[CONNECTION_MANAGER_BUCKETS];
+  ConnectionsBucket _connectionsBuckets[ConnectionManagerBuckets()];
 };
 }
 }

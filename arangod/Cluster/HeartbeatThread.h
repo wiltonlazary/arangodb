@@ -24,32 +24,39 @@
 #ifndef ARANGOD_CLUSTER_HEARTBEAT_THREAD_H
 #define ARANGOD_CLUSTER_HEARTBEAT_THREAD_H 1
 
-#include "Basics/Common.h"
+#include "Basics/Thread.h"
+
 #include "Basics/ConditionVariable.h"
 #include "Basics/Mutex.h"
-#include "Basics/Thread.h"
-#include "Logger/Logger.h"
 #include "Cluster/AgencyComm.h"
+#include "Logger/Logger.h"
+#include "Cluster/ServerJob.h"
 
 struct TRI_server_t;
 struct TRI_vocbase_t;
 
 namespace arangodb {
-namespace rest {
-class ApplicationDispatcher;
-}
 
-class ApplicationV8;
+struct AgencyVersions {
+  uint64_t plan;
+  uint64_t current;
+  
+  AgencyVersions(uint64_t _plan, uint64_t _current) : plan(_plan), current(_plan) {}
+
+  explicit AgencyVersions(const ServerJobResult& result)
+    : plan(result.planVersion),
+    current(result.currentVersion) {
+  }
+};
+
+class AgencyCallbackRegistry;
 
 class HeartbeatThread : public Thread {
- private:
-  HeartbeatThread(HeartbeatThread const&);
-  HeartbeatThread& operator=(HeartbeatThread const&);
+  HeartbeatThread(HeartbeatThread const&) = delete;
+  HeartbeatThread& operator=(HeartbeatThread const&) = delete;
 
  public:
-  HeartbeatThread(TRI_server_t*, arangodb::rest::ApplicationDispatcher*,
-                  ApplicationV8*, uint64_t, uint64_t);
-
+  HeartbeatThread(TRI_server_t*, AgencyCallbackRegistry*, uint64_t, uint64_t);
   ~HeartbeatThread();
 
  public:
@@ -76,13 +83,7 @@ class HeartbeatThread : public Thread {
   /// if the job was finished successfully and false otherwise
   //////////////////////////////////////////////////////////////////////////////
 
-  void removeDispatchedJob(bool success);
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief check whether a job is still running or does not have reported yet
-  //////////////////////////////////////////////////////////////////////////////
-
-  bool hasPendingJob();
+  void removeDispatchedJob(ServerJobResult);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief whether or not the thread has run at least once.
@@ -127,13 +128,7 @@ class HeartbeatThread : public Thread {
   /// @brief handles a state change
   //////////////////////////////////////////////////////////////////////////////
 
-  bool handleStateChange(AgencyCommResult&, uint64_t&);
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief fetch the last value of Sync/Commands/my-id from the agency
-  //////////////////////////////////////////////////////////////////////////////
-
-  uint64_t getLastCommandIndex();
+  bool handleStateChange(AgencyCommResult&);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief sends the current server's state to the agency
@@ -146,6 +141,12 @@ class HeartbeatThread : public Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   bool fetchUsers(TRI_vocbase_t*);
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief bring the db server in sync with the desired state
+  //////////////////////////////////////////////////////////////////////////////
+  
+  bool syncDBServerStatusQuo();
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -155,16 +156,10 @@ class HeartbeatThread : public Thread {
   TRI_server_t* _server;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief Job dispatcher
+  /// @brief AgencyCallbackRegistry
   //////////////////////////////////////////////////////////////////////////////
 
-  arangodb::rest::ApplicationDispatcher* _dispatcher;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief v8 dispatcher
-  //////////////////////////////////////////////////////////////////////////////
-
-  ApplicationV8* _applicationV8;
+  AgencyCallbackRegistry* _agencyCallbackRegistry;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief status lock
@@ -216,22 +211,22 @@ class HeartbeatThread : public Thread {
   uint64_t _numFails;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief current number of dispatched (pending) jobs
+  /// @brief last successfully dispatched version
   //////////////////////////////////////////////////////////////////////////////
 
-  int64_t _numDispatchedJobs;
+  uint64_t _lastSuccessfulVersion;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief flag, if last dispatched job was successfull
+  /// @brief currently dispatching
   //////////////////////////////////////////////////////////////////////////////
 
-  bool _lastDispatchedJobResult;
+  bool _isDispatchingChange;
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief version of Plan that triggered the last dispatched job
+  /// @brief current plan version
   //////////////////////////////////////////////////////////////////////////////
-
-  uint64_t _versionThatTriggeredLastJob;
+  
+  uint64_t _currentPlanVersion;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief whether or not the thread is ready
@@ -245,6 +240,18 @@ class HeartbeatThread : public Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   static volatile sig_atomic_t HasRunOnce;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief keeps track of the currently installed versions
+  //////////////////////////////////////////////////////////////////////////////
+  AgencyVersions _currentVersions;
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief keeps track of the currently desired versions
+  //////////////////////////////////////////////////////////////////////////////
+  AgencyVersions _desiredVersions;
+
+  bool _wasNotified;
 };
 }
 

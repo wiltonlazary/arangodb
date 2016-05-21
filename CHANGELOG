@@ -1,13 +1,120 @@
 v3.0.0 (XXXX-XX-XX)
 -------------------
 
+* as a consequence of the upgrade to V8 version 5, the implementation of the
+  JavaScript `Buffer` object had to be changed. JavaScript `Buffer` objects in
+  ArangoDB now always store their data on the heap. There is no shared pool
+  for small Buffer values, and no pointing into existing Buffer data when
+  extracting slices. This change may increase the cost of creating Buffers with
+  short contents or when peeking into existing Buffers, but was required for
+  safer memory management and to prevent leaks.
+
+* the `db` object's function `_listDatabases()` was renamed to just `_databases()`
+  in order to make it more consistent with the existing `_collections()` function.
+  Additionally the `db` object's `_listEndpoints()` function was renamed to just
+  `_endpoints()`.
+
+* changed default value of `--server.authentication` from `false` to `true` in 
+  configuration files etc/relative/arangod.conf and etc/arangodb/arangod.conf.in.
+  This means the server will be started with authentication enabled by default,
+  requiring all client connections to provide authentication data when connecting
+  to ArangoDB. Authentication can still be turned off via setting the value of
+  `--server.authentication` to `false` in ArangoDB's configuration files or by
+  specifying the option on the command-line.
+
+* Changed result format for querying all collections via the API GET `/_api/collection`.
+
+  Previous versions of ArangoDB returned an object with an attribute named `collections` 
+  and an attribute named `names`. Both contained all available collections, but
+  `collections` contained the collections as an array, and `names` contained the
+  collections again, contained in an object in which the attribute names were the
+  collection names, e.g.
+
+  ```
+  {
+    "collections": [
+      {"id":"5874437","name":"test","isSystem":false,"status":3,"type":2},
+      {"id":"17343237","name":"something","isSystem":false,"status":3,"type":2},
+      ...
+    ],
+    "names": {
+      "test": {"id":"5874437","name":"test","isSystem":false,"status":3,"type":2},
+      "something": {"id":"17343237","name":"something","isSystem":false,"status":3,"type":2},
+      ...
+    }
+  }
+  ```
+  This result structure was redundant, and therefore has been simplified to just
+
+  ```
+  {
+    "result": [
+      {"id":"5874437","name":"test","isSystem":false,"status":3,"type":2},
+      {"id":"17343237","name":"something","isSystem":false,"status":3,"type":2},
+      ...
+    ]
+  }
+  ```
+
+  in ArangoDB 3.0.
+
+* added AQL functions `TYPENAME()` and `HASH()`
+
+* renamed arangob tool to arangobench
+
+* added AQL string comparison operator `LIKE`
+
+  The operator can be used to compare strings like this:
+
+      value LIKE search
+
+  The operator is currently implemented by calling the already existing AQL
+  function `LIKE`.
+
+  This change also makes `LIKE` an AQL keyword. Using `LIKE` in either case as
+  an attribute or collection name in AQL thus requires quoting.
+
+* make AQL optimizer rule "remove-unnecessary-calculations" fire in more cases
+
+  The rule will now remove calculations that are used exactly once in other
+  expressions (e.g. `LET a = doc RETURN a.value`) and calculations,
+  or calculations that are just references (e.g. `LET a = b`).
+
+* renamed AQL optimizer rule "merge-traversal-filter" to "optimize-traversals"
+  Additionally, the optimizer rule will remove unused edge and path result variables
+  from the traversal in case they are specified in the `FOR` section of the traversal,
+  but not referenced later in the query. This saves constructing edges and paths
+  results.
+
+* added AQL optimizer rule "inline-subqueries"
+
+  This rule can pull out certain subqueries that are used as an operand to a `FOR`
+  loop one level higher, eliminating the subquery completely. For example, the query
+
+      FOR i IN (FOR j IN [1,2,3] RETURN j) RETURN i
+      
+  will be transformed by the rule to:
+   
+      FOR i IN [1,2,3] RETURN i
+      
+  The query
+
+      FOR name IN (FOR doc IN _users FILTER doc.status == 1 RETURN doc.name) LIMIT 2 RETURN name
+      
+  will be transformed into
+  
+      FOR tmp IN _users FILTER tmp.status == 1 LIMIT 2 RETURN tmp.name
+       
+  The rule will only fire when the subquery is used as an operand to a `FOR` loop, and
+  if the subquery does not contain a `COLLECT` with an `INTO` variable.
+
 * added new endpoint "srv://" for DNS service records
 
-* The result order of the AQL functions VALUES and KEYS has never been guaranteed
-and it only had the "correct" ordering by accident when iterating over objects that
-were not loaded from the database. This behaviour is now changed by
-introduction of VelocyPack and no ordering is guaranteed unless you specify
-the sort parameter.
+* The result order of the AQL functions VALUES and ATTRIBUTES has never been 
+  guaranteed and it only had the "correct" ordering by accident when iterating 
+  over objects that were not loaded from the database. This accidental behavior 
+  is now changed by introduction of VelocyPack. No ordering is guaranteed unless 
+  you specify the sort parameter.
 
 * removed configure option `--enable-logger`
 
@@ -126,15 +233,131 @@ the sort parameter.
 * added WorkMonitor to inspect server threads
 
 * when downloading a Foxx service from the web interface the suggested filename
-  now takes the form $name@$version.zip instead of simply "app.zip"
+  is now based on the service's mount path instead of simply "app.zip"
 
 * the `@arangodb/request` response object now stores the parsed JSON response
   body in a property `json` instead of `body` when the request was made using the
   `json` option. The `body` instead contains the response body as a string.
 
+* the Foxx API has changed significantly, 2.8 services are still supported
+  using a backwards-compatible "legacy mode"
 
-v2.8.6 (2016-03-XX)
+
+v2.8.10 (XXXX-XX-XX)
+--------------------
+
+* honor the value of startup option `--database.wait-for-sync` (that is used to control
+  whether new collections are created with `waitForSync` set to `true` by default) also
+  when creating collections via the HTTP API (and thus the ArangoShell). When creating
+  a collection via these mechanisms, the option was ignored so far, which was inconsistent.
+
+* fixed issue #1826: arangosh --javascript.execute: internal error (geo index issue)
+
+* fixed issue #1823: Arango crashed hard executing very simple query on windows
+
+
+v2.8.9 (2016-05-13)
 -------------------
+
+* fixed escaping and quoting of extra parameters for executables in Mac OS X App
+
+* added "waiting for" status variable to web interface collection figures view
+
+* fixed undefined behavior in query cache invaldation
+
+* fixed access to /_admin/statistics API in case statistics are disable via option
+  `--server.disable-statistics`
+
+* Foxx manager will no longer fail hard when Foxx store is unreachable unless installing
+  a service from the Foxx store (e.g. when behind a firewall or GitHub is unreachable).
+
+
+v2.8.8 (2016-04-19)
+-------------------
+
+* fixed issue #1805: Query: internal error (location: arangod/Aql/AqlValue.cpp:182). 
+  Please report this error to arangodb.com (while executing)
+
+* allow specifying collection name prefixes for `_from` and `_to` in arangoimp:
+
+  To avoid specifying complete document ids (consisting of collection names and document
+  keys) for *_from* and *_to* values when importing edges with arangoimp, there are now
+  the options *--from-collection-prefix* and *--to-collection-prefix*. 
+  
+  If specified, these values will be automatically prepended to each value in *_from* 
+  (or *_to* resp.). This allows specifying only document keys inside *_from* and/or *_to*.
+
+  *Example*
+
+      > arangoimp --from-collection-prefix users --to-collection-prefix products ...
+
+  Importing the following document will then create an edge between *users/1234* and
+  *products/4321*:
+
+  ```js
+  { "_from" : "1234", "_to" : "4321", "desc" : "users/1234 is connected to products/4321" }
+  ```
+
+* requests made with the interactive system API documentation in the web interface
+  (Swagger) will now respect the active database instead of always using `_system`
+
+
+v2.8.7 (2016-04-07)
+-------------------
+
+* optimized primary=>secondary failover
+
+* fix to-boolean conversion for documents in AQL
+
+* expose the User-Agent HTTP header from the ArangoShell since Github seems to
+  require it now, and we use the ArangoShell for fetching Foxx repositories from Github
+
+* work with http servers that only send
+
+* fixed potential race condition between compactor and collector threads
+
+* fix removal of temporary directories on arangosh exit
+
+* javadoc-style comments in Foxx services are no longer interpreted as
+  Foxx comments outside of controller/script/exports files (#1748)
+
+* removed remaining references to class syntax for Foxx Model and Repository
+  from the documentation
+
+* added a safe-guard for corrupted master-pointer
+
+
+v2.8.6 (2016-03-23)
+-------------------
+
+* arangosh can now execute JavaScript script files that contain a shebang
+  in the first line of the file. This allows executing script files directly.
+
+  Provided there is a script file `/path/to/script.js` with the shebang
+  `#!arangosh --javascript.execute`:
+
+      > cat /path/to/script.js
+      #!arangosh --javascript.execute 
+      print("hello from script.js");
+
+  If the script file is made executable
+
+      > chmod a+x /path/to/script.js
+
+  it can be invoked on the shell directly and use arangosh for its execution:
+      
+      > /path/to/script.js
+      hello from script.js
+  
+  This did not work in previous versions of ArangoDB, as the whole script contents
+  (including the shebang) were treated as JavaScript code. 
+  Now shebangs in script files will now be ignored for all files passed to arangosh's 
+  `--javascript.execute` parameter.
+  
+  The alternative way of executing a JavaScript file with arangosh still works:
+
+      > arangosh --javascript.execute /path/to/script.js
+      hello from script.js
 
 * added missing reset of traversal state for nested traversals.
   The state of nested traversals (a traversal in an AQL query that was
@@ -721,7 +944,7 @@ v2.8.0-alpha1 (2015-12-03)
 * module resolution as used by `require` now behaves more like in node.js
 
 * the `org/arangodb/request` module now returns response bodies for error responses
-  by default. The old behaviour of not returning bodies for error responses can be
+  by default. The old behavior of not returning bodies for error responses can be
   re-enabled by explicitly setting the option `returnBodyOnError` to `false` (#1437)
 
 

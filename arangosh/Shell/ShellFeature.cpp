@@ -22,9 +22,10 @@
 
 #include "ShellFeature.h"
 
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "ApplicationFeatures/ClientFeature.h"
 #include "Logger/Logger.h"
-#include "ProgramOptions2/ProgramOptions.h"
+#include "ProgramOptions/ProgramOptions.h"
 #include "Shell/V8ShellFeature.h"
 
 using namespace arangodb;
@@ -47,11 +48,6 @@ ShellFeature::ShellFeature(
 
 void ShellFeature::collectOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::collectOptions";
-
-  options->addSection(
-      Section("", "Global configuration", "global options", false, false));
-
   options->addOption("--jslint", "do not start as shell, run jslint instead",
                      new VectorParameter<StringParameter>(&_jslint));
 
@@ -76,8 +72,6 @@ void ShellFeature::collectOptions(
 
 void ShellFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::validateOptions";
-
   _positionals = options->processingResult()._positionals;
 
   ClientFeature* client =
@@ -135,19 +129,16 @@ void ShellFeature::validateOptions(
 }
 
 void ShellFeature::start() {
-  LOG_TOPIC(TRACE, Logger::STARTUP) << name() << "::start";
-
   *_result = EXIT_FAILURE;
 
-  V8ShellFeature* shell =
-      dynamic_cast<V8ShellFeature*>(server()->feature("V8Shell"));
+  V8ShellFeature* shell = application_features::ApplicationServer::getFeature<V8ShellFeature>("V8Shell");
 
   bool ok = false;
 
   try {
     switch (_runMode) {
       case RunMode::INTERACTIVE:
-        ok = shell->runShell(_positionals);
+        ok = (shell->runShell(_positionals) == TRI_ERROR_NO_ERROR);
         break;
 
       case RunMode::EXECUTE_SCRIPT:
@@ -170,6 +161,9 @@ void ShellFeature::start() {
         ok = shell->jslint(_jslint);
         break;
     }
+  } catch (basics::Exception const& ex) {
+    LOG(ERR) << "caught exception " << ex.what();
+    ok = false;
   } catch (std::exception const& ex) {
     LOG(ERR) << "caught exception " << ex.what();
     ok = false;

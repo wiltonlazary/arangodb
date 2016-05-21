@@ -21,7 +21,11 @@
 /// @author Michael Hackstein
 ////////////////////////////////////////////////////////////////////////////////
 
+#ifndef ARANGODB_BASICS_VPACKSTRING_H
+#define ARANGODB_BASICS_VPACKSTRING_H
+
 #include "Basics/StringBuffer.h"
+#include "Basics/Exceptions.h"
 
 #include <velocypack/Sink.h>
 #include <velocypack/velocypack-aliases.h>
@@ -34,14 +38,44 @@ class VPackStringBufferAdapter final : public VPackSink {
   explicit VPackStringBufferAdapter(TRI_string_buffer_t* buffer)
       : _buffer(buffer) {}
 
-  void push_back(char c) override final;
-  void append(std::string const& p) override final;
-  void append(char const* p) override final;
-  void append(char const* p, uint64_t len) override final;
-  void reserve(uint64_t len) override final;
+  void push_back(char c) override final {
+    int res = TRI_AppendCharStringBuffer(_buffer, c);
+    if (res != TRI_ERROR_NO_ERROR) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+  }
+
+  void append(std::string const& p) override final {
+    int res = TRI_AppendString2StringBuffer(_buffer, p.c_str(), p.size());
+    if (res != TRI_ERROR_NO_ERROR) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+  }
+
+  void append(char const* p) override final {
+    int res = TRI_AppendString2StringBuffer(_buffer, p, strlen(p));
+    if (res != TRI_ERROR_NO_ERROR) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+  }
+  void append(char const* p, uint64_t len) override final {
+    int res = TRI_AppendString2StringBuffer(_buffer, p, static_cast<size_t>(len));
+    if (res != TRI_ERROR_NO_ERROR) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+  }
+
+  void reserve(uint64_t len) override final {
+    int res = TRI_ReserveStringBuffer(_buffer, static_cast<size_t>(len));
+    if (res != TRI_ERROR_NO_ERROR) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+  }
 
  private:
   TRI_string_buffer_t* _buffer;
 };
 }
 }
+
+#endif

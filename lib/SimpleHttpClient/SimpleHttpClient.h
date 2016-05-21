@@ -22,8 +22,8 @@
 /// @author Achim Brandt
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_CLIENT_H
-#define LIB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_CLIENT_H 1
+#ifndef ARANGODB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_CLIENT_H
+#define ARANGODB_SIMPLE_HTTP_CLIENT_SIMPLE_HTTP_CLIENT_H 1
 
 #include "Basics/Common.h"
 
@@ -69,7 +69,7 @@ class SimpleHttpClient {
 
  public:
   void setInterrupted(bool value);
-  
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief invalidates the connection used by the client
   /// this may be called from other objects that are responsible for managing
@@ -121,7 +121,7 @@ class SimpleHttpClient {
 
   SimpleHttpResult* retryRequest(GeneralRequest::RequestType,
                                  std::string const&, char const*, size_t,
-                                 std::map<std::string, std::string> const&);
+                                 std::unordered_map<std::string, std::string> const&);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief make an http request, creating a new HttpResult object
@@ -152,7 +152,7 @@ class SimpleHttpClient {
 
   SimpleHttpResult* request(GeneralRequest::RequestType,
                             std::string const&, char const*, size_t,
-                            std::map<std::string, std::string> const&);
+                            std::unordered_map<std::string, std::string> const&);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief sets username and password
@@ -235,13 +235,13 @@ class SimpleHttpClient {
   /// @brief fetch the version from the server
   //////////////////////////////////////////////////////////////////////////////
 
-  std::string getServerVersion();
+  std::string getServerVersion(int* errorCode = nullptr);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief extract an error message from a response
   //////////////////////////////////////////////////////////////////////////////
 
-  std::string getHttpErrorMessage(SimpleHttpResult*);
+  std::string getHttpErrorMessage(SimpleHttpResult const*, int* errorCode = nullptr);
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -252,7 +252,7 @@ class SimpleHttpClient {
 
   SimpleHttpResult* doRequest(GeneralRequest::RequestType,
                               std::string const&, char const*, size_t,
-                              std::map<std::string, std::string> const&);
+                              std::unordered_map<std::string, std::string> const&);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief initialize the connection
@@ -298,7 +298,7 @@ class SimpleHttpClient {
   void setRequest(GeneralRequest::RequestType method,
                   std::string const& location, char const* body,
                   size_t bodyLength,
-                  std::map<std::string, std::string> const& headerFields);
+                  std::unordered_map<std::string, std::string> const& headerFields);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief process (a part of) the http header, the data is
@@ -433,7 +433,7 @@ class SimpleHttpClient {
   bool _supportDeflate;
 
   // empty map, used for headers
-  static std::map<std::string, std::string> const NO_HEADERS;
+  static std::unordered_map<std::string, std::string> const NO_HEADERS;
 };
 }
 }

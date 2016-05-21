@@ -32,8 +32,6 @@
 using namespace arangodb;
 using namespace arangodb::basics;
 
-int32_t const GeneralRequest::MIN_COMPATIBILITY = 10300L;
-
 std::string GeneralRequest::translateVersion(ProtocolVersion version) {
   switch (version) {
     case ProtocolVersion::VSTREAM_1_0:
@@ -204,40 +202,26 @@ void GeneralRequest::setFullUrl(char const* begin, char const* end) {
   _fullUrl = std::string(begin, end - begin);
 }
 
-void GeneralRequest::addSuffix(std::string const& part) {
-  std::string decoded = StringUtils::urlDecode(part);
-  size_t tmpLength = 0;
-  char* utf8_nfc = TRI_normalize_utf8_to_NFC(
-      TRI_UNKNOWN_MEM_ZONE, decoded.c_str(), decoded.length(), &tmpLength);
-
-  if (utf8_nfc) {
-    _suffix.emplace_back(utf8_nfc);
-    TRI_Free(TRI_UNKNOWN_MEM_ZONE, utf8_nfc);
-  } else {
-    _suffix.emplace_back(decoded);
-  }
+void GeneralRequest::addSuffix(std::string&& part) {
+  _suffix.emplace_back(StringUtils::urlDecode(part));
 }
 
 std::string const& GeneralRequest::header(std::string const& key) const {
-  static std::string EMPTY_STR = "";
-  
   auto it = _headers.find(key);
 
   if (it == _headers.end()) {
-    return EMPTY_STR;
+    return StaticStrings::Empty;
   }
 
   return it->second;
 }
 
 std::string const& GeneralRequest::header(std::string const& key, bool& found) const {
-  static std::string EMPTY_STR = "";
-  
   auto it = _headers.find(key);
 
   if (it == _headers.end()) {
     found = false;
-    return EMPTY_STR;
+    return StaticStrings::Empty;
   }
 
   found = true;
@@ -245,34 +229,36 @@ std::string const& GeneralRequest::header(std::string const& key, bool& found) c
 }
 
 std::string const& GeneralRequest::value(std::string const& key) const {
-  static std::string EMPTY_STR = "";
-  
-  auto it = _values.find(key);
+  if (!_values.empty()) {
+    auto it = _values.find(key);
 
-  if (it == _values.end()) {
-    return EMPTY_STR;
+    if (it != _values.end()) {
+      return it->second;
+    }
   }
 
-  return it->second;
+  return StaticStrings::Empty;
 }
 
 std::string const& GeneralRequest::value(std::string const& key, bool& found) const {
-  static std::string EMPTY_STR = "";
-  
-  auto it = _values.find(key);
+  if (!_values.empty()) {
+    auto it = _values.find(key);
 
-  if (it == _values.end()) {
-    found = false;
-    return EMPTY_STR;
+    if (it != _values.end()) {
+      found = true;
+      return it->second;
+    }
   }
 
-  found = true;
-  return it->second;
+  found = false;
+  return StaticStrings::Empty;
 }
 
 void GeneralRequest::setArrayValue(char* key, size_t length, char const* value) {
-  std::string keyStr(key, length);
-
-  _arrayValues[key].emplace_back(value);
+  _arrayValues[std::string(key, length)].emplace_back(value);
 }
 
+bool GeneralRequest::velocyPackResponse () const {
+  std::string const& result = header(StaticStrings::Accept);
+  return (std::string::npos != result.find(StaticStrings::MimeTypeVPack));
+}

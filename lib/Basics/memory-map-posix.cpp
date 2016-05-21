@@ -56,6 +56,7 @@ int TRI_FlushMMFile(int fileDescriptor, void* startingAddress,
 
   if (res == 0) {
     // msync was successful
+    LOG_TOPIC(TRACE, Logger::MMAP) << "msync succeeded for range " << Logger::RANGE(startingAddress, numOfBytesToFlush) << ", file-descriptor " << fileDescriptor;
     return TRI_ERROR_NO_ERROR;
   }
 
@@ -63,7 +64,7 @@ int TRI_FlushMMFile(int fileDescriptor, void* startingAddress,
     // we have synced a region that was not mapped
 
     // set a special error. ENOMEM (out of memory) is not appropriate
-    LOG(ERR) << "msync failed for range " << startingAddress << " - " << (void*)(((char*)startingAddress) + numOfBytesToFlush);
+    LOG_TOPIC(ERR, Logger::MMAP) << "msync failed for range " << Logger::RANGE(startingAddress, numOfBytesToFlush) << ", file-descriptor " << fileDescriptor;
 
     return TRI_ERROR_ARANGO_MSYNC_FAILED;
   }
@@ -95,7 +96,7 @@ int TRI_MMFile(void* memoryAddress, size_t numOfBytesToInitialize,
 
   if (errno == ENOMEM) {
     LOG_TOPIC(DEBUG, Logger::MMAP) << "out of memory in mmap";
-    
+
     return TRI_ERROR_OUT_OF_MEMORY_MMAP;
   }
 
@@ -141,6 +142,8 @@ int TRI_ProtectMMFile(void* memoryAddress, size_t numOfBytesToProtect,
   int res = mprotect(memoryAddress, numOfBytesToProtect, flags);
 
   if (res == 0) {
+    LOG_TOPIC(TRACE, Logger::MMAP) << "memory-protecting range " << Logger::RANGE(memoryAddress, numOfBytesToProtect) << ", file-descriptor " << fileDescriptor;
+
     return TRI_ERROR_NO_ERROR;
   }
 
@@ -153,17 +156,17 @@ int TRI_ProtectMMFile(void* memoryAddress, size_t numOfBytesToProtect,
 
 int TRI_MMFileAdvise(void* memoryAddress, size_t numOfBytes, int advice) {
 #ifdef __linux__
-  LOG(TRACE) << "madvise " << advice << " for range " << Logger::RANGE(memoryAddress, numOfBytes);
-  
+  LOG_TOPIC(TRACE, Logger::MMAP) << "madvise " << advice << " for range " << Logger::RANGE(memoryAddress, numOfBytes);
+
   int res = madvise(memoryAddress, numOfBytes, advice);
 
   if (res == 0) {
     return TRI_ERROR_NO_ERROR;
-  } 
-    
+  }
+
   char buffer[256];
   char* p = strerror_r(errno, buffer, 256);
-  LOG(ERR) << "madvise " << advice << " for range " << Logger::RANGE(memoryAddress, numOfBytes) << " failed with: " << p << " ";
+  LOG_TOPIC(ERR, Logger::MMAP) << "madvise " << advice << " for range " << Logger::RANGE(memoryAddress, numOfBytes) << " failed with: " << p << " ";
   return TRI_ERROR_INTERNAL;
 #else
   return TRI_ERROR_NO_ERROR;

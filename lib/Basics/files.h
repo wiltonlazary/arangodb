@@ -21,15 +21,14 @@
 /// @author Dr. Frank Celler
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_BASICS_FILES_H
-#define LIB_BASICS_FILES_H 1
+#ifndef ARANGODB_BASICS_FILES_H
+#define ARANGODB_BASICS_FILES_H 1
 
 #ifdef _WIN32
 #include "Basics/win-utils.h"
 #endif
 
 #include "Basics/Common.h"
-#include "Basics/vector.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief returns the size of a file
@@ -85,8 +84,8 @@ int TRI_MTimeFile(char const* path, int64_t* mtime);
 /// @brief creates a directory, recursively
 ////////////////////////////////////////////////////////////////////////////////
 
-bool TRI_CreateRecursiveDirectory(char const* path, long& systemError,
-                                  std::string& systemErrorStr);
+int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
+                                 std::string& systemErrorStr);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief creates a directory
@@ -142,7 +141,7 @@ std::vector<std::string> TRI_FilesDirectory(char const* path);
 /// @brief lists the directory tree including files and directories
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_vector_string_t TRI_FullTreeDirectory(char const* path);
+std::vector<std::string> TRI_FullTreeDirectory(char const* path);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief renames a file

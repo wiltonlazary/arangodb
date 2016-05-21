@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "RestSimpleQueryHandler.h"
+
 #include "Aql/Query.h"
 #include "Aql/QueryRegistry.h"
 #include "Basics/Exceptions.h"
@@ -30,26 +31,30 @@
 #include "Basics/VelocyPackHelper.h"
 #include "Utils/Cursor.h"
 #include "Utils/CursorRepository.h"
-#include "V8Server/ApplicationV8.h"
+#include "Utils/CollectionNameResolver.h"
 
 using namespace arangodb;
 using namespace arangodb::rest;
 
 RestSimpleQueryHandler::RestSimpleQueryHandler(
     HttpRequest* request,
-    std::pair<arangodb::ApplicationV8*, arangodb::aql::QueryRegistry*>* pair)
-    : RestCursorHandler(request, pair) {}
+    arangodb::aql::QueryRegistry* queryRegistry)
+    : RestCursorHandler(request, queryRegistry) {}
 
 HttpHandler::status_t RestSimpleQueryHandler::execute() {
   // extract the sub-request type
   auto const type = _request->requestType();
 
+  std::string const& prefix = _request->requestPath();
   if (type == GeneralRequest::RequestType::PUT) {
-    std::string const& prefix = _request->requestPath();
-
     if (prefix == RestVocbaseBaseHandler::SIMPLE_QUERY_ALL_PATH) {
       // all query
       allDocuments();
+      return status_t(HANDLER_DONE);
+    }
+    if (prefix == RestVocbaseBaseHandler::SIMPLE_QUERY_ALL_KEYS_PATH) {
+      // all-keys query
+      allDocumentKeys();
       return status_t(HANDLER_DONE);
     }
   }
@@ -66,9 +71,8 @@ HttpHandler::status_t RestSimpleQueryHandler::execute() {
 void RestSimpleQueryHandler::allDocuments() {
   try {
     bool parseSuccess = true;
-    VPackOptions options;
     std::shared_ptr<VPackBuilder> parsedBody =
-        parseVelocyPackBody(&options, parseSuccess);
+        parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
 
     if (!parseSuccess) {
       return;
@@ -86,7 +90,7 @@ void RestSimpleQueryHandler::allDocuments() {
 
     if (!collectionName.empty()) {
       auto const* col =
-          TRI_LookupCollectionByNameVocBase(_vocbase, collectionName.c_str());
+          TRI_LookupCollectionByNameVocBase(_vocbase, collectionName);
 
       if (col != nullptr && collectionName.compare(col->_name) != 0) {
         // user has probably passed in a numeric collection id.
@@ -139,6 +143,68 @@ void RestSimpleQueryHandler::allDocuments() {
         data.add("batchSize", batchSize);
       }
     }
+    data.close();
+
+    VPackSlice s = data.slice();
+    // now run the actual query and handle the result
+    processQuery(s);
+  } catch (arangodb::basics::Exception const& ex) {
+    generateError(GeneralResponse::responseCode(ex.code()), ex.code(), ex.what());
+  } catch (std::bad_alloc const&) {
+    generateError(GeneralResponse::ResponseCode::SERVER_ERROR, TRI_ERROR_OUT_OF_MEMORY);
+  } catch (std::exception const& ex) {
+    generateError(GeneralResponse::ResponseCode::SERVER_ERROR, TRI_ERROR_INTERNAL, ex.what());
+  } catch (...) {
+    generateError(GeneralResponse::ResponseCode::SERVER_ERROR, TRI_ERROR_INTERNAL);
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+/// @brief return a cursor with all document keys from the collection
+//////////////////////////////////////////////////////////////////////////////
+
+void RestSimpleQueryHandler::allDocumentKeys() {
+  try {
+    bool parseSuccess = true;
+    std::shared_ptr<VPackBuilder> parsedBody =
+        parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
+
+    if (!parseSuccess) {
+      return;
+    }
+    VPackSlice body = parsedBody.get()->slice();
+
+    VPackSlice const value = body.get("collection");
+
+    if (!value.isString()) {
+      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+                    "expecting string for <collection>");
+      return;
+    }
+    std::string collectionName = value.copyString();
+
+    std::string returnType =
+        arangodb::basics::VelocyPackHelper::getStringValue(body, "type", "");
+
+    std::string aql("FOR doc IN @@collection RETURN ");
+    if (returnType == "key") {
+      aql.append("doc._key");
+    } else if (returnType == "id") {
+      aql.append("doc._id");
+    } else {
+      aql.append(std::string("CONCAT('/_db/") + _vocbase->_name +
+                 "/_api/document/', doc._id)");
+    }
+
+    VPackBuilder data;
+    data.openObject();
+    data.add("query", VPackValue(aql));
+
+    data.add(VPackValue("bindVars"));
+    data.openObject(); // bindVars
+    data.add("@collection", VPackValue(collectionName));
+    data.close(); // bindVars
+
     data.close();
 
     VPackSlice s = data.slice();

@@ -34,6 +34,7 @@
 #include "Basics/VelocyPackHelper.h"
 #include "Import/ImportHelper.h"
 #include "Rest/HttpResponse.h"
+#include "Rest/Version.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
@@ -73,7 +74,7 @@ void V8ClientConnection::init(
   _client->setUserNamePassword("/", _username, _password);
 
   // connect to server and get version number
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
   std::unique_ptr<SimpleHttpResult> result(
       _client->request(GeneralRequest::RequestType::GET,
                        "/_api/version?details=true", nullptr, 0, headerFields));
@@ -85,7 +86,7 @@ void V8ClientConnection::init(
   } else {
     _lastHttpReturnCode = result->getHttpReturnCode();
 
-    if (result->getHttpReturnCode() == (int)GeneralResponse::ResponseCode::OK) {
+    if (result->getHttpReturnCode() == static_cast<int>(GeneralResponse::ResponseCode::OK)) {
       try {
         std::shared_ptr<VPackBuilder> parsedBody = result->getBodyVelocyPack();
         VPackSlice const body = parsedBody->slice();
@@ -103,7 +104,17 @@ void V8ClientConnection::init(
               _mode = mode.copyString();
             }
           }
+          std::string const versionString =
+              VelocyPackHelper::getStringValue(body, "version", "");
+          std::pair<int, int> version = rest::Version::parseVersionString(versionString);
+          if (version.first < 3) {
+            // major version of server is too low
+            _client->disconnect();
+            _lastErrorMessage = "Server version number ('" + versionString + "') is too low. Expecting 3.0 or higher";
+            return;
+          }
         }
+
       } catch (...) {
         // Ignore all parse errors
       }
@@ -165,7 +176,7 @@ void V8ClientConnection::reconnect(ClientFeature* client) {
   }
 
   if (isConnected() &&
-      _lastHttpReturnCode == (int)GeneralResponse::ResponseCode::OK) {
+      _lastHttpReturnCode == static_cast<int>(GeneralResponse::ResponseCode::OK)) {
     LOG(INFO) << "Connected to ArangoDB "
               << "'" << endpointSpecification() << "', "
               << "version " << _version << " [" << _mode << "], "
@@ -204,11 +215,11 @@ static std::unordered_map<void*, v8::Persistent<v8::External>> Connections;
 static v8::Persistent<v8::ObjectTemplate> ConnectionTempl;
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief copies v8::Object to std::map<std::string, std::string>
+/// @brief copies v8::Object to std::unordered_map<std::string, std::string>
 ////////////////////////////////////////////////////////////////////////////////
 
 static void ObjectToMap(v8::Isolate* isolate,
-                        std::map<std::string, std::string>& myMap,
+                        std::unordered_map<std::string, std::string>& myMap,
                         v8::Handle<v8::Value> val) {
   v8::Local<v8::Object> v8Headers = val.As<v8::Object>();
 
@@ -216,7 +227,7 @@ static void ObjectToMap(v8::Isolate* isolate,
     v8::Local<v8::Array> const props = v8Headers->GetPropertyNames();
 
     for (uint32_t i = 0; i < props->Length(); i++) {
-      v8::Local<v8::Value> key = props->Get(v8::Integer::New(isolate, i));
+      v8::Local<v8::Value> key = props->Get(i);
       myMap.emplace(TRI_ObjectToString(key),
                     TRI_ObjectToString(v8Headers->Get(key)));
     }
@@ -298,7 +309,7 @@ static void ClientConnection_ConstructorCallback(
   v8::HandleScope scope(isolate);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   std::unique_ptr<GeneralClientConnection> connection;
 
@@ -350,7 +361,7 @@ static void ClientConnection_reconnect(
       TRI_UnwrapClass<V8ClientConnection>(args.Holder(), WRAP_TYPE_CONNECTION);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   if (v8connection == nullptr || client == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("connection class corrupted");
@@ -375,10 +386,10 @@ static void ClientConnection_reconnect(
   std::string password;
 
   if (args.Length() < 4) {
-    ConsoleFeature* console = dynamic_cast<ConsoleFeature*>(
-        ApplicationServer::lookupFeature("Console"));
+    ConsoleFeature* console = 
+        ApplicationServer::getFeature<ConsoleFeature>("Console");
 
-    if (console == nullptr || !console->isEnabled()) {
+    if (!console->isEnabled()) {
       std::cout << "Please specify a password: " << std::flush;
       getline(std::cin, password);
     } else {
@@ -429,7 +440,7 @@ static void ClientConnection_httpGetAny(
 
   TRI_Utf8ValueNFC url(TRI_UNKNOWN_MEM_ZONE, args[0]);
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 1) {
     ObjectToMap(isolate, headerFields, args[1]);
@@ -481,7 +492,7 @@ static void ClientConnection_httpHeadAny(
   TRI_Utf8ValueNFC url(TRI_UNKNOWN_MEM_ZONE, args[0]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 1) {
     ObjectToMap(isolate, headerFields, args[1]);
@@ -526,20 +537,26 @@ static void ClientConnection_httpDeleteAny(
   }
 
   // check params
-  if (args.Length() < 1 || args.Length() > 2 || !args[0]->IsString()) {
-    TRI_V8_THROW_EXCEPTION_USAGE("delete(<url>[, <headers>])");
+  if (args.Length() < 1 || args.Length() > 3 || !args[0]->IsString()) {
+    TRI_V8_THROW_EXCEPTION_USAGE("delete(<url>[, <headers>[, <body>]])");
   }
 
   TRI_Utf8ValueNFC url(TRI_UNKNOWN_MEM_ZONE, args[0]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 1) {
     ObjectToMap(isolate, headerFields, args[1]);
   }
 
-  TRI_V8_RETURN(v8connection->deleteData(isolate, *url, headerFields, raw));
+  if (args.Length() > 2) {
+    TRI_Utf8ValueNFC bodyUtf(TRI_UNKNOWN_MEM_ZONE, args[2]);
+    std::string body = *bodyUtf;
+    TRI_V8_RETURN(v8connection->deleteData(isolate, *url, headerFields, raw, body));
+  }
+
+  TRI_V8_RETURN(v8connection->deleteData(isolate, *url, headerFields, raw, std::string()));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -587,7 +604,7 @@ static void ClientConnection_httpOptionsAny(
   v8::String::Utf8Value body(args[1]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 2) {
     ObjectToMap(isolate, headerFields, args[2]);
@@ -642,7 +659,7 @@ static void ClientConnection_httpPostAny(
   v8::String::Utf8Value body(args[1]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 2) {
     ObjectToMap(isolate, headerFields, args[2]);
@@ -697,7 +714,7 @@ static void ClientConnection_httpPutAny(
   v8::String::Utf8Value body(args[1]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 2) {
     ObjectToMap(isolate, headerFields, args[2]);
@@ -751,7 +768,7 @@ static void ClientConnection_httpPatchAny(
   v8::String::Utf8Value body(args[1]);
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   if (args.Length() > 2) {
     ObjectToMap(isolate, headerFields, args[2]);
@@ -820,7 +837,7 @@ static void ClientConnection_httpSendFile(
   v8::TryCatch tryCatch;
 
   // check header fields
-  std::map<std::string, std::string> headerFields;
+  std::unordered_map<std::string, std::string> headerFields;
 
   v8::Local<v8::Value> result =
       v8connection->postData(isolate, *url, body, headerFields);
@@ -847,7 +864,7 @@ static void ClientConnection_getEndpoint(
       TRI_UnwrapClass<V8ClientConnection>(args.Holder(), WRAP_TYPE_CONNECTION);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   if (v8connection == nullptr || client == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("connection class corrupted");
@@ -924,7 +941,7 @@ static void ClientConnection_importCsv(
       TRI_UnwrapClass<V8ClientConnection>(args.Holder(), WRAP_TYPE_CONNECTION);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   std::unique_ptr<SimpleHttpClient> httpClient =
       client->createHttpClient(v8connection->endpointSpecification());
@@ -993,7 +1010,7 @@ static void ClientConnection_importJson(
       TRI_UnwrapClass<V8ClientConnection>(args.Holder(), WRAP_TYPE_CONNECTION);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   std::unique_ptr<SimpleHttpClient> httpClient =
       client->createHttpClient(v8connection->endpointSpecification());
@@ -1102,9 +1119,8 @@ static void ClientConnection_isConnected(
 
   if (v8connection->isConnected()) {
     TRI_V8_RETURN_TRUE();
-  } else {
-    TRI_V8_RETURN_FALSE();
-  }
+  } 
+  TRI_V8_RETURN_FALSE();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1226,7 +1242,7 @@ static void ClientConnection_setDatabaseName(
       TRI_UnwrapClass<V8ClientConnection>(args.Holder(), WRAP_TYPE_CONNECTION);
 
   v8::Local<v8::External> wrap = v8::Local<v8::External>::Cast(args.Data());
-  ClientFeature* client = (ClientFeature*)(wrap->Value());
+  ClientFeature* client = static_cast<ClientFeature*>(wrap->Value());
 
   if (v8connection == nullptr || client == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("connection class corrupted");
@@ -1245,7 +1261,7 @@ static void ClientConnection_setDatabaseName(
 
 v8::Handle<v8::Value> V8ClientConnection::getData(
     v8::Isolate* isolate, std::string const& location,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::GET, location,
                           "", headerFields);
@@ -1256,7 +1272,7 @@ v8::Handle<v8::Value> V8ClientConnection::getData(
 
 v8::Handle<v8::Value> V8ClientConnection::headData(
     v8::Isolate* isolate, std::string const& location,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::HEAD, location,
                           "", headerFields);
@@ -1267,18 +1283,19 @@ v8::Handle<v8::Value> V8ClientConnection::headData(
 
 v8::Handle<v8::Value> V8ClientConnection::deleteData(
     v8::Isolate* isolate, std::string const& location,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw,
+    std::string const& body) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::DELETE_REQ, location,
-                          "", headerFields);
+                          body, headerFields);
   }
-  return requestData(isolate, GeneralRequest::RequestType::DELETE_REQ, location, "",
+  return requestData(isolate, GeneralRequest::RequestType::DELETE_REQ, location, body,
                      headerFields);
 }
 
 v8::Handle<v8::Value> V8ClientConnection::optionsData(
     v8::Isolate* isolate, std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::OPTIONS,
                           location, body, headerFields);
@@ -1289,7 +1306,7 @@ v8::Handle<v8::Value> V8ClientConnection::optionsData(
 
 v8::Handle<v8::Value> V8ClientConnection::postData(
     v8::Isolate* isolate, std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::POST, location,
                           body, headerFields);
@@ -1300,7 +1317,7 @@ v8::Handle<v8::Value> V8ClientConnection::postData(
 
 v8::Handle<v8::Value> V8ClientConnection::putData(
     v8::Isolate* isolate, std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::PUT, location,
                           body, headerFields);
@@ -1311,7 +1328,7 @@ v8::Handle<v8::Value> V8ClientConnection::putData(
 
 v8::Handle<v8::Value> V8ClientConnection::patchData(
     v8::Isolate* isolate, std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields, bool raw) {
+    std::unordered_map<std::string, std::string> const& headerFields, bool raw) {
   if (raw) {
     return requestDataRaw(isolate, GeneralRequest::RequestType::PATCH, location,
                           body, headerFields);
@@ -1323,7 +1340,7 @@ v8::Handle<v8::Value> V8ClientConnection::patchData(
 v8::Handle<v8::Value> V8ClientConnection::requestData(
     v8::Isolate* isolate, GeneralRequest::RequestType method,
     std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields) {
+    std::unordered_map<std::string, std::string> const& headerFields) {
   _lastErrorMessage = "";
   _lastHttpReturnCode = 0;
 
@@ -1341,8 +1358,7 @@ v8::Handle<v8::Value> V8ClientConnection::requestData(
 v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
     v8::Isolate* isolate, GeneralRequest::RequestType method,
     std::string const& location, std::string const& body,
-    std::map<std::string, std::string> const& headerFields) {
-  v8::EscapableHandleScope scope(isolate);
+    std::unordered_map<std::string, std::string> const& headerFields) {
 
   _lastErrorMessage = "";
   _lastHttpReturnCode = 0;
@@ -1354,6 +1370,8 @@ v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
     _httpResult.reset(_client->request(method, location, body.c_str(),
                                        body.size(), headerFields));
   }
+    
+  v8::Handle<v8::Object> result = v8::Object::New(isolate);
 
   if (!_httpResult->isComplete()) {
     // not complete
@@ -1363,13 +1381,12 @@ v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
       _lastErrorMessage = "Unknown error";
     }
 
-    _lastHttpReturnCode = (int)GeneralResponse::ResponseCode::SERVER_ERROR;
+    _lastHttpReturnCode = static_cast<int>(GeneralResponse::ResponseCode::SERVER_ERROR);
 
-    v8::Handle<v8::Object> result = v8::Object::New(isolate);
     result->ForceSet(
         TRI_V8_ASCII_STRING("code"),
         v8::Integer::New(isolate,
-                         (int)GeneralResponse::ResponseCode::SERVER_ERROR));
+                         static_cast<int>(GeneralResponse::ResponseCode::SERVER_ERROR)));
 
     int errorNumber = 0;
 
@@ -1396,7 +1413,7 @@ v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
     result->ForceSet(TRI_V8_ASCII_STRING("errorMessage"),
                      TRI_V8_STD_STRING(_lastErrorMessage));
 
-    return scope.Escape<v8::Value>(result);
+    return result;
   }
 
   // complete
@@ -1404,8 +1421,6 @@ v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
   _lastHttpReturnCode = _httpResult->getHttpReturnCode();
 
   // create raw response
-  v8::Handle<v8::Object> result = v8::Object::New(isolate);
-
   result->ForceSet(TRI_V8_ASCII_STRING("code"),
                    v8::Integer::New(isolate, _lastHttpReturnCode));
 
@@ -1445,14 +1460,12 @@ v8::Handle<v8::Value> V8ClientConnection::requestDataRaw(
   result->ForceSet(TRI_V8_ASCII_STRING("headers"), headers);
 
   // and returns
-  return scope.Escape<v8::Value>(result);
+  return result;
 }
 
 v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
-  v8::EscapableHandleScope scope(isolate);
-
   if (_httpResult.get() == nullptr) {
-    return scope.Escape<v8::Value>(v8::Undefined(isolate));
+    return v8::Undefined(isolate);
   }
 
   // not complete
@@ -1463,7 +1476,7 @@ v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
       _lastErrorMessage = "Unknown error";
     }
 
-    _lastHttpReturnCode = (int)GeneralResponse::ResponseCode::SERVER_ERROR;
+    _lastHttpReturnCode = static_cast<int>(GeneralResponse::ResponseCode::SERVER_ERROR);
 
     v8::Local<v8::Object> result = v8::Object::New(isolate);
     result->ForceSet(TRI_V8_ASCII_STRING("error"),
@@ -1471,7 +1484,7 @@ v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
     result->ForceSet(
         TRI_V8_ASCII_STRING("code"),
         v8::Integer::New(isolate,
-                         (int)GeneralResponse::ResponseCode::SERVER_ERROR));
+                         static_cast<int>(GeneralResponse::ResponseCode::SERVER_ERROR)));
 
     int errorNumber = 0;
 
@@ -1498,7 +1511,7 @@ v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
     result->ForceSet(TRI_V8_ASCII_STRING("errorMessage"),
                      TRI_V8_STD_STRING(_lastErrorMessage));
 
-    return scope.Escape<v8::Value>(result);
+    return result;
   }
 
   // complete
@@ -1511,12 +1524,12 @@ v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
     isolate->GetCurrentContext()->Global();
 
     if (_httpResult->isJson()) {
-      return scope.Escape<v8::Value>(
-          TRI_FromJsonString(isolate, sb.c_str(), nullptr));
+      // TODO: check if we can use the VPack parser here...
+      return TRI_FromJsonString(isolate, sb.c_str(), nullptr);
     }
 
     // return body as string
-    return scope.Escape<v8::Value>(TRI_V8_STD_STRING(sb));
+    return TRI_V8_STD_STRING(sb);
   }
 
   // no body
@@ -1540,7 +1553,7 @@ v8::Handle<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate) {
                      v8::Boolean::New(isolate, false));
   }
 
-  return scope.Escape<v8::Value>(result);
+  return result;
 }
 
 void V8ClientConnection::initServer(v8::Isolate* isolate,

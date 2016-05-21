@@ -6,6 +6,10 @@
   float: right;
 }
 
+%font-family {
+  font-family: 'Roboto', sans-serif !important;
+}
+
 %clear-float {
   &:after {
     clear: both;
@@ -21,11 +25,62 @@
   cursor: pointer;
 }
 
+%animated {
+  -moz-transition: all .2s ease-in;
+  -o-transition: all .2s ease-in;
+  -webkit-transition: all .2s ease-in;
+  transition: all .2s ease-in;
+}
+
+%flat-select {
+  -webkit-appearance: none;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='50px' height='50px'><polyline points='46.139,15.518 25.166,36.49 4.193,15.519'/></svg>");
+  background-color: $c-login-grey;
+  background-position: right 10px top 12px;
+  background-repeat: no-repeat;
+  background-size: 16px 16px;
+  border: 0;
+  -webkit-border-radius: 2px;
+  border-radius: 2px;
+  color: $c-black;
+  font-size: 14px;
+  font-weight: 400;
+  height: 40px;
+  line-height: initial;
+  outline: 0;
+  padding: 12px;
+  text-align: center;
+  -moz-transition: .3s ease all;
+  -ms-transition: .3s ease all;
+  -o-transition: .3s ease all;
+  -webkit-transition: .3s ease all;
+  transition: .3s ease all;
+  width: 100%;
+
+  &:disabled {
+    opacity: .5;
+  }
+
+  &:focus,
+  &:active {
+    border: 0;
+    outline: 0;
+  }
+}
+
+%noselect {
+  -webkit-touch-callout: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 %fixedbar {
-  background-color: $c-lightgreen-2-transp-bg;
+  //background-color: $c-lightgreen-2-transp-bg;
   color: $c-white;
   left: 0;
-  position: fixed;
   right: 0;
   width: 100%;
   z-index: 1000;
@@ -64,6 +119,15 @@
   &:hover,
   &:focus {
     background-color: $c-positive-hover;
+  }
+}
+
+%info {
+  background-color: $c-info;
+
+  &:hover,
+  &:focus {
+    background-color: $c-info-hover;
   }
 }
 
@@ -235,16 +299,16 @@
 }
 
 %inputs {
-  @include border-radius(3px);
+  @include border-radius(4px);
   background-color: $c-white !important;
-  border: 1px solid $c-content-border;
+  border: 2px solid $c-content-border;
   box-shadow: none;
   outline: none;
   outline-color: $c-transp;
   outline-style: none;
 
   &:focus {
-    border-color: $c-dark-grey;
+    border-color: $c-positive;
     box-shadow: none;
     outline: none;
     outline-color: $c-transp;

@@ -23,20 +23,25 @@
 
 #include "Basics/Common.h"
 
+#include <thread>
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief memrchr
 ////////////////////////////////////////////////////////////////////////////////
 
 #ifdef TRI_MISSING_MEMRCHR
 
-void* memrchr(const void* block, int c, size_t size) {
-  const unsigned char* p = static_cast<const unsigned char*>(block);
-
+void* memrchr(void const* block, int c, size_t size) {
   if (size) {
-    for (p += size - 1; size; p--, size--)
-      if (*p == c) return (void*)p;
+    unsigned char const* p = static_cast<unsigned char const*>(block);
+
+    for (p += size - 1; size; p--, size--) {
+      if (*p == c) {
+        return (void*)p;
+      }
+    }
   }
-  return NULL;
+  return nullptr;
 }
 
 #endif
@@ -72,19 +77,16 @@ int gettimeofday(struct timeval* tv, void* tz) {
 static int const line_size = 256;
 
 ssize_t getline(char** lineptr, size_t* n, FILE* stream) {
-  size_t indx = 0;
-  int c;
-
   // sanity checks
-  if (lineptr == NULL || n == NULL || stream == NULL) {
+  if (lineptr == nullptr || n == nullptr || stream == nullptr) {
     return -1;
   }
 
   // allocate the line the first time
-  if (*lineptr == NULL) {
+  if (*lineptr == nullptr) {
     *lineptr = (char*)TRI_SystemAllocate(line_size, false);
 
-    if (*lineptr == NULL) {
+    if (*lineptr == nullptr) {
       return -1;
     }
 
@@ -94,12 +96,14 @@ ssize_t getline(char** lineptr, size_t* n, FILE* stream) {
   // clear the line
   memset(*lineptr, '\0', *n);
 
+  size_t indx = 0;
+  int c;
   while ((c = getc(stream)) != EOF) {
     // check if more memory is needed
     if (indx >= *n) {
       *lineptr = (char*)realloc(*lineptr, *n + line_size);
 
-      if (*lineptr == NULL) {
+      if (*lineptr == nullptr) {
         return -1;
       }
 
@@ -139,11 +143,9 @@ void TRI_localtime(time_t tt, struct tm* tb) {
 
 #else
 
-  struct tm* tp;
+  struct tm* tp = localtime(&tt);
 
-  tp = localtime(&tt);
-
-  if (tp != NULL) {
+  if (tp != nullptr) {
     memcpy(tb, tp, sizeof(struct tm));
   }
 
@@ -168,11 +170,9 @@ void TRI_gmtime(time_t tt, struct tm* tb) {
 
 #else
 
-  struct tm* tp;
+  struct tm* tp = gmtime(&tt);
 
-  tp = gmtime(&tt);
-
-  if (tp != NULL) {
+  if (tp != nullptr) {
     memcpy(tb, tp, sizeof(struct tm));
   }
 
@@ -193,6 +193,20 @@ double TRI_microtime() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief return the current time as string in format "YYYY-MM-DDTHH:MM:SSZ"
+////////////////////////////////////////////////////////////////////////////////
+
+std::string TRI_timeString() {
+  time_t tt = time(0);
+  struct tm tb;
+  TRI_gmtime(tt, &tb);
+  char buffer[32];
+  size_t len = strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tb);
+
+  return std::string(buffer, len);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief number of processors or 0
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -204,12 +218,13 @@ size_t TRI_numberProcessors() {
   if (n < 0) {
     n = 0;
   }
-
-  return n;
-
-#else
-
-  return 0;
+  
+  if (n > 0) {
+    return n;
+  }
 
 #endif
+
+  return static_cast<size_t>(std::thread::hardware_concurrency());
 }
+

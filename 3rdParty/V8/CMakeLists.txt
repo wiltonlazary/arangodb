@@ -11,7 +11,7 @@ if (POLICY CMP0048)
 endif ()
 
 project(V8)
-set(V8_VERSION 4.9.391)
+set(V8_VERSION 5.0.71.39)
 
 # create target directory
 
@@ -61,14 +61,22 @@ list(APPEND V8_GYP_ARGS
 ## ICU EXPORTS
 ################################################################################
 
-set(ICU_VERSION
-  "54.1"
+set(ICU_COMPACT_VERSION
+  "54"
   CACHE INTERNAL
-  "ICU: Version"
+  "ICU: compact Version"
 )
 
+set(ICU_VERSION
+  "${ICU_COMPACT_VERSION}.1"
+  CACHE INTERNAL
+  "ICU: Version"
+  )
+
+set(ICU_BASEDIR ${V8_DIR}/third_party/icu/source)
+
 set(ICU_INCLUDE_DIR
-  ${V8_DIR}/third_party/icu/source/common;${V8_DIR}/third_party/icu/source/i18n;${V8_DIR}/third_party/icu/source/io
+  ${ICU_BASEDIR}/common;${ICU_BASEDIR}/i18n;${ICU_BASEDIR}/io
   CACHE INTERNAL
   "ICU: include path"
   FORCE
@@ -352,9 +360,14 @@ else ()
 
   option(USE_DEBUG_V8 "compile V8 in DEBUG mode" OFF)
 
-  set(V8_CFLAGS   "")
-  set(V8_CXXFLAGS "")
-  set(V8_LDFLAGS "")
+  set(V8_CFLAGS   "$ENV{V8_CFLAGS}")
+  set(V8_CXXFLAGS "$ENV{V8_CXXFLAGS}")
+  set(V8_LDFLAGS  "$ENV{V8_LDFLAGS}")
+
+  if (CMAKE_COMPILER_IS_GNUCC)
+    set(V8_CFLAGS   "${V8_CFLAGS} -fno-delete-null-pointer-checks")
+    set(V8_CXXFLAGS "${V8_CXXFLAGS} -fno-delete-null-pointer-checks")
+  endif ()
 
   if (USE_DEBUG_V8)
     set(V8_TARGET_ARCH "${V8_PROC_ARCH}.debug")
@@ -449,3 +462,18 @@ else ()
   set(LINK_DIRECTORIES "${LINK_DIRECTORIES}" PARENT_SCOPE)
 endif()
 
+if (WIN32)
+  set(ICU_DT "${ICU_BASEDIR}/data/in/icudtl.dat")
+  set(ICU_DT_DEST "icudt${ICU_COMPACT_VERSION}l.dat")
+  # other platforms link the file into the binary
+  install(FILES ${ICU_DT}
+    DESTINATION "share/arangodb/"
+    RENAME ${ICU_DT_DEST})
+  install(FILES ${ICU_DT}
+    DESTINATION "bin/share/arangodb/"
+    RENAME ${ICU_DT_DEST})
+else()
+  add_custom_target(nonthinV8
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../Installation/archive-de-thinner.sh ${V8_REL_TARGET_PATH}
+    COMMENT de-thins V8 .a files)
+endif()

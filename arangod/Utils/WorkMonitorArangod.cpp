@@ -28,10 +28,12 @@
 #include <velocypack/velocypack-aliases.h>
 
 #include "Aql/QueryList.h"
+#include "Basics/StaticStrings.h"
 #include "Basics/StringBuffer.h"
 #include "HttpServer/HttpHandler.h"
 #include "Logger/Logger.h"
 #include "Scheduler/Scheduler.h"
+#include "Scheduler/SchedulerFeature.h"
 #include "Scheduler/Task.h"
 #include "VocBase/vocbase.h"
 
@@ -161,21 +163,20 @@ void WorkMonitor::vpackHandler(VPackBuilder* b, WorkDescription* desc) {
 ////////////////////////////////////////////////////////////////////////////////
 
 void WorkMonitor::sendWorkOverview(uint64_t taskId, std::string const& data) {
-  auto response = std::make_unique<HttpResponse>(GeneralResponse::ResponseCode::OK,
-                                                 GeneralRequest::MIN_COMPATIBILITY);
+  auto response = std::make_unique<HttpResponse>(GeneralResponse::ResponseCode::OK);
 
-  response->setContentType("application/json; charset=utf-8");
+  response->setContentType(HttpResponse::CONTENT_TYPE_JSON);
   TRI_AppendString2StringBuffer(response->body().stringBuffer(), data.c_str(),
                                 data.length());
 
   auto answer = std::make_unique<TaskData>();
 
   answer->_taskId = taskId;
-  answer->_loop = Scheduler::SCHEDULER->lookupLoopById(taskId);
+  answer->_loop = SchedulerFeature::SCHEDULER->lookupLoopById(taskId);
   answer->_type = TaskData::TASK_DATA_RESPONSE;
   answer->_response.reset(response.release());
 
-  Scheduler::SCHEDULER->signalTask(answer);
+  SchedulerFeature::SCHEDULER->signalTask(answer);
 }
 
 HandlerWorkStack::HandlerWorkStack(HttpHandler* handler) : _handler(handler) {

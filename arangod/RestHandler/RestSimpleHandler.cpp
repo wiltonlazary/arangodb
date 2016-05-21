@@ -27,8 +27,10 @@
 #include "Basics/Exceptions.h"
 #include "Basics/MutexLocker.h"
 #include "Basics/ScopeGuard.h"
+#include "Basics/StaticStrings.h"
 #include "Basics/VelocyPackHelper.h"
 #include "Basics/VPackStringBufferAdapter.h"
+#include "Utils/SingleCollectionTransaction.h"
 #include "VocBase/Traverser.h"
 
 #include <velocypack/Builder.h>
@@ -41,11 +43,9 @@ using namespace arangodb;
 using namespace arangodb::rest;
 
 RestSimpleHandler::RestSimpleHandler(
-    HttpRequest* request,
-    std::pair<arangodb::ApplicationV8*, arangodb::aql::QueryRegistry*>* pair)
+    HttpRequest* request, arangodb::aql::QueryRegistry* queryRegistry)
     : RestVocbaseBaseHandler(request),
-      _applicationV8(pair->first),
-      _queryRegistry(pair->second),
+      _queryRegistry(queryRegistry),
       _queryLock(),
       _query(nullptr),
       _queryKilled(false) {}
@@ -56,9 +56,8 @@ HttpHandler::status_t RestSimpleHandler::execute() {
 
   if (type == GeneralRequest::RequestType::PUT) {
     bool parsingSuccess = true;
-    VPackOptions options;
     std::shared_ptr<VPackBuilder> parsedBody =
-        parseVelocyPackBody(&options, parsingSuccess);
+        parseVelocyPackBody(&VPackOptions::Defaults, parsingSuccess);
 
     if (!parsingSuccess) {
       return status_t(HANDLER_DONE);
@@ -158,15 +157,11 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
 
       collectionName = value.copyString();
 
-      if (!collectionName.empty()) {
-        auto const* col =
-            TRI_LookupCollectionByNameVocBase(_vocbase, collectionName.c_str());
-
-        if (col != nullptr && collectionName.compare(col->_name) != 0) {
-          // user has probably passed in a numeric collection id.
-          // translate it into a "real" collection name
-          collectionName = std::string(col->_name);
-        }
+      if (!collectionName.empty() && collectionName[0] >= '0' &&
+          collectionName[0] <= '9') {
+        // If we have a numeric name we probably have to translate it.
+        CollectionNameResolver resolver(_vocbase);
+        collectionName = resolver.getCollectionName(collectionName);
       }
     }
 
@@ -179,6 +174,8 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
     }
 
     bool waitForSync = false;
+    bool silent = true;
+    bool returnOld = false;
     {
       VPackSlice const value = slice.get("options");
       if (value.isObject()) {
@@ -186,26 +183,39 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
         if (wfs.isBool()) {
           waitForSync = wfs.getBool();
         }
+        wfs = value.get("silent");
+        if (wfs.isBool()) {
+          silent = wfs.getBool();
+        }
+        wfs = value.get("returnOld");
+        if (wfs.isBool()) {
+          returnOld = wfs.getBool();
+        }
       }
     }
 
-    VPackBuilder bindVars;
-    bindVars.openObject();
-    bindVars.add("@collection", VPackValue(collectionName));
-    bindVars.add("keys", keys);
-    bindVars.close();
-    VPackSlice varsSlice = bindVars.slice();
+    auto bindVars = std::make_shared<VPackBuilder>();
+    bindVars->openObject();
+    bindVars->add("@collection", VPackValue(collectionName));
+    bindVars->add("keys", keys);
+    bindVars->close();
 
     std::string aql(
         "FOR key IN @keys REMOVE key IN @@collection OPTIONS { ignoreErrors: "
         "true, waitForSync: ");
     aql.append(waitForSync ? "true" : "false");
     aql.append(" }");
+    if (!silent) {
+      if (returnOld) {
+        aql.append(" RETURN OLD");
+      } else {
+        aql.append(" RETURN {_id: OLD._id, _key: OLD._key, _rev: OLD._rev}");
+      }
+    }
 
     arangodb::aql::Query query(
-        _applicationV8, false, _vocbase, aql.c_str(), aql.size(),
-        arangodb::basics::VelocyPackHelper::velocyPackToJson(varsSlice),
-        nullptr, arangodb::aql::PART_MAIN);
+        false, _vocbase, aql.c_str(), aql.size(),
+        bindVars, nullptr, arangodb::aql::PART_MAIN);
 
     registerQuery(&query);
     auto queryResult = query.execute(_queryRegistry);
@@ -221,9 +231,6 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
     }
 
     {
-      createResponse(GeneralResponse::ResponseCode::OK);
-      _response->setContentType("application/json; charset=utf-8");
-
       size_t ignored = 0;
       size_t removed = 0;
       if (queryResult.stats != nullptr) {
@@ -248,14 +255,13 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
       result.add("removed", VPackValue(removed));
       result.add("ignored", VPackValue(ignored));
       result.add("error", VPackValue(false));
-      result.add("code", VPackValue((int)_response->responseCode()));
+      result.add("code", VPackValue(static_cast<int>(GeneralResponse::ResponseCode::OK)));
+      if (!silent) {
+        result.add("old", queryResult.result->slice());
+      }
       result.close();
-      VPackSlice s = result.slice();
 
-      arangodb::basics::VPackStringBufferAdapter buffer(
-          _response->body().stringBuffer());
-      VPackDumper dumper(&buffer);
-      dumper.dump(s);
+      generateResult(GeneralResponse::ResponseCode::OK, result.slice(), queryResult.context);
     }
   } catch (arangodb::basics::Exception const& ex) {
     unregisterQuery();
@@ -286,7 +292,7 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
 
       if (!collectionName.empty()) {
         auto const* col =
-            TRI_LookupCollectionByNameVocBase(_vocbase, collectionName.c_str());
+            TRI_LookupCollectionByNameVocBase(_vocbase, collectionName);
 
         if (col != nullptr && collectionName.compare(col->_name) != 0) {
           // user has probably passed in a numeric collection id.
@@ -304,25 +310,22 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
       return;
     }
 
-    VPackBuilder bindVars;
-    bindVars.add(VPackValue(VPackValueType::Object));
-    bindVars.add("@collection", VPackValue(collectionName));
+    auto bindVars = std::make_shared<VPackBuilder>();
+    bindVars->openObject();
+    bindVars->add("@collection", VPackValue(collectionName));
     VPackBuilder strippedBuilder =
         arangodb::aql::BindParameters::StripCollectionNames(
             keys, collectionName.c_str());
-    VPackSlice stripped = strippedBuilder.slice();
 
-    bindVars.add("keys", stripped);
-    bindVars.close();
-    VPackSlice varsSlice = bindVars.slice();
+    bindVars->add("keys", strippedBuilder.slice());
+    bindVars->close();
 
     std::string const aql(
         "FOR doc IN @@collection FILTER doc._key IN @keys RETURN doc");
 
     arangodb::aql::Query query(
-        _applicationV8, false, _vocbase, aql.c_str(), aql.size(),
-        arangodb::basics::VelocyPackHelper::velocyPackToJson(varsSlice),
-        nullptr, arangodb::aql::PART_MAIN);
+        false, _vocbase, aql.c_str(), aql.size(),
+        bindVars, nullptr, arangodb::aql::PART_MAIN);
 
     registerQuery(&query);
     auto queryResult = query.execute(_queryRegistry);
@@ -338,18 +341,18 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
     }
 
     size_t resultSize = 10;
-    if (TRI_IsArrayJson(queryResult.json)) {
-      resultSize = TRI_LengthArrayJson(queryResult.json);
+    VPackSlice qResult = queryResult.result->slice();
+    if (qResult.isArray()) {
+      resultSize = static_cast<size_t>(qResult.length());
     }
 
+    VPackBuilder result;
     {
+      VPackObjectBuilder guard(&result);
       createResponse(GeneralResponse::ResponseCode::OK);
-      _response->setContentType("application/json; charset=utf-8");
+      _response->setContentType(HttpResponse::CONTENT_TYPE_JSON);
 
-      arangodb::basics::Json result(arangodb::basics::Json::Object, 3);
-
-      if (TRI_IsArrayJson(queryResult.json)) {
-        size_t const n = TRI_LengthArrayJson(queryResult.json);
+      if (qResult.isArray()) {
 
         // This is for internal use of AQL Traverser only.
         // Should not be documented
@@ -364,8 +367,7 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
                                              }};
 
           VPackValueLength length = postFilter.length();
-
-          expressions.reserve(length);
+          expressions.reserve(static_cast<size_t>(length));
 
           for (auto const& it : VPackArrayIterator(postFilter)) {
             if (it.isObject()) {
@@ -375,64 +377,68 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
               expression.release();
             }
           }
+          
+          result.add(VPackValue("documents"));
+          std::vector<std::string> filteredIds;
 
-          arangodb::basics::Json filteredDocuments(
-              arangodb::basics::Json::Array, n);
-          arangodb::basics::Json filteredIds(arangodb::basics::Json::Array);
+          // just needed to build the result
+          SingleCollectionTransaction trx(StandaloneTransactionContext::Create(_vocbase), collectionName, TRI_TRANSACTION_READ);
 
-          for (size_t i = 0; i < n; ++i) {
-            TRI_json_t const* tmp = TRI_LookupArrayJson(queryResult.json, i);
-            if (tmp != nullptr) {
+          result.openArray();
+          for (auto const& tmp : VPackArrayIterator(qResult)) {
+            if (!tmp.isNone()) {
               bool add = true;
               for (auto& e : expressions) {
-                if (!e->isEdgeAccess && !e->matchesCheck(tmp)) {
+                if (!e->isEdgeAccess && !e->matchesCheck(&trx, tmp)) {
                   add = false;
-                  try {
-                    std::string _id =
-                        arangodb::basics::JsonHelper::checkAndGetStringValue(
-                            tmp, "_id");
-                    arangodb::basics::Json tmp(_id);
-                    filteredIds.add(tmp.steal());
-                  } catch (...) {
-                    // This should never occur.
-                  }
+                  std::string _id = trx.extractIdString(tmp);
+                  filteredIds.emplace_back(_id);
                   break;
                 }
               }
               if (add) {
-                filteredDocuments.add(TRI_CopyJson(TRI_UNKNOWN_MEM_ZONE, tmp));
+                result.add(tmp);
               }
             }
           }
+          result.close();
 
-          result.set("documents", filteredDocuments);
-          result.set("filtered", filteredIds);
+          result.add(VPackValue("filtered"));
+          result.openArray();
+          for (auto const& it : filteredIds) {
+            result.add(VPackValue(it));
+          }
+          result.close();
         } else {
-          result.set("documents", arangodb::basics::Json(
-                                      TRI_UNKNOWN_MEM_ZONE, queryResult.json,
-                                      arangodb::basics::Json::AUTOFREE));
-          queryResult.json = nullptr;
+          result.add(VPackValue("documents"));
+          result.add(qResult);
+          queryResult.result = nullptr;
         }
       } else {
-        result.set("documents", arangodb::basics::Json(
-                                    TRI_UNKNOWN_MEM_ZONE, queryResult.json,
-                                    arangodb::basics::Json::AUTOFREE));
-        queryResult.json = nullptr;
+        result.add(VPackValue("documents"));
+        result.add(qResult);
+        queryResult.result = nullptr;
       }
+      result.add("error", VPackValue(false));
+      result.add("code", VPackValue(static_cast<int>(_response->responseCode())));
 
-      result.set("error", arangodb::basics::Json(false));
-      result.set("code", arangodb::basics::Json(
-                             static_cast<double>(_response->responseCode())));
-
-      // reserve 48 bytes per result document by default
-      int res = _response->body().reserve(48 * resultSize);
+      // reserve a few bytes per result document by default
+      int res = _response->body().reserve(32 * resultSize);
 
       if (res != TRI_ERROR_NO_ERROR) {
         THROW_ARANGO_EXCEPTION(res);
       }
-
-      result.dump(_response->body());
     }
+
+    auto transactionContext = std::make_shared<StandaloneTransactionContext>(_vocbase);
+    auto customTypeHandler = transactionContext->orderCustomTypeHandler();
+    VPackOptions options = VPackOptions::Defaults; // copy defaults
+    options.customTypeHandler = customTypeHandler.get();
+     
+    arangodb::basics::VPackStringBufferAdapter buffer(
+        _response->body().stringBuffer());
+    VPackDumper dumper(&buffer, &options);
+    dumper.dump(result.slice());
   } catch (arangodb::basics::Exception const& ex) {
     unregisterQuery();
     generateError(GeneralResponse::responseCode(ex.code()), ex.code(),

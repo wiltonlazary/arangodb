@@ -1,46 +1,98 @@
 /*jshint unused: false */
 /*global window, $, Backbone, document, arangoCollectionModel*/
-/*global arangoHelper,dashboardView,arangoDatabase, _*/
+/*global arangoHelper, btoa, dashboardView, arangoDatabase, _, frontendConfig */
 
 (function () {
   "use strict";
 
   window.Router = Backbone.Router.extend({
+
+    toUpdate: [],
+    dbServers: [],
+    isCluster: undefined,
+
     routes: {
-      "": "dashboard",
+      "": "cluster",
       "dashboard": "dashboard",
       "collections": "collections",
       "new": "newCollection",
       "login": "login",
       "collection/:colid/documents/:pageid": "documents",
+      "cIndices/:colname": "cIndices",
+      "cSettings/:colname": "cSettings",
+      "cInfo/:colname": "cInfo",
       "collection/:colid/:docid": "document",
       "shell": "shell",
-      "query": "query2",
-      "query2": "query",
-      "queryManagement": "queryManagement",
+      "queries": "query",
       "workMonitor": "workMonitor",
       "databases": "databases",
-      "applications": "applications",
-      "applications/:mount": "applicationDetail",
-      "graph": "graphManagement",
-      "graph/:name": "showGraph",
-      "userManagement": "userManagement",
+      "settings": "databases",
+      "services": "applications",
+      "service/:mount": "applicationDetail",
+      "graphs": "graphManagement",
+      "graphs/:name": "showGraph",
+      "users": "userManagement",
       "userProfile": "userProfile",
+      "cluster": "cluster",
+      "nodes": "cNodes",
+      "cNodes": "cNodes",
+      "dNodes": "dNodes",
+      "node/:name": "node",
+      //"nLogs/:name": "nLogs",
       "logs": "logs",
-      "test": "test"
+      "helpus": "helpUs"
+    },
+
+    execute: function(callback, args) {
+      $('#subNavigationBar .breadcrumb').html('');
+      $('#subNavigationBar .bottom').html('');
+      $('#loadingScreen').hide();
+      $('#content').show();
+      if (callback) {
+        callback.apply(this, args);
+      }
     },
 
     checkUser: function () {
+
+      if (window.location.hash === '#login') {
+        return;
+      }
+
+      var startInit = function() {
+        this.initOnce();
+
+        //show hidden by default divs
+        $('.bodyWrapper').show();
+        $('.navbar').show();
+      }.bind(this);
+
       var callback = function(error, user) {
-        if (error || user === null) {
-          this.navigate("login", {trigger: true});
+        if (frontendConfig.authenticationEnabled) {
+          if (error || user === null) {
+            if (window.location.hash !== '#login') {
+              this.navigate("login", {trigger: true});
+            }
+          }
+          else {
+            startInit();
+          }
         }
         else {
-          this.initOnce();
+          startInit();
         }
       }.bind(this);
 
-      this.userCollection.whoAmI(callback); 
+      if (frontendConfig.authenticationEnabled) {
+        this.userCollection.whoAmI(callback);
+      }
+      else {
+        this.initOnce();
+
+        //show hidden by default divs
+        $('.bodyWrapper').show();
+        $('.navbar').show();
+      }
     },
 
     waitForInit: function(origin, param1, param2) {
@@ -55,7 +107,7 @@
           if (param1 && param2) {
             origin(param1, param2, false);
           }
-        }, 100);
+        }, 350);
       } else {
         if (!param1) {
           origin(true);
@@ -72,6 +124,12 @@
     initFinished: false,
 
     initialize: function () {
+
+      //check frontend config for global conf settings
+      if (frontendConfig.isCluster === true) {
+        this.isCluster = true;
+      }
+
       // This should be the only global object
       window.modalView = new window.ModalView();
 
@@ -87,12 +145,31 @@
 
       this.initOnce = function () {
         this.initOnce = function() {};
+
+        var callback = function(error, isCoordinator) {
+          self = this;
+          if (isCoordinator === true) {
+
+            self.coordinatorCollection.fetch({
+              success: function() {
+                self.fetchDBS();
+              }
+            });
+          }
+        }.bind(this);
+
+        window.isCoordinator(callback);
+
         this.initFinished = true;
         this.arangoDatabase = new window.ArangoDatabase();
         this.currentDB = new window.CurrentDatabase();
 
         this.arangoCollectionsStore = new window.arangoCollections();
         this.arangoDocumentStore = new window.arangoDocument();
+
+        //Cluster 
+        this.coordinatorCollection = new window.ClusterCoordinators();
+
         arangoHelper.setDocumentStore(this.arangoDocumentStore);
 
         this.arangoCollectionsStore.fetch();
@@ -101,7 +178,9 @@
           collection: this.arangoCollectionsStore 
         });
 
-        this.footerView = new window.FooterView();
+        this.footerView = new window.FooterView({
+          collection: self.coordinatorCollection
+        });
         this.notificationList = new window.NotificationCollection();
 
         this.currentDB.fetch({
@@ -110,7 +189,8 @@
               database: self.arangoDatabase,
               currentDB: self.currentDB,
               notificationCollection: self.notificationList,
-              userCollection: self.userCollection
+              userCollection: self.userCollection,
+              isCluster: self.isCluster
             });
             self.naviView.render();
           }
@@ -128,12 +208,137 @@
         self.handleResize();
       });
 
+      $(window).scroll(function () {
+        //self.handleScroll();
+      });
+
     },
 
-    logs: function (initialized) {
+    handleScroll: function() {
+      if ($(window).scrollTop() > 50) {
+        $('.navbar > .secondary').css('top', $(window).scrollTop());
+        $('.navbar > .secondary').css('position', 'absolute');
+        $('.navbar > .secondary').css('z-index', '10');
+        $('.navbar > .secondary').css('width', $(window).width());
+      }
+      else {
+        $('.navbar > .secondary').css('top', '0');
+        $('.navbar > .secondary').css('position', 'relative');
+        $('.navbar > .secondary').css('width', '');
+      }
+    },
+
+    cluster: function (initialized) {
       this.checkUser();
       if (!initialized) {
-        this.waitForInit(this.logs.bind(this));
+        this.waitForInit(this.cluster.bind(this));
+        return;
+      }
+      if (this.isCluster === false || this.isCluster === undefined) {
+        if (this.currentDB.get("name") === '_system') {
+          this.routes[""] = 'dashboard';
+          this.navigate("#dashboard", {trigger: true});
+        }
+        else {
+          this.routes[""] = 'collections';
+          this.navigate("#collections", {trigger: true});
+        }
+        return;
+      }
+
+      if (!this.clusterView) {
+        this.clusterView = new window.ClusterView({
+          coordinators: this.coordinatorCollection,
+          dbServers: this.dbServers
+        });
+      }
+      this.clusterView.render();
+    },
+
+    node: function (name, initialized) {
+      this.checkUser();
+      if (!initialized || this.isCluster === undefined) {
+        this.waitForInit(this.node.bind(this), name);
+        return;
+      }
+      if (this.isCluster === false) {
+        this.routes[""] = 'dashboard';
+        this.navigate("#dashboard", {trigger: true});
+        return;
+      }
+
+      if (!this.nodeView) {
+        this.nodeView = new window.NodeView({
+          coordname: name,
+          coordinators: this.coordinatorCollection,
+          dbServers: this.dbServers
+        });
+      }
+      this.nodeView.render();
+    },
+
+    cNodes: function (initialized) {
+      this.checkUser();
+      if (!initialized || this.isCluster === undefined) {
+        this.waitForInit(this.cNodes.bind(this));
+        return;
+      }
+      if (this.isCluster === false) {
+        this.routes[""] = 'dashboard';
+        this.navigate("#dashboard", {trigger: true});
+        return;
+      }
+      this.nodesView = new window.NodesView({
+        coordinators: this.coordinatorCollection,
+        dbServers: this.dbServers[0],
+        toRender: 'coordinator'
+      });
+      this.nodesView.render();
+    },
+
+    dNodes: function (initialized) {
+      this.checkUser();
+      if (!initialized || this.isCluster === undefined) {
+        this.waitForInit(this.dNodes.bind(this));
+        return;
+      }
+      if (this.isCluster === false) {
+        this.routes[""] = 'dashboard';
+        this.navigate("#dashboard", {trigger: true});
+        return;
+      }
+      if (this.dbServers.length === 0) {
+        this.navigate("#cNodes", {trigger: true});
+        return;
+      }
+
+      this.nodesView = new window.NodesView({
+        coordinators: this.coordinatorCollection,
+        dbServers: this.dbServers[0],
+        toRender: 'dbserver'
+      });
+      this.nodesView.render();
+    },
+
+    addAuth: function (xhr) {
+      var u = this.clusterPlan.get("user");
+      if (!u) {
+        xhr.abort();
+        if (!this.isCheckingUser) {
+          this.requestAuth();
+        }
+        return;
+      }
+      var user = u.name;
+      var pass = u.passwd;
+      var token = user.concat(":", pass);
+      xhr.setRequestHeader('Authorization', "Basic " + btoa(token));
+    },
+
+    logs: function (name, initialized) {
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.logs.bind(this), name);
         return;
       }
       if (!this.logsView) {
@@ -162,6 +367,39 @@
       }
       this.logsView.render();
     },
+
+    /*
+    nLogs: function (nodename, initialized) {
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.nLogs.bind(this), nodename);
+        return;
+      }
+      var newLogsAllCollection = new window.ArangoLogs(
+        {upto: true, loglevel: 4}
+      ),
+      newLogsDebugCollection = new window.ArangoLogs(
+        {loglevel: 4}
+      ),
+      newLogsInfoCollection = new window.ArangoLogs(
+        {loglevel: 3}
+      ),
+      newLogsWarningCollection = new window.ArangoLogs(
+        {loglevel: 2}
+      ),
+      newLogsErrorCollection = new window.ArangoLogs(
+        {loglevel: 1}
+      );
+      this.nLogsView = new window.LogsView({
+        logall: newLogsAllCollection,
+        logdebug: newLogsDebugCollection,
+        loginfo: newLogsInfoCollection,
+        logwarning: newLogsWarningCollection,
+        logerror: newLogsErrorCollection
+      });
+      this.nLogsView.render();
+    },
+    */
 
     applicationDetail: function (mount, initialized) {
       this.checkUser();
@@ -192,20 +430,22 @@
       }
     },
 
-    login: function (initialized) {
+    login: function () {
+
       var callback = function(error, user) {
+        if (!this.loginView) {
+          this.loginView = new window.loginView({
+            collection: this.userCollection
+          });
+        }
         if (error || user === null) {
-          if (!this.loginView) {
-            this.loginView = new window.loginView({
-              collection: this.userCollection
-            });
-          }
           this.loginView.render();
         }
         else {
-          this.navigate("", {trigger: true});
+          this.loginView.render(true);
         }
       }.bind(this);
+
       this.userCollection.whoAmI(callback);
     },
 
@@ -228,6 +468,69 @@
       });
     },
 
+    cIndices: function (colname, initialized) {
+      var self = this;
+
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.cIndices.bind(this), colname);
+        return;
+      }
+      this.arangoCollectionsStore.fetch({
+        success: function () {
+          self.indicesView = new window.IndicesView({
+            collectionName: colname,
+            collection: self.arangoCollectionsStore.findWhere({
+              name: colname
+            })
+          });
+          self.indicesView.render();
+        }
+      });
+    },
+
+    cSettings: function (colname, initialized) {
+      var self = this;
+
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.cSettings.bind(this), colname);
+        return;
+      }
+      this.arangoCollectionsStore.fetch({
+        success: function () {
+          self.settingsView = new window.SettingsView({
+            collectionName: colname,
+            collection: self.arangoCollectionsStore.findWhere({
+              name: colname
+            })
+          });
+          self.settingsView.render();
+        }
+      });
+    },
+
+    cInfo: function (colname, initialized) {
+      var self = this;
+
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.cInfo.bind(this), colname);
+        return;
+      }
+      this.arangoCollectionsStore.fetch({
+        success: function () {
+          self.infoView = new window.InfoView({
+            collectionName: colname,
+            collection: self.arangoCollectionsStore.findWhere({
+              name: colname
+            })
+          });
+          self.infoView.render();
+        }
+      });
+    },
+
     documents: function (colid, pageid, initialized) {
       this.checkUser();
       if (!initialized) {
@@ -243,7 +546,6 @@
       }
       this.documentsView.setCollectionId(colid, pageid);
       this.documentsView.render();
-
     },
 
     document: function (colid, docid, initialized) {
@@ -258,7 +560,15 @@
         });
       }
       this.documentView.colid = colid;
-      this.documentView.docid = docid;
+
+      var doc = window.location.hash.split("/")[2];
+      var test = (doc.split("%").length - 1) % 3;
+
+      if (decodeURI(doc) !== doc && test !== 0) {
+        doc = decodeURIComponent(doc);
+      }
+      this.documentView.docid = doc;
+
       this.documentView.render();
 
       var callback = function(error, type) {
@@ -291,20 +601,6 @@
         this.waitForInit(this.query.bind(this));
         return;
       }
-      if (!this.queryView) {
-        this.queryView = new window.queryView({
-          collection: this.queryCollection
-        });
-      }
-      this.queryView.render();
-    },
-
-    query2: function (initialized) {
-      this.checkUser();
-      if (!initialized) {
-        this.waitForInit(this.query2.bind(this));
-        return;
-      }
       if (!this.queryView2) {
         this.queryView2 = new window.queryView2({
           collection: this.queryCollection
@@ -312,7 +608,8 @@
       }
       this.queryView2.render();
     },
-    
+   
+    /* 
     test: function (initialized) {
       this.checkUser();
       if (!initialized) {
@@ -324,6 +621,19 @@
         });
       }
       this.testView.render();
+    },
+    */
+    helpUs: function (initialized) {
+      this.checkUser();
+      if (!initialized) {
+        this.waitForInit(this.helpUs.bind(this));
+        return;
+      }
+      if (!this.testView) {
+        this.helpUsView = new window.HelpUsView({
+        });
+      }
+      this.helpUsView.render();
     },
 
     workMonitor: function (initialized) {
@@ -477,6 +787,12 @@
       if (this.queryView2) {
         this.queryView2.resize();
       }
+      if (this.documentsView) {
+        this.documentsView.resize();
+      }
+      if (this.documentView) {
+        this.documentView.resize();
+      }
     },
 
     userManagement: function (initialized) {
@@ -505,7 +821,32 @@
         });
       }
       this.userManagementView.render(true);
+    },
+    
+    fetchDBS: function() {
+      var self = this;
+
+      this.coordinatorCollection.each(function(coordinator) {
+        self.dbServers.push(
+          new window.ClusterServers([], {
+            host: coordinator.get('address') 
+          })
+        );
+      });
+      _.each(this.dbServers, function(dbservers) {
+        dbservers.fetch();
+      });
+    },
+
+    getNewRoute: function(host) {
+      return "http://" + host;
+    },
+
+    registerForUpdate: function(o) {
+      this.toUpdate.push(o);
+      o.updateUrl();
     }
+
   });
 
 }());

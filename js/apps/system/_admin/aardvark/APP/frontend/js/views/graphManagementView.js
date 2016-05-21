@@ -14,6 +14,10 @@
 
     dropdownVisible: false,
 
+    initialize: function(options) {
+      this.options = options;
+    },
+
     events: {
       "click #deleteGraph"                        : "deleteGraph",
       "click .icon_arangodb_settings2.editGraph"  : "editGraph",
@@ -33,10 +37,10 @@
       $('#tab-content-create-graph #' + id).addClass('active');
 
       if (id === 'exampleGraphs') {
-        $('#modal-dialog .modal-footer button').css("display", "none");
+        $('#modal-dialog .modal-footer .button-success').css("display", "none");
       }
       else {
-        $('#modal-dialog .modal-footer button').css("display", "block");
+        $('#modal-dialog .modal-footer .button-success').css("display", "initial");
       }
     },
 
@@ -61,14 +65,14 @@
           var adapterConfig = {
             type: "gharial",
             graphName: graphName,
-            baseUrl: require("internal").arango.databasePrefix("/")
+            baseUrl: arangoHelper.databaseUrl("/")
           };
           var width = $("#content").width() - 75;
           $("#content").html("");
 
           var height = arangoHelper.calculateCenterDivHeight();
 
-          this.ui = new GraphViewerUI($("#content")[0], adapterConfig, width, height, {
+          this.ui = new GraphViewerUI($("#content")[0], adapterConfig, width, $('.centralRow').height() - 135, {
             nodeShaper: {
               label: "_key",
               color: {
@@ -181,7 +185,7 @@
       var graph = $(e.currentTarget).attr('graph-id'), self = this;
       $.ajax({
         type: "POST",
-        url: "/_admin/aardvark/graph-examples/create/" + encodeURIComponent(graph),
+        url: arangoHelper.databaseUrl("/_admin/aardvark/graph-examples/create/" + encodeURIComponent(graph)),
         success: function () {
           window.modalView.hide();
           self.updateGraphManagementView();

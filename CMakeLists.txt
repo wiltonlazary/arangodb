@@ -10,13 +10,42 @@ if (POLICY CMP0037)
   cmake_policy(SET CMP0037 NEW)
 endif ()
 
-option(VERBOSE OFF)
+if (POLICY CMP0017)
+  cmake_policy(SET CMP0017 NEW)
+endif ()
+
+if (NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE string "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel." FORCE)
+endif ()
+
+if (NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"
+      OR CMAKE_BUILD_TYPE STREQUAL "Release"
+      OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo"
+      OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"
+      OR CMAKE_BUILD_TYPE STREQUAL "None"))
+  message(FATAL_ERROR "expecting CMAKE_BUILD_TYPE: None Debug Release RelWithDebInfo MinSizeRel, got ${CMAKE_BUILD_TYPE}.")
+endif ()
+
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "deployment target for MacOSX")
 
-project(ArangoDB)
+if (WIN32)
+  project(ArangoDB CXX C)
+else ()
+  project(ArangoDB CXX C ASM)
+endif ()
 
 # where to find CMAKE modules
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
+
+# be verbose about flags used
+option(VERBOSE OFF)
+
+# enable timer for development
+option(USE_DEV_TIMERS OFF)
+
+if (USE_DEV_TIMERS)
+  add_definitions("-DUSE_DEV_TIMERS=1")
+endif ()
 
 ################################################################################
 ## ARANGODB
@@ -36,7 +65,7 @@ set(ARANGODB_CONTACT            "hackers@arangodb.com")
 set(ARANGODB_FRIENDLY_STRING    "ArangoDB - the multi-model database")
 
 # MSVC
-set(ARANGOB_FRIENDLY_STRING        "arangob - stress test program")
+set(ARANGO_BENCH_FRIENDLY_STRING   "arangobench - stress test program")
 set(ARANGO_DUMP_FRIENDLY_STRING    "arangodump - export")
 set(ARANGO_RESTORE_FRIENDLY_STRING "arangrestore - importer")
 set(ARANGO_IMP_FRIENDLY_STRING     "arangoimp - TSV/CSV/JSON importer")
@@ -47,7 +76,7 @@ set(LIB_ARANGO        arango)
 set(LIB_ARANGO_V8     arango_v8)
 
 # binaries
-set(BIN_ARANGOB       arangob)
+set(BIN_ARANGOBENCH   arangobench)
 set(BIN_ARANGOD       arangod)
 set(BIN_ARANGODUMP    arangodump)
 set(BIN_ARANGOIMP     arangoimp)
@@ -62,7 +91,11 @@ set(TEST_GEO_SUITE    geo_suite)
 ## VERSION FILES
 ################################################################################
 
-string(TIMESTAMP ARANGODB_BUILD_DATE "%Y-%m-%d %H:%M:%S")
+if (${CMAKE_MAJOR_VERSION} EQUAL 2)
+  set(ARANGODB_BUILD_DATE "YYYY-MM-DD HH:MM:SS")
+else ()
+  string(TIMESTAMP ARANGODB_BUILD_DATE "%Y-%m-%d %H:%M:%S")
+endif ()
 
 configure_file (
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/Basics/build.h.in"
@@ -124,6 +157,23 @@ elseif (APPLE)
 endif ()
 
 ################################################################################
+## ROCKSDB
+################################################################################
+
+option(USE_ROCKSDB
+  "whether RocksDB is enabled"
+  ON
+)
+
+if (USE_ROCKSDB)
+  add_definitions("-DARANGODB_ENABLE_ROCKSDB=1")
+  add_definitions(-DARANGODB_ROCKSDB_VERSION=\"${ROCKSDB_VERSION}\")
+  include_directories(${ROCKSDB_INCLUDE_DIR})
+else ()
+  set(ROCKSDB_LIBS "")
+endif ()
+
+################################################################################
 ## EXTERNAL PROGRAMS
 ################################################################################
 
@@ -133,23 +183,21 @@ else ()
   set(MAKE make)
 endif ()
 
-find_package(FLEX)
-find_package(BISON)
 find_package(PythonInterp 2 REQUIRED)
-get_filename_component(PYTHON_EXECUTABLE ${PYTHON_EXECUTABLE} REALPATH)
+get_filename_component(PYTHON_EXECUTABLE "${PYTHON_EXECUTABLE}" REALPATH)
 
 ################################################################################
 ## ARCHITECTURE
 ################################################################################
 
-if (SOLARIS)
+if (SOLARIS OR NOT CMAKE_SIZEOF_VOID_P)
   set(CMAKE_SIZEOF_VOID_P 8)
   set(CMAKE_CXX_SIZEOF_DATA_PTR 8)
 endif ()
 
 math(EXPR BITS "8*${CMAKE_SIZEOF_VOID_P}")
 add_definitions("-DARANGODB_BITS=${BITS}")
-
+        
 ################################################################################
 ## COMPILER FEATURES
 ################################################################################
@@ -186,7 +234,7 @@ if (SOLARIS)
   list(APPEND SYSTEM_LIBRARIES nsl socket)
 
   # force 64bit compile
-  set(BASE_FLAGS "${BASE_FLAGS} -I /opt/csw/include -D_REENTRANT -m64")
+  set(BASE_FLAGS "-I /opt/csw/include -D_REENTRANT -m64 ${BASE_FLAGS}")
 endif ()
 
 if (CMAKE_COMPILER_IS_GNUCC)
@@ -197,15 +245,18 @@ if (CMAKE_COMPILER_IS_GNUCC OR APPLE)
   set(BASE_CXX_FLAGS "${BASE_CXX_FLAGS} -std=c++11")
 endif ()
 
-if (APPLE AND CMAKE_COMPILER_IS_CLANG)
-  set(BASE_CXX_FLAGS "${BASE_CXX_FLAGS} -stdlib=libc++")
-  add_definitions("-Wno-deprecated-declarations")
+if (CMAKE_COMPILER_IS_CLANG)
+  if (APPLE)
+    set(BASE_CXX_FLAGS "${BASE_CXX_FLAGS} -stdlib=libc++")
+    add_definitions("-Wno-deprecated-declarations")
+  else ()
+    list(APPEND BASE_LIBS atomic)
+  endif ()
 endif ()
 
 # need c++11
 set(CMAKE_CXX_STANDARD 11)
 include(CheckCXX11Features)
-include(Boost)
 
 # need threads
 find_package(Threads REQUIRED)
@@ -214,10 +265,14 @@ if (MSVC)
   configure_file("Installation/Windows/vcproj.user/arangod.vcxproj.user" ${CMAKE_BINARY_DIR})
   add_definitions("-D_CRT_SECURE_NO_WARNINGS=1")
   add_definitions("-DFD_SETSIZE=2048")
-  add_definitions("-DUSE_REGEX_STATIC=1")
   add_definitions("-DU_STATIC_IMPLEMENTATION=1")
-
-  set(MSVC_LIBS crypt32.lib;WINMM.LIB;Ws2_32.lib;getopt;regex)
+  
+  # https://blogs.msdn.microsoft.com/vcblog/2016/04/14/stl-fixes-in-vs-2015-update-2/
+  # https://connect.microsoft.com/VisualStudio/feedback/details/1892487
+  #http://lists.boost.org/boost-users/2016/04/85968.php
+  add_definitions("-D_ENABLE_ATOMIC_ALIGNMENT_FIX")
+  
+  set(MSVC_LIBS crypt32.lib;WINMM.LIB;Ws2_32.lib)
 
   set(CMAKE_EXE_LINKER_FLAGS
     "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE /SAFESEH:NO /MACHINE:x64 /ignore:4099 ${BASE_LD_FLAGS}"
@@ -235,6 +290,7 @@ endif ()
 include_directories(${PROJECT_SOURCE_DIR}/3rdParty/linenoise-ng/include)
 include_directories(${PROJECT_SOURCE_DIR}/3rdParty/linenoise-ng/src)
 include_directories(${PROJECT_SOURCE_DIR}/3rdParty/velocypack/include)
+include_directories(${PROJECT_SOURCE_DIR}/3rdParty/rocksdb/rocksdb/include)
 
 include_directories(${PROJECT_BINARY_DIR})
 include_directories(${PROJECT_BINARY_DIR}/lib)
@@ -270,10 +326,16 @@ else ()
 
   include(VcMacros)
 
+  option(USE_OPTIMIZE_FOR_ARCHITECTURE "try to determine CPU architecture" ON)
+
+  if (NOT ${USE_OPTIMIZE_FOR_ARCHITECTURE})
+    # mop: core2 (merom) is our absolute minimum!
+    SET(TARGET_ARCHITECTURE "merom")
+  endif ()
   include(OptimizeForArchitecture)
   OptimizeForArchitecture()
 
-  set(BASE_FLAGS "${BASE_FLAGS} ${Vc_ARCHITECTURE_FLAGS}")
+  set(BASE_FLAGS "${Vc_ARCHITECTURE_FLAGS} ${BASE_FLAGS}")
 endif ()
 
 ################################################################################
@@ -298,6 +360,26 @@ else ()
 endif ()
 
 ################################################################################
+## ASSEMBLER OPTIMIZATIONS
+################################################################################
+
+# Allow to prohibit assembler optimization code explicitly
+if (MSVC)
+  SET(ASM_OPTIMIZATIONS_DEFAULT OFF)
+else (MSVC)
+  SET(ASM_OPTIMIZATIONS_DEFAULT ON)
+endif (MSVC)
+
+option(ASM_OPTIMIZATIONS "whether hand-optimized assembler code should be used"
+  ${ASM_OPTIMIZATIONS_DEFAULT})
+
+if (ASM_OPTIMIZATIONS)
+  add_definitions("-DASM_OPTIMIZATIONS=1")
+else (ASM_OPTIMIZATIONS)
+  add_definitions("-DASM_OPTIMIZATIONS=0")
+endif (ASM_OPTIMIZATIONS)
+
+################################################################################
 ## MAINTAINER MODE
 ################################################################################
 
@@ -308,6 +390,9 @@ option(USE_MAINTAINER_MODE
 
 if (USE_MAINTAINER_MODE)
   add_definitions("-DARANGODB_ENABLE_MAINTAINER_MODE=1")
+
+  find_package(FLEX)
+  find_package(BISON)
 endif ()
 
 ################################################################################
@@ -324,24 +409,53 @@ if (USE_FAILURE_TESTS)
 endif ()
 
 ################################################################################
+## JEMALLOC
+################################################################################
+
+find_package(jemalloc)
+set(JEMALLOC_DEFAULT_VALUE ${JEMALLOC_FOUND})
+
+if (WINDOWS OR SOLARIS OR USE_TCMALLOC)
+  set(JEMALLOC_DEFAULT_VALUE OFF)
+endif ()
+
+option(USE_JEMALLOC
+  "use JEMALLOC if the library is available"
+  ${JEMALLOC_DEFAULT_VALUE}
+)
+
+if (USE_JEMALLOC)
+  if (NOT JEMALLOC_FOUND)
+    message(FATAL_ERROR "jemalloc build was requested but jemalloc not found")
+  endif ()
+  add_definitions("-DARANGODB_HAVE_JEMALLOC=1")
+  set(SYS_LIBS ${SYS_LIBS} ${JEMALLOC_jemalloc_LIBRARY})
+endif ()
+
+################################################################################
 ## TCMALLOC
 ################################################################################
 
-if (WINDOWS OR SOLARIS)
-  option(USE_TCMALLOC
-    "use TCMALLOC library"
-    FALSE
-  )
-else ()
-  option(USE_TCMALLOC
-    "use TCMALLOC if the library is available"
-    TRUE
-  )
-endif ()
+option(USE_TCMALLOC
+  "use TCMALLOC if the library is available"
+  OFF
+)
 
 if (USE_TCMALLOC)
   find_package(tcmalloc)
+
+  if (TCMALLOC_FOUND)
+    add_definitions("-DARANGODB_HAVE_TCMALLOC=1")
+    set(SYS_LIBS ${SYS_LIBS} ${TCMALLOC_tcmalloc_LIBRARY})
+    message(STATUS "Found TCMALLOC")
+  else ()
+    message(STATUS "Missing TCMALLOC")
+  endif ()
 endif ()
+
+if (${USE_JEMALLOC} AND ${USE_TCMALLOC})
+  MESSAGE(FATAL_ERROR " you mustn't demand for tcmalloc and jemalloc at the same time!")
+endif()
 
 ################################################################################
 ## LIBRARY RESOLV
@@ -360,7 +474,7 @@ endif ()
 ################################################################################
 
 if (VERBOSE)
-message(STATUS)
+  message(STATUS)
 endif ()
 
 # compiler options
@@ -369,7 +483,7 @@ if (CMAKE_COMPILER_IS_GNUCC)
     message(STATUS "Compiler type GNU: ${CMAKE_CXX_COMPILER}")
   endif ()
 
-  set(BASE_FLAGS "${BASE_FLAGS} -Wall -Wextra -Wno-unused-parameter")
+  set(BASE_FLAGS "-Wall -Wextra -Wno-unused-parameter ${BASE_FLAGS}")
 
   set(CMAKE_C_FLAGS                "-g"                             CACHE INTERNAL "default C compiler flags")
   set(CMAKE_C_FLAGS_DEBUG          "-O0 -g"                         CACHE INTERNAL "C debug flags")
@@ -388,7 +502,7 @@ elseif (CMAKE_COMPILER_IS_CLANG)
     message(STATUS "Compiler type CLANG: ${CMAKE_CXX_COMPILER}")
   endif ()
 
-  set(BASE_FLAGS "${BASE_FLAGS} -Wall -Wextra -Wno-unused-parameter")
+  set(BASE_FLAGS "-Wall -Wextra -Wno-unused-parameter ${BASE_FLAGS}")
 
   set(CMAKE_C_FLAGS                "-g"                             CACHE INTERNAL "default C compiler flags")
   set(CMAKE_C_FLAGS_DEBUG          "-O0 -g"                         CACHE INTERNAL "C debug flags")
@@ -423,7 +537,7 @@ else ()
   # unknown compiler
   message(STATUS "Compiler type UNKNOWN: ${CMAKE_CXX_COMPILER}")
 
-  set(BASE_FLAGS "${BASE_FLAGS} -Wall")
+  set(BASE_FLAGS "-Wall ${BASE_FLAGS}")
 
   set(CMAKE_C_FLAGS                "-g"                             CACHE INTERNAL "default C compiler flags")
   set(CMAKE_C_FLAGS_DEBUG          "-O0 -g"                         CACHE INTERNAL "C debug flags")
@@ -438,85 +552,52 @@ else ()
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -fno-omit-frame-pointer" CACHE INTERNAL "C++ release with debug info flags")
 endif ()
 
-if (VERBOSE)
-  message(STATUS)
-endif ()
+set(CMAKE_C_FLAGS                "${CMAKE_C_FLAGS}                ${BASE_FLAGS} ${BASE_C_FLAGS}")
+set(CMAKE_C_FLAGS_DEBUG          "${CMAKE_C_FLAGS_DEBUG}          ${BASE_FLAGS} ${BASE_C_FLAGS}")
+set(CMAKE_C_FLAGS_RELEASE        "${CMAKE_C_FLAGS_RELEASE}        ${BASE_FLAGS} ${BASE_C_FLAGS}")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} ${BASE_FLAGS} ${BASE_C_FLAGS}")
+set(CMAKE_C_FLAGS_MINSIZEREL     "${CMAKE_C_FLAGS_MINSIZEREL}     ${BASE_FLAGS} ${BASE_C_FLAGS}")
 
-set(CMAKE_C_FLAGS                "${BASE_FLAGS} ${BASE_C_FLAGS} ${CMAKE_C_FLAGS}")
-set(CMAKE_C_FLAGS_DEBUG          "${BASE_FLAGS} ${BASE_C_FLAGS} ${CMAKE_C_FLAGS_DEBUG}")
-set(CMAKE_C_FLAGS_RELEASE        "${BASE_FLAGS} ${BASE_C_FLAGS} ${CMAKE_C_FLAGS_RELEASE}")
-set(CMAKE_C_FLAGS_RELWITHDEBINFO "${BASE_FLAGS} ${BASE_C_FLAGS} ${CMAKE_C_FLAGS_RELWITHDEBINFO}")
-set(CMAKE_C_FLAGS_MINSIZEREL     "${BASE_FLAGS} ${BASE_C_FLAGS} ${CMAKE_C_FLAGS_MINSIZEREL}")
-
-set(CMAKE_CXX_FLAGS                "${BASE_FLAGS} ${BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_DEBUG          "${BASE_FLAGS} ${BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG}")
-set(CMAKE_CXX_FLAGS_RELEASE        "${BASE_FLAGS} ${BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE}")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${BASE_FLAGS} ${BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
-set(CMAKE_CXX_FLAGS_MINSIZEREL     "${BASE_FLAGS} ${BASE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_MINSIZEREL}")
+set(CMAKE_CXX_FLAGS                "${CMAKE_CXX_FLAGS}                ${BASE_FLAGS} ${BASE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS_DEBUG          "${CMAKE_CXX_FLAGS_DEBUG}          ${BASE_FLAGS} ${BASE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS_RELEASE        "${CMAKE_CXX_FLAGS_RELEASE}        ${BASE_FLAGS} ${BASE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${BASE_FLAGS} ${BASE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS_MINSIZEREL     "${CMAKE_CXX_FLAGS_MINSIZEREL}     ${BASE_FLAGS} ${BASE_CXX_FLAGS}")
 
 if (VERBOSE)
-  message(STATUS "Info BASE_FLAGS")
-  message(STATUS "${BASE_FLAGS}")
+  message(STATUS "Info BASE_FLAGS:     ${BASE_FLAGS}")
+  message(STATUS "Info BASE_C_FLAGS:   ${BASE_C_FLAGS}")
+  message(STATUS "Info BASE_CXX_FLAGS: ${BASE_CXX_FLAGS}")
+  message(STATUS "Info BASE_LD_FLAGS:  ${BASE_LD_FLAGS}")
+  message(STATUS "Info BASE_LIBS:      ${BASE_LIBS}")
   message(STATUS)
 
-  message(STATUS "Info BASE_C_FLAGS")
-  message(STATUS "${BASE_C_FLAGS}")
-  message(STATUS)
+  if (CMAKE_BUILD_TYPE STREQUAL "None")
+    message(STATUS "Info CMAKE_C_FLAGS:   ${CMAKE_C_FLAGS}")
+    message(STATUS "Info CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
+  endif ()
 
-  message(STATUS "Info BASE_CXX_FLAGS")
-  message(STATUS "${BASE_CXX_FLAGS}")
-  message(STATUS)
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Info CMAKE_C_FLAGS_DEBUG:   ${CMAKE_C_FLAGS_DEBUG}")
+    message(STATUS "Info CMAKE_CXX_FLAGS_DEBUG: ${CMAKE_CXX_FLAGS_DEBUG}")
+  endif ()
 
-  message(STATUS "Info BASE_LD_FLAGS")
-  message(STATUS "${BASE_LD_FLAGS}")
-  message(STATUS)
+  if (CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Info CMAKE_C_FLAGS_RELEASE:   ${CMAKE_C_FLAGS_RELEASE}")
+    message(STATUS "Info CMAKE_CXX_FLAGS_RELEASE: ${CMAKE_CXX_FLAGS_RELEASE}")
+  endif ()
 
-  message(STATUS "Info BASE_LIBS")
-  message(STATUS "${BASE_LIBS}")
-  message(STATUS)
+  if (CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    message(STATUS "Info CMAKE_C_FLAGS_RELWITHDEBINFO:   ${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+    message(STATUS "Info CMAKE_CXX_FLAGS_RELWITHDEBINFO: ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+  endif ()
 
-  message(STATUS "Info CMAKE_C_FLAGS")
-  message(STATUS "${CMAKE_C_FLAGS}")
-  message(STATUS)
+  if (CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+    message(STATUS "Info CMAKE_C_FLAGS_MINSIZEREL:   ${CMAKE_C_FLAGS_MINSIZEREL}")
+    message(STATUS "Info CMAKE_CXX_FLAGS_MINSIZEREL: ${CMAKE_CXX_FLAGS_MINSIZEREL}")
+  endif ()
 
-  message(STATUS "Info CMAKE_C_FLAGS_DEBUG")
-  message(STATUS "${CMAKE_C_FLAGS_DEBUG}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_C_FLAGS_RELEASE")
-  message(STATUS "${CMAKE_C_FLAGS_RELEASE}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_C_FLAGS_RELWITHDEBINFO")
-  message(STATUS "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_C_FLAGS_MINSIZEREL")
-  message(STATUS "${CMAKE_C_FLAGS_MINSIZEREL}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_CXX_FLAGS")
-  message(STATUS "${CMAKE_CXX_FLAGS}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_CXX_FLAGS_DEBUG")
-  message(STATUS "${CMAKE_CXX_FLAGS_DEBUG}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_CXX_FLAGS_RELEASE")
-  message(STATUS "${CMAKE_CXX_FLAGS_RELEASE}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_CXX_FLAGS_RELWITHDEBINFO")
-  message(STATUS "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_CXX_FLAGS_MINSIZEREL")
-  message(STATUS "${CMAKE_CXX_FLAGS_MINSIZEREL}")
-  message(STATUS)
-
-  message(STATUS "Info CMAKE_EXE_LINKER_FLAGS")
-  message(STATUS "${CMAKE_EXE_LINKER_FLAGS}")
+  message(STATUS "Info CMAKE_EXE_LINKER_FLAGS: ${CMAKE_EXE_LINKER_FLAGS}")
   message(STATUS)
 endif ()
 
@@ -525,10 +606,6 @@ endif ()
 ################################################################################
 
 # 3rdParty exports:
-#
-# BOOST_VERSION
-# BOOST_INCLUDE_DIR
-# USE_BOOST_UNITTESTS
 #
 # V8_VERSION
 # V8_LIBS
@@ -548,29 +625,27 @@ endif ()
 
 add_subdirectory(3rdParty)
 
+set(BOOST_VERSION 1.61.0b1)
+
 foreach (LINK_DIR ${LINK_DIRECTORIES})
   link_directories("${LINK_DIR}")
 endforeach()
 
 ################################################################################
-## GETOPT
-################################################################################
-
-if (WINDOWS)
-  include_directories(${GETOPT_INCLUDE_DIR})
-endif ()
-
-################################################################################
-## REGEX
-################################################################################
-
-if (WINDOWS)
-  include_directories(${REGEX_INCLUDE_DIR})
-endif ()
-
-################################################################################
 ## BOOST
 ################################################################################
+
+message(STATUS "using 3rdParty BOOST")
+option(USE_BOOST_UNITTESTS "use boost unit-tests" ON)
+
+set(Boost_VERSION "1.61.0b1")
+set(Boost_INCLUDE_DIR
+  "${PROJECT_SOURCE_DIR}/3rdParty/boost/${Boost_VERSION}"
+)
+
+if (NOT USE_BOOST_UNITTESTS)
+  message(STATUS "BOOST unit-tests are disabled")
+endif ()
 
 include_directories(${Boost_INCLUDE_DIR})
 add_definitions(-DARANGODB_BOOST_VERSION=\"${Boost_VERSION}\")
@@ -662,7 +737,6 @@ if (USE_MAINTAINER_MODE)
   set(MIMETYPES_FILES
     lib/Basics/voc-mimetypes.h
     lib/Basics/voc-mimetypes.cpp
-    js/common/modules/@arangodb/mimetypes.js
   )
 
   set(MIMETYPES_FILES_GEN)
@@ -699,9 +773,9 @@ list(INSERT SYSTEM_LIBRARIES 0
   ${ICU_LIBS}
   ${OPENSSL_LIBRARIES}
   ${BASE_LIBS}
-  ${CMAKE_THREAD_LIBS_INIT}
   ${CMAKE_DL_LIBS}
   ${SYS_LIBS}
+  ${CMAKE_THREAD_LIBS_INIT}
 )
 
 add_subdirectory(lib)
@@ -712,14 +786,22 @@ if (USE_BOOST_UNITTESTS)
 endif()
 add_subdirectory(Documentation)
 
-add_dependencies(arangob zlibstatic v8_build)
-add_dependencies(arangod ev zlibstatic v8_build)
-add_dependencies(arangodump zlibstatic v8_build)
-add_dependencies(arangoimp zlibstatic v8_build)
-add_dependencies(arangorestore zlibstatic v8_build)
-add_dependencies(arangosh zlibstatic v8_build)
-#if (USE_MAINTAINER_MODE)
-#  add_dependencies(basics_suite v8_build)
-#  add_dependencies(geo_suite v8_build)
-#endif()
+add_dependencies(arangobench   zlibstatic)
+add_dependencies(arangod       ev zlibstatic)
+add_dependencies(arangodump    zlibstatic)
+add_dependencies(arangoimp     zlibstatic)
+add_dependencies(arangorestore zlibstatic)
+add_dependencies(arangosh      zlibstatic)
+if (TARGET prepare_debian)
+  add_dependencies(arangod       prepare_debian)
+endif()
 
+if (NOT USE_PRECOMPILED_V8)
+  # all binaries depend on v8_build because it contains ICU as well
+  add_dependencies(arangobench   v8_build)
+  add_dependencies(arangod       v8_build)
+  add_dependencies(arangodump    v8_build)
+  add_dependencies(arangoimp     v8_build)
+  add_dependencies(arangorestore v8_build)
+  add_dependencies(arangosh      v8_build)
+endif ()

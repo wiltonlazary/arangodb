@@ -1,4 +1,5 @@
 /*jshint strict: false, maxlen: 300 */
+/*global arango */
 
 var db = require("@arangodb").db,
   internal = require("internal"),
@@ -360,7 +361,7 @@ function printTraversalDetails (traversals) {
 
 }
 
-/* analzye and print execution plan */
+/* analyze and print execution plan */
 function processQuery (query, explain) {
   'use strict';
   var nodes = { }, 
@@ -372,13 +373,20 @@ function processQuery (query, explain) {
     maxEstimateLen = String("Est.").length,
     plan = explain.plan;
 
-
-  var isOnServer = (typeof ArangoClusterComm === "object");
-  var cluster;
-  if (isOnServer) {
-    cluster = require("@arangodb/cluster");
+  var isCoordinator = false;
+  if (typeof ArangoClusterComm === "object") {
+    isCoordinator = require("@arangodb/cluster").isCoordinator();
   } else {
-    cluster = {};
+    try {
+      if (arango) {
+        var result = arango.GET("/_admin/server/role");
+        if (result.role === "COORDINATOR") {
+          isCoordinator = true;
+        }
+      }
+    } catch (err) {
+      // ignore error
+    }
   }
   
   var recursiveWalk = function (n, level) {
@@ -388,6 +396,7 @@ function processQuery (query, explain) {
         rootNode = node.id;
       }
       if (node.type === "SubqueryNode") {
+        // enter subquery
         recursiveWalk(node.subquery.nodes, level + 1);
       }
       node.dependencies.forEach(function(d) {
@@ -415,6 +424,7 @@ function processQuery (query, explain) {
     while (count > 0) {
       --count;
       var node = n[count];
+      // get location of execution node in cluster
       node.site = site;
 
       if (node.type === "RemoteNode") {
@@ -755,21 +765,19 @@ function processQuery (query, explain) {
         node.minMaxDepth = node.minDepth + ".." + node.maxDepth;
         node.minMaxDepthLen = node.minMaxDepth.length;
 
-        var rc = keyword("FOR ") + 
-          variableName(node.vertexOutVariable) + 
-          "  " + annotation("/* vertex */");
-        
+        var rc = keyword("FOR "), parts = [];
+        if (node.hasOwnProperty('vertexOutVariable')) {
+          parts.push(variableName(node.vertexOutVariable) + "  " + annotation("/* vertex */"));
+        }
         if (node.hasOwnProperty('edgeOutVariable')) {
-          rc += "  , " + variableName(node.edgeOutVariable) +
-            "  " + annotation("/* edge */");
+          parts.push(variableName(node.edgeOutVariable) + "  " + annotation("/* edge */"));
         }
         if (node.hasOwnProperty('pathOutVariable')) {
-          rc += "  , " + variableName(node.pathOutVariable) +
-            "  " + annotation("/* paths */");
+          parts.push(variableName(node.pathOutVariable) + "  " + annotation("/* paths */"));
         }
-        rc += "  " +
-          keyword("IN") + " " +
-          value(node.minMaxDepth) + "  " + annotation("/* min..maxPathDepth */") + "  ";
+
+        rc += parts.join(", ") + " " + keyword("IN") + " " +
+          value(node.minMaxDepth) + "  " + annotation("/* min..maxPathDepth */") + " ";
 
         var translate = ["ANY", "INBOUND", "OUTBOUND"];
         var defaultDirection = node.directions[0];
@@ -856,8 +864,9 @@ function processQuery (query, explain) {
         }
         collect += 
           (node.count ? " " + keyword("WITH COUNT") : "") + 
-          (node.outVariable ? " " + keyword("INTO") + " " + variableName(node.outVariable) : "") +
-          (node.keepVariables ? " " + keyword("KEEP") + " " + node.keepVariables.map(function(variable) { return variableName(variable); }).join(", ") : "") +
+          (node.outVariable ? " " + keyword("INTO") + " " + variableName(node.outVariable) : "") + 
+          (node.expressionVariable ? " = " + variableName(node.expressionVariable) : "") + 
+          (node.keepVariables ? " " + keyword("KEEP") + " " + node.keepVariables.map(function(variable) { return variableName(variable.variable); }).join(", ") : "") +
           "   " + annotation("/* " + node.collectOptions.method + "*/");
         return collect;
       case "SortNode":
@@ -869,7 +878,7 @@ function processQuery (query, explain) {
       case "ReturnNode":
         return keyword("RETURN") + " " + variableName(node.inVariable);
       case "SubqueryNode":
-        return keyword("LET") + " " + variableName(node.outVariable) + " = ...   " + annotation("/* subquery */");
+        return keyword("LET") + " " + variableName(node.outVariable) + " = ...   " + annotation("/* " + (node.isConst ? "const " : "") + "subquery */");
       case "InsertNode":
         modificationFlags = node.modificationFlags;
         return keyword("INSERT") + " " + variableName(node.inVariable) + " " + keyword("IN") + " " + collection(node.collection);
@@ -963,7 +972,7 @@ function processQuery (query, explain) {
       pad(1 + maxIdLen - String(node.id).length) + variable(node.id) + "   " +
       keyword(node.type) + pad(1 + maxTypeLen - String(node.type).length) + "   ";
 
-    if (cluster && cluster.isCluster && cluster.isCluster()) { 
+    if (isCoordinator) {
       line += variable(node.site) + pad(1 + maxSiteLen - String(node.site).length) + "  ";
     }
 
@@ -984,7 +993,7 @@ function processQuery (query, explain) {
     pad(1 + maxIdLen - String("Id").length) + header("Id") + "   " +
     header("NodeType") + pad(1 + maxTypeLen - String("NodeType").length) + "   ";
 
-  if (cluster && cluster.isCluster && cluster.isCluster()) { 
+  if (isCoordinator) {
     line += header("Site") + pad(1 + maxSiteLen - String("Site").length) + "  ";
   }
 
@@ -1008,7 +1017,7 @@ function processQuery (query, explain) {
 
   stringBuilder.appendLine();
   printIndexes(indexes);
-  printTraversalDetails (traversalDetails);
+  printTraversalDetails(traversalDetails);
   stringBuilder.appendLine();
   printRules(plan.rules);
   printModificationFlags(modificationFlags);

@@ -25,7 +25,6 @@
 #define ARANGOD_V8_SERVER_V8_QUEUE_JOB_H 1
 
 #include "Dispatcher/Job.h"
-#include "Basics/json.h"
 
 struct TRI_vocbase_t;
 
@@ -33,8 +32,6 @@ namespace arangodb {
 namespace velocypack {
 class Builder;
 }
-
-class ApplicationV8;
 
 class V8QueueJob : public rest::Job {
   V8QueueJob(V8QueueJob const&) = delete;
@@ -45,7 +42,7 @@ class V8QueueJob : public rest::Job {
   /// @brief constructs a new V8 queue job
   //////////////////////////////////////////////////////////////////////////////
 
-  V8QueueJob(size_t queue, TRI_vocbase_t*, ApplicationV8*,
+  V8QueueJob(size_t queue, TRI_vocbase_t*,
              std::shared_ptr<arangodb::velocypack::Builder>);
 
   //////////////////////////////////////////////////////////////////////////////
@@ -77,12 +74,6 @@ class V8QueueJob : public rest::Job {
   //////////////////////////////////////////////////////////////////////////////
 
   TRI_vocbase_t* _vocbase;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief V8 dealer
-  //////////////////////////////////////////////////////////////////////////////
-
-  ApplicationV8* _v8Dealer;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief paramaters

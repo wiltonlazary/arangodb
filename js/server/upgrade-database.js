@@ -433,7 +433,7 @@
 
         var versionValues = JSON.parse(versionInfo);
 
-        if (versionValues && versionValues.version && ! isNaN(versionValues.version)) {
+        if (versionValues && versionValues.hasOwnProperty("version") && !isNaN(versionValues.version)) {
           lastVersion = parseFloat(versionValues.version);
         }
         else {
@@ -496,9 +496,32 @@
 
       // VERSION file does not exist, we are running on a new database
       logger.info("No version information file found in database directory.");
-      return runTasks(mode, cluster, DATABASE_INIT, 0);
+      return runTasks(mode, cluster, DATABASE_INIT, currentVersion);
     }
 
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief setupGraphs
+///
+/// set up the collection _graphs
+////////////////////////////////////////////////////////////////////////////////
+
+    addTask({
+      name:        "setupGraphs",
+      description: "setup _graphs collection",
+
+      mode:        [ MODE_PRODUCTION, MODE_DEVELOPMENT ],
+      cluster:     [ CLUSTER_NONE, CLUSTER_COORDINATOR_GLOBAL ],
+      database:    [ DATABASE_INIT, DATABASE_UPGRADE ],
+
+      task: function () {
+        return createSystemCollection("_graphs", {
+          waitForSync : false,
+          journalSize: 1024 * 1024,
+          replicationFactor: 1
+        });
+      }
+    });
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief setupUsers
@@ -518,7 +541,9 @@
         return createSystemCollection("_users", { 
           waitForSync : false, 
           shardKeys: [ "user" ],
-          journalSize: 4 * 1024 * 1024
+          journalSize: 4 * 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -538,6 +563,7 @@
       database:    [ DATABASE_INIT, DATABASE_UPGRADE ],
 
       task: function () {
+
         var users = getCollection("_users");
 
         if (! users) {
@@ -661,23 +687,25 @@
     });
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief setupGraphs
+/// @brief setupSessions
 ///
-/// set up the collection _graphs
+/// set up the collection _sessions
 ////////////////////////////////////////////////////////////////////////////////
 
     addTask({
-      name:        "setupGraphs",
-      description: "setup _graphs collection",
+      name:        "setupSessions",
+      description: "setup _sessions collection",
 
       mode:        [ MODE_PRODUCTION, MODE_DEVELOPMENT ],
       cluster:     [ CLUSTER_NONE, CLUSTER_COORDINATOR_GLOBAL ],
       database:    [ DATABASE_INIT, DATABASE_UPGRADE ],
 
       task: function () {
-        return createSystemCollection("_graphs", {
-          waitForSync : false,
-          journalSize: 1024 * 1024
+        return createSystemCollection("_sessions", {
+          waitForSync: false,
+          journalSize: 4 * 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -768,7 +796,9 @@
 
       task: function () {
         return createSystemCollection("_modules", {
-          journalSize: 1024 * 1024
+          journalSize: 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -790,7 +820,9 @@
       task: function () {
         // needs to be big enough for assets
         return createSystemCollection("_routing", {
-          journalSize: 32 * 1024 * 1024
+          journalSize: 8 * 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -831,6 +863,46 @@
 
         // add redirections to new location
         [ "/", "/_admin/html", "/_admin/html/index.html" ].forEach (function (src) {
+          routing.save({
+            url: src,
+            action: {
+              "do": "@arangodb/actions/redirectRequest",
+              options: {
+                permanently: true,
+                destination: "/_db/" + db._name() + "/_admin/aardvark/index.html"
+              }
+            },
+            priority: -1000000
+          });
+        });
+
+        return true;
+      }
+    });
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief insertRedirectionsUnified
+///
+/// create the default route in the _routing collection
+////////////////////////////////////////////////////////////////////////////////
+
+    addTask({
+      name:        "insertRedirectionsUnified",
+      description: "insert legacy compat routes for the non-unified admin interface",
+
+      mode:        [ MODE_PRODUCTION, MODE_DEVELOPMENT ],
+      cluster:     [ CLUSTER_NONE, CLUSTER_COORDINATOR_GLOBAL ],
+      database:    [ DATABASE_INIT, DATABASE_UPGRADE ],
+
+      task: function () {
+        var routing = getCollection("_routing");
+
+        if (! routing) {
+          return false;
+        }
+
+        // add redirections to new location
+        [ "/_admin/aardvark/standalone.html", "/_admin/aardvark/cluster.html" ].forEach (function (src) {
           routing.save({
             url: src,
             action: {
@@ -921,7 +993,9 @@
 
       task: function () {
         return createSystemCollection("_aqlfunctions", {
-          journalSize: 4 * 1024 * 1024
+          journalSize: 2 * 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -1037,7 +1111,9 @@
         var name = "_frontend";
         var result = createSystemCollection(name, {
           waitForSync: false,
-          journalSize: 1024 * 1024
+          journalSize: 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
 
         return result;
@@ -1101,7 +1177,9 @@
 
       task: function () {
         return createSystemCollection("_queues", {
-          journalSize: 4 * 1024 * 1024 
+          journalSize: 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });
@@ -1122,7 +1200,9 @@
 
       task: function () {
         return createSystemCollection("_jobs", {
-          journalSize: 4 * 1024 * 1024
+          journalSize: 4 * 1024 * 1024,
+          replicationFactor: 1,
+          distributeShardsLike: "_graphs"
         });
       }
     });

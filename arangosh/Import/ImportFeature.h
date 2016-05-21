@@ -20,8 +20,8 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef APPLICATION_FEATURES_ARANGOIMP_FEATURE_H
-#define APPLICATION_FEATURES_ARANGOIMP_FEATURE_H 1
+#ifndef ARANGODB_IMPORT_IMPORT_FEATURE_H
+#define ARANGODB_IMPORT_IMPORT_FEATURE_H 1
 
 #include "ApplicationFeatures/ApplicationFeature.h"
 #include "V8Client/ArangoClientHelper.h"
@@ -50,6 +50,8 @@ class ImportFeature final : public application_features::ApplicationFeature,
   bool _useBackslash;
   uint64_t _chunkSize;
   std::string _collectionName;
+  std::string _fromCollectionPrefix;
+  std::string _toCollectionPrefix;
   bool _createCollection;
   std::string _createCollectionType;
   std::string _typeImport;

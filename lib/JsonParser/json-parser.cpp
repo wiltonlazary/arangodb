@@ -2201,7 +2201,7 @@ static bool ParseObject (yyscan_t scanner, TRI_json_t* result) {
       nameLen = yyleng - 2;
 
       // do proper unescaping
-      name = TRI_UnescapeUtf8String(yyextra._memoryZone, yytext + 1, nameLen, &outLength);
+      name = TRI_UnescapeUtf8String(yyextra._memoryZone, yytext + 1, nameLen, &outLength, true);
       nameLen = outLength;
     }
     else if (c == STRING_CONSTANT_ASCII) {
@@ -2338,9 +2338,9 @@ static bool ParseValue (yyscan_t scanner, TRI_json_t* result, int c) {
         TRI_InitStringReferenceJson(result, ptr, 0);
       }
       else {
-        // string is not empty, process it
+        // string is not empty, so process it
         size_t outLength;
-        char* ptr = TRI_UnescapeUtf8String(yyextra._memoryZone, yytext + 1, yyleng - 2, &outLength);
+        char* ptr = TRI_UnescapeUtf8String(yyextra._memoryZone, yytext + 1, yyleng - 2, &outLength, true);
         if (ptr == nullptr) {
           yyextra._message = "out-of-memory";
           return false;
@@ -2413,7 +2413,7 @@ static bool ParseValue (yyscan_t scanner, TRI_json_t* result, int c) {
 /// @brief parses a json string
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_json_t* TRI_Json2String (TRI_memory_zone_t* zone, char const* text, char** error) {
+TRI_json_t* TRI_JsonString (TRI_memory_zone_t* zone, char const* text) {
   TRI_json_t* object;
   YY_BUFFER_STATE buf;
   int c;
@@ -2453,97 +2453,9 @@ TRI_json_t* TRI_Json2String (TRI_memory_zone_t* zone, char const* text, char** e
     }
   }
 
-  if (error != nullptr) {
-    if (yyextra._message != nullptr) {
-      *error = TRI_DuplicateString(yyextra._message);
-    }
-    else {
-      *error = nullptr;
-    }
-  }
-
   tri_jsp__delete_buffer(buf,scanner);
   tri_jsp_lex_destroy(scanner);
 
   return object;
 }
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief parses a json string
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_json_t* TRI_JsonString (TRI_memory_zone_t* zone, char const* text) {
-  return TRI_Json2String(zone, text, nullptr);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief parses a json file
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_json_t* TRI_JsonFile (TRI_memory_zone_t* zone, char const* path, char** error) {
-  FILE* in;
-  TRI_json_t* value;
-  int c;
-  struct yyguts_t * yyg;
-  yyscan_t scanner;
-
-  value = static_cast<TRI_json_t*>(TRI_Allocate(zone, sizeof(TRI_json_t), false));
-  
-  if (value == nullptr) {
-    // out of memory
-    return nullptr;
-  }
-
-  in = fopen(path, "rb");
-
-  if (in == nullptr) {
-    TRI_Free(zone, value);
-
-    return nullptr;
-  }
-
-  // init as a JSON null object so the memory in value is initialized
-  TRI_InitNullJson(value);
-
-  tri_jsp_lex_init(&scanner);
-  yyg = (struct yyguts_t*) scanner;
-
-  yyextra._memoryZone = zone;
-  yyin = in;
-
-  c = tri_jsp_lex(scanner);
-  if (! ParseValue(scanner, value, c)) {
-    TRI_FreeJson(zone, value);
-    value = nullptr;
-  }
-  else {
-    c = tri_jsp_lex(scanner);
-
-    if (c != END_OF_FILE) {
-      TRI_FreeJson(zone, value);
-      value = nullptr;
-    }
-  }
-
-  if (error != nullptr) {
-    if (yyextra._message != nullptr) {
-      *error = TRI_DuplicateString(yyextra._message);
-    }
-    else {
-      *error = nullptr;
-    }
-  }
-
-  tri_jsp_lex_destroy(scanner);
-
-  fclose(in);
-
-  return value;
-}
-
-// Local Variables:
-// mode: C
-// mode: outline-minor
-// outline-regexp: "^\\(/// @brief\\|/// {@inheritDoc}\\|/// @addtogroup\\|// --SECTION--\\|/// @\\}\\)"
-// End:
 

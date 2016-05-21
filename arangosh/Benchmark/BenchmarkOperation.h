@@ -21,14 +21,14 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef ARANGOSH_BENCHMARK_BENCHMARK_OPERATION_H
-#define ARANGOSH_BENCHMARK_BENCHMARK_OPERATION_H 1
+#ifndef ARANGODB_BENCHMARK_BENCHMARK_OPERATION_H
+#define ARANGODB_BENCHMARK_BENCHMARK_OPERATION_H 1
 
 #include "Basics/Common.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 
 namespace arangodb {
-namespace arangob {
+namespace arangobench {
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief simple interface for benchmark operations

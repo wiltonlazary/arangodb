@@ -23,100 +23,197 @@
 
 #include "Basics/Common.h"
 
-#include "Rest/InitializeRest.h"
-#include "RestServer/ArangoServer.h"
-#include <signal.h>
+#include "Actions/ActionFeature.h"
+#include "Agency/AgencyFeature.h"
+#include "ApplicationFeatures/ConfigFeature.h"
+#include "ApplicationFeatures/DaemonFeature.h"
+#include "ApplicationFeatures/LanguageFeature.h"
+#include "ApplicationFeatures/NonceFeature.h"
+#include "ApplicationFeatures/PrivilegeFeature.h"
+#include "ApplicationFeatures/ShutdownFeature.h"
+#include "ApplicationFeatures/SupervisorFeature.h"
+#include "ApplicationFeatures/TempFeature.h"
+#include "ApplicationFeatures/V8PlatformFeature.h"
+#include "ApplicationFeatures/VersionFeature.h"
+#include "ApplicationFeatures/WorkMonitorFeature.h"
+#include "Basics/ArangoGlobalContext.h"
+#include "Cluster/ClusterFeature.h"
+#include "Dispatcher/DispatcherFeature.h"
+#include "Logger/LoggerBufferFeature.h"
+#include "Logger/LoggerFeature.h"
+#include "ProgramOptions/ProgramOptions.h"
+#include "Random/RandomFeature.h"
+#include "RestServer/AffinityFeature.h"
+#include "RestServer/BootstrapFeature.h"
+#include "RestServer/CheckVersionFeature.h"
+#include "RestServer/ConsoleFeature.h"
+#include "RestServer/DatabaseFeature.h"
+#include "RestServer/DatabaseServerFeature.h"
+#include "RestServer/EndpointFeature.h"
+#include "RestServer/FileDescriptorsFeature.h"
+#include "RestServer/FrontendFeature.h"
+#include "RestServer/QueryRegistryFeature.h"
+#include "RestServer/RestServerFeature.h"
+#include "RestServer/ScriptFeature.h"
+#include "RestServer/ServerFeature.h"
+#include "RestServer/UnitTestsFeature.h"
+#include "RestServer/UpgradeFeature.h"
+#include "Scheduler/SchedulerFeature.h"
+#include "Ssl/SslFeature.h"
+#include "Ssl/SslServerFeature.h"
+#include "Statistics/StatisticsFeature.h"
+#include "V8Server/FoxxQueuesFeature.h"
+#include "V8Server/V8DealerFeature.h"
+#include "Wal/LogfileManager.h"
+#include "Wal/RecoveryFeature.h"
 
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
-#include <iostream>
+#ifdef ARANGODB_ENABLE_ROCKSDB
+#include "Indexes/RocksDBFeature.h"
 #endif
 
 using namespace arangodb;
-using namespace arangodb::rest;
+using namespace arangodb::wal;
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief ArangoDB server
-////////////////////////////////////////////////////////////////////////////////
-
-ArangoServer* ArangoInstance = nullptr;
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief Hooks for OS-Specific functions
-////////////////////////////////////////////////////////////////////////////////
-
+#if 0
 #ifdef _WIN32
-extern void TRI_GlobalEntryFunction();
-extern void TRI_GlobalExitFunction(int, void*);
-extern bool TRI_ParseMoreArgs(int argc, char* argv[]);
-extern void TRI_StartService(int argc, char* argv[]);
-#else
-void TRI_GlobalEntryFunction() {}
-void TRI_GlobalExitFunction(int exitCode, void* data) {}
-bool TRI_ParseMoreArgs(int argc, char* argv[]) { return false; }
-void TRI_StartService(int argc, char* argv[]) {}
+WindowsService WINDOWS_SERVICE;
+#endif
 #endif
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief handle fatal SIGNALs; print backtrace,
-///        and rethrow signal for coredumps.
-////////////////////////////////////////////////////////////////////////////////
+static int runServer(int argc, char** argv) {
+  ArangoGlobalContext context(argc, argv);
+  context.installSegv();
+  context.maskAllSignals();
+  context.runStartupChecks();
 
-static void AbortHandler(int signum) {
-  TRI_PrintBacktrace();
+  std::string name = context.binaryName();
+
+  auto options = std::make_shared<options::ProgramOptions>(
+      argv[0], "Usage: " + name + " [<options>]", "For more information use:");
+
+  application_features::ApplicationServer server(options);
+
+#if 0
 #ifdef _WIN32
-  exit(255 + signum);
-#else
-  signal(signum, SIG_DFL);
-  kill(getpid(), signum);
+  application_features::ProgressHandler reporter{
+      [](application_features::ServerState state) {
+        switch (_state) {
+          case ServerState::IN_WAIT:
+            WINDOWS_SERVICE.startupFinished();
+            break;
+          case ServerState::IN_STOP:
+            server.shutdownBegins();
+            break;
+          case ServerState::IN_COLLECT_OPTIONS:
+          case ServerState::IN_VALIDATE_OPTIONS:
+          case ServerState::IN_PREPARE:
+          case ServerState::IN_START:
+            WINDOWS_SERVICE.startupProgress();
+            break;
+          case ServerState::UNINITIALIZED:
+          case ServerState::STOPPED:
+            break;
+        }
+      },
+      [](application_features::ServerState state, std::string const& name) {
+        switch (_state) {
+          case ServerState::IN_COLLECT_OPTIONS:
+          case ServerState::IN_VALIDATE_OPTIONS:
+          case ServerState::IN_PREPARE:
+          case ServerState::IN_START:
+            WINDOWS_SERVICE.startupProgress();
+            break;
+          default:
+            break;
+        }
+      }};
+
+  server.addReporter(reporter);
 #endif
+#endif
+
+  std::vector<std::string> nonServerFeatures = {
+      "Action",     "Affinity",   "Agency",
+      "Cluster",    "Daemon",     "Dispatcher",
+      "Endpoint",   "FoxxQueues", "LoggerBufferFeature",
+      "RestServer", "Server",     "Scheduler",
+      "SslServer",  "Statistics", "Supervisor"};
+
+  int ret = EXIT_FAILURE;
+
+  server.addFeature(new ActionFeature(&server));
+  server.addFeature(new AffinityFeature(&server));
+  server.addFeature(new AgencyFeature(&server));
+  server.addFeature(new BootstrapFeature(&server));
+  server.addFeature(new CheckVersionFeature(&server, &ret, nonServerFeatures));
+  server.addFeature(new ClusterFeature(&server));
+  server.addFeature(new ConfigFeature(&server, name));
+  server.addFeature(new ConsoleFeature(&server));
+  server.addFeature(new DatabaseFeature(&server));
+  server.addFeature(new DatabaseServerFeature(&server));
+  server.addFeature(new DispatcherFeature(&server));
+  server.addFeature(new EndpointFeature(&server));
+  server.addFeature(new FileDescriptorsFeature(&server));
+  server.addFeature(new FoxxQueuesFeature(&server));
+  server.addFeature(new FrontendFeature(&server));
+  server.addFeature(new LanguageFeature(&server));
+  server.addFeature(new LogfileManager(&server));
+  server.addFeature(new LoggerBufferFeature(&server));
+  server.addFeature(new LoggerFeature(&server, true));
+  server.addFeature(new NonceFeature(&server));
+  server.addFeature(new PrivilegeFeature(&server));
+  server.addFeature(new QueryRegistryFeature(&server));
+  server.addFeature(new RandomFeature(&server));
+  server.addFeature(new RecoveryFeature(&server));
+  server.addFeature(new RestServerFeature(&server, "arangodb"));
+#ifdef ARANGODB_ENABLE_ROCKSDB
+  server.addFeature(new RocksDBFeature(&server));
+#endif
+  server.addFeature(new SchedulerFeature(&server));
+  server.addFeature(new ScriptFeature(&server, &ret));
+  server.addFeature(new ServerFeature(&server, &ret));
+  server.addFeature(new ShutdownFeature(&server, {"UnitTests", "Script"}));
+  server.addFeature(new SslFeature(&server));
+  server.addFeature(new SslServerFeature(&server));
+  server.addFeature(new StatisticsFeature(&server));
+  server.addFeature(new TempFeature(&server, name));
+  server.addFeature(new UnitTestsFeature(&server, &ret));
+  server.addFeature(new UpgradeFeature(&server, &ret, nonServerFeatures));
+  server.addFeature(new V8DealerFeature(&server));
+  server.addFeature(new V8PlatformFeature(&server));
+  server.addFeature(new VersionFeature(&server));
+  server.addFeature(new WorkMonitorFeature(&server));
+
+#ifdef ARANGODB_HAVE_FORK
+  server.addFeature(new DaemonFeature(&server));
+
+  std::unique_ptr<SupervisorFeature> supervisor =
+      std::make_unique<SupervisorFeature>(&server);
+  supervisor->supervisorStart({"Logger"});
+  server.addFeature(supervisor.release());
+#endif
+
+  try {
+    server.run(argc, argv);
+  } catch (std::exception const& ex) {
+    LOG(ERR) << "arangod terminated because of an unhandled exception: "
+             << ex.what();
+    ret = EXIT_FAILURE;
+  } catch (...) {
+    LOG(ERR) << "arangod terminated because of an unhandled exception of "
+                "unknown type";
+    ret = EXIT_FAILURE;
+  }
+
+  return context.exit(ret);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief creates an application server
-////////////////////////////////////////////////////////////////////////////////
-
 int main(int argc, char* argv[]) {
-  int res = EXIT_SUCCESS;
-
-  // Note: NEVER start threads or create global objects in here. The server
-  //       might enter enter a daemon mode, in which it leave the main function
-  //       in the parent and only a forked child is running.
-  //
-  //       Any startup handling MUST be done inside "startupServer".
-
-  signal(SIGSEGV, AbortHandler);
-
-  // windows only
-  bool const startAsService = TRI_ParseMoreArgs(argc, argv);
-
-  // initialize sub-systems
-  TRI_GlobalEntryFunction();
-  TRIAGENS_REST_INITIALIZE();
-
-  if (startAsService) {
-    TRI_StartService(argc, argv);
-  } else {
-    ArangoInstance = new ArangoServer(argc, argv);
-    res = ArangoInstance->start();
-  }
-
-  if (ArangoInstance != nullptr) {
-    try {
-      delete ArangoInstance;
-    } catch (...) {
-      // caught an error during shutdown
-      res = EXIT_FAILURE;
-
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
-      std::cerr << "Caught an exception during shutdown" << std::endl;
+#if 0
+#ifdef _WIN32
+  WINDOWS_SERVICE.serviceStart(argc, argv, runServer);
 #endif
-    }
-    ArangoInstance = nullptr;
-  }
+#endif
 
-  // shutdown sub-systems
-  TRIAGENS_REST_SHUTDOWN;
-  TRI_GlobalExitFunction(res, nullptr);
-
-  return res;
+  return runServer(argc, argv);
 }

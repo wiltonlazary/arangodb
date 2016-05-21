@@ -24,12 +24,10 @@
 
 #include "Nonce.h"
 
-#include <math.h>
-
-#include "Logger/Logger.h"
 #include "Basics/MutexLocker.h"
-#include "Basics/RandomGenerator.h"
 #include "Basics/StringUtils.h"
+#include "Logger/Logger.h"
+#include "Random/RandomGenerator.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -84,8 +82,8 @@ void destroy() {
 
 std::string createNonce() {
   uint32_t timestamp = (uint32_t)time(0);
-  uint32_t rand1 = Random::interval(0U, UINT32_MAX);
-  uint32_t rand2 = Random::interval(0U, UINT32_MAX);
+  uint32_t rand1 = RandomGenerator::interval(UINT32_MAX);
+  uint32_t rand2 = RandomGenerator::interval(UINT32_MAX);
 
   uint8_t buffer[12];
 

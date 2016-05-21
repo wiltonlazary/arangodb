@@ -7,8 +7,9 @@ newVersionNumber = $(shell cat ../../VERSION)
 ################################################################################
 # per book targets
 check-summary:
+	@echo "##### checking summary for $(NAME)"
 	@find ppbooks/$(NAME) -name \*.md |sed -e "s;ppbooks/$(NAME)/;;" |grep -vf SummaryBlacklist.txt |sort > /tmp/is_md.txt
-	@cat $(NAME)/SUMMARY.md |grep '(' |sed -e "s;.*(;;" -e "s;).*;;" |sort |grep -v '# Summary' > /tmp/is_summary.txt
+	@cat $(NAME)/SUMMARY.md |grep -v '^ *# '|grep '(' |sed -e "s;.*(;;" -e "s;).*;;" |sort  > /tmp/is_summary.txt
 	@if test "`comm -3 /tmp/is_md.txt /tmp/is_summary.txt|wc -l`" -ne 0; then \
 		echo "not all files are mapped to the summary!"; \
 		echo " files found       |    files in summary"; \
@@ -17,6 +18,7 @@ check-summary:
 	fi
 
 book-check-leftover-docublocks:
+	@echo "##### checking for left over docublocks in $(NAME)"
 	@if test "`grep -r \"@startDocuBlock\" --include \"*.md\" ppbooks/$(NAME) | wc -l`" -ne 0; then \
 	  echo ; \
 	  echo "@startDocuBlock markers still found in generated output files:"; \
@@ -25,6 +27,7 @@ book-check-leftover-docublocks:
 	fi
 
 book-check-restheader-leftovers:
+	@echo "##### checking for restheader leftovers in $(NAME)"
 	@if test "`find ppbooks/$(NAME) -name '*.md' -exec grep -- '^@[A-Z]*' {} \; -print | wc -l`" -gt 0; then \
 		echo "found these unconverted Swagger Restapi tags: "; \
 		find ppbooks/$(NAME) -name '*.md' -exec grep '^@[A-Z]*' {} \; -print; \
@@ -33,6 +36,7 @@ book-check-restheader-leftovers:
 
 # Check for all lines starting with exclamation marks, except image links which are exclamation mar + bracket
 book-check-mdpp-leftovers:
+	@echo "##### checking for mdpp leftovers for $(NAME)"
 	@if test "`find ppbooks/$(NAME) -name '*.md' -exec grep -- '^![^\[]' {} \; -print | wc -l`" -gt 0; then \
 		echo "found these unconverted Markdown-PP tags: "; \
 		find ppbooks/$(NAME) -name '*.md' -exec grep '^![^\[]' {} \; -print; \
@@ -40,6 +44,7 @@ book-check-mdpp-leftovers:
 	fi
 
 ppbook-precheck-bad-code-sections:
+	@echo "##### checking for bad code sections in $(NAME)"
 	@if grep -qR  '^``` *.* ' $(NAME); then \
 		echo "tripple tics with blanks afterwards found: "; \
 		grep -R  '^``` *.* ' $(NAME); \
@@ -47,6 +52,7 @@ ppbook-precheck-bad-code-sections:
 	fi
 
 ppbook-check-html-link:
+	@echo "##### checking for invalid HTML links in $(NAME)"
 	@if test "`egrep -r '\[.*\]\(.*\)' ppbooks/$(NAME) |grep '\.md:' |grep html |grep -v http://|grep -v https:// |grep -v header.css |wc -l`" -gt 0; then \
 		echo "Found links to .html files inside of the document! use <foo>.md instead!"; \
 		echo; \
@@ -55,6 +61,7 @@ ppbook-check-html-link:
 	fi
 
 ppbook-check-directory-link:
+	@echo "##### checking for invalid md links in $(NAME)"
 	@if test "`egrep -r '\[.*\]\(.*\)' ppbooks/$(NAME) | grep '\.md:' |grep -v html |grep -v http://|grep -v https:// |grep -v header.css |grep -v node_modules |grep -v node_modules | grep -v '\.md' | wc -l`" -gt 0; then \
 		echo "Found director links! use ../<directory>/README.md instead!"; \
 		echo; \
@@ -63,6 +70,7 @@ ppbook-check-directory-link:
 	fi
 
 book-check-markdown-leftovers:
+	@echo "##### checking for remaining markdown snippets in the HTML output of $(NAME)"
 	@if test "`find books/$(NAME) -name '*.html' -exec grep -- '##' {} \; -print | wc -l`" -gt 0; then \
 		echo "found these unconverted markdown titles: "; \
 		find books/$(NAME) -name '*.html' -exec grep '##' {} \; -print; \
@@ -80,6 +88,7 @@ book-check-markdown-leftovers:
 	fi
 
 book-check-dangling-anchors:
+	@echo "##### checking for dangling anchors in $(NAME)"
 	@grep -R "a href.*#" books/$(NAME) | \
 		egrep -v "(styles/header\.js|/app\.js|class=\"navigation|https*://|href=\"#\")" | \
 		sed 's;\(.*\.html\):.*a href="\(.*\)#\(.*\)">.*</a>.*;\1,\2,\3;' | grep -v " " > /tmp/anchorlist.txt
@@ -110,7 +119,7 @@ book-check-dangling-anchors:
 	fi
 
 build-book-symlinks:
-	echo "generate backwards compatibility symlinks:"
+	echo "##### generate backwards compatibility symlinks for $(NAME)"
 	cd books/$(NAME); pwd; \
 	find . -name "README.mdpp" |\
 	sed -e 's:README\.mdpp$$::' |\
@@ -118,6 +127,7 @@ build-book-symlinks:
 	bash
 
 build-book:
+	@echo "##### Generating book $(NAME)"
 	make ppbook-precheck-bad-code-sections $(NAME)
 	if test ! -d ppbooks/$(NAME); then \
 	  mkdir -p ppbooks/$(NAME); \
@@ -128,6 +138,7 @@ build-book:
 	  done; \
 	fi
 	cd ppbooks/$(NAME); if ! test -L SUMMARY.md; then ln -s ../../$(NAME)/SUMMARY.md . ; fi
+	cd ppbooks/$(NAME); if ! test -f HEADER.html ; then cp ../../$(NAME)/HEADER.html . ; fi
 	cd ppbooks/$(NAME); if ! test -f book.json ; then cp ../../$(NAME)/book.json . ; fi
 	cd ppbooks/$(NAME); cp -a ../../$(NAME)/styles/* styles/
 	WD=`pwd`; \
@@ -140,6 +151,7 @@ build-book:
 	python ../Scripts/generateMdFiles.py $(NAME) ppbooks/ ../../js/apps/system/_admin/aardvark/APP/api-docs.json $(FILTER)
 
 	cd ppbooks/$(NAME) && sed -i -e 's/VERSION_NUMBER/v$(newVersionNumber)/g' styles/header.js
+	cd ppbooks/$(NAME) && sed -i -e 's/VERSION_NUMBER/v$(newVersionNumber)/g' HEADER.html
 	cd ppbooks/$(NAME) && sed -i -e 's/VERSION_NUMBER/v$(newVersionNumber)/g' README.md
 	cd ppbooks/$(NAME) && sed -i -e 's/VERSION_NUMBER/v$(newVersionNumber)/g' book.json
 
@@ -149,7 +161,6 @@ build-book:
 	make book-check-leftover-docublocks
 	make book-check-restheader-leftovers
 	make book-check-mdpp-leftovers
-	make ppbook-check-html-link
 	make ppbook-check-directory-link
 
 	cd ppbooks/$(NAME) && gitbook install
@@ -195,7 +206,7 @@ check-docublocks:
 		   >> /tmp/rawindoc.txt
 	cat /tmp/rawindoc.txt | sed  -e "s;.*ck ;;" -e "s;.*ne ;;" |sort -u > /tmp/indoc.txt
 	grep -R '^/// @startDocuBlock' ../DocuBlocks --include "*.md" --include "*.mdpp" |grep -v aardvark > /tmp/rawinprog.txt
-# searching the Inline docublocks needs some more blacklisting:
+        # searching the Inline docublocks needs some more blacklisting:
 	grep -R '@startDocuBlockInline' --include "*.h" --include "*.cpp" --include "*.js" --include "*.mdpp" . |\
 		grep -v ppbook |\
 		grep -v allComments.txt |\
@@ -231,7 +242,7 @@ check-docublocks:
 	fi
 
 clean-intermediate:
-	make clean-book-intermediate NAME=Users FILTER=$(FILTER)
+	make clean-book-intermediate NAME=$(NAME) FILTER=$(FILTER)
 
 
 clean: clean-intermediate
@@ -243,6 +254,19 @@ clean: clean-intermediate
 build-books-keep-md:
 	@test -d books || mkdir books
 	python ../Scripts/codeBlockReader.py
-	make build-book NAME=Users
+	make build-book NAME=$(NAME)
 
-build-books: clean-intermediate build-books-keep-md check-docublocks
+build-books:
+	make clean-intermediate NAME=Users
+	make clean-intermediate NAME=AQL
+	make clean-intermediate NAME=HTTP
+	make build-books-keep-md NAME=Users
+	make build-books-keep-md NAME=AQL
+	make build-books-keep-md NAME=HTTP
+
+	make ppbook-check-html-link NAME=Users
+	make ppbook-check-html-link NAME=AQL
+	make ppbook-check-html-link NAME=HTTP
+
+	make check-docublocks
+

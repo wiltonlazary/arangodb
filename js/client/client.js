@@ -1,4 +1,4 @@
-/*jshint -W051:true */
+/*jshint -W051, -W020 */
 /*global global:true, window, require */
 'use strict';
 
@@ -44,28 +44,6 @@ global.setInterval = global.setInterval || function () {};
 global.clearInterval = global.clearInterval || function () {};
 global.setTimeout = global.setTimeout || function () {};
 global.clearTimeout = global.clearTimeout || function () {};
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief template string generator for building an AQL query
-////////////////////////////////////////////////////////////////////////////////
-
-global.aqlQuery = function () {
-  var strings = arguments[0];
-  var bindVars = {};
-  var query = strings[0];
-  var name, value, i;
-  for (i = 1; i < arguments.length; i++) {
-    value = arguments[i];
-    name = 'value' + (i - 1);
-    if (value && value.constructor && value.constructor.name === 'ArangoCollection') {
-      name = '@' + name;
-      value = value.name();
-    }
-    bindVars[name] = value;
-    query += '@' + name + strings[i];
-  }
-  return {query: query, bindVars: bindVars};
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief start paging
@@ -127,6 +105,12 @@ global.console = global.console || require("console");
 ////////////////////////////////////////////////////////////////////////////////
 
 global.db = require("@arangodb").db;
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief template string generator for building an AQL query
+////////////////////////////////////////////////////////////////////////////////
+
+global.aql = global.aqlQuery = require("@arangodb").aql;
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief global 'arango'

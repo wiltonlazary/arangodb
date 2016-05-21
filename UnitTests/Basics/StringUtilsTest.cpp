@@ -25,11 +25,22 @@
 /// @author Copyright 2007-2012, triAGENS GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "Basics/Common.h"
+
+#define BOOST_TEST_INCLUDED
 #include <boost/test/unit_test.hpp>
 
-#include "Basics/StringUtils.h"
-
 #include <iomanip>
+
+#include "Basics/StringUtils.h"
+#include "Basics/Utf8Helper.h"
+
+#if _WIN32
+#include "Basics/win-utils.h"
+#define FIX_ICU_ENV     TRI_FixIcuDataEnv()
+#else
+#define FIX_ICU_ENV
+#endif
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -62,6 +73,18 @@ static string hexedump (const string &s) {
 
 struct StringUtilsSetup {
   StringUtilsSetup () {
+    FIX_ICU_ENV;
+    if (!arangodb::basics::Utf8Helper::DefaultUtf8Helper.setCollatorLanguage("")) {
+      std::string msg =
+        "cannot initialize ICU; please make sure ICU*dat is available; "
+        "the variable ICU_DATA='";
+      if (getenv("ICU_DATA") != nullptr) {
+        msg += getenv("ICU_DATA");
+      }
+      msg += "' should point the directory containing the ICU*dat file.";
+      BOOST_TEST_MESSAGE(msg);
+      BOOST_CHECK_EQUAL(false, true);
+    }
     BOOST_TEST_MESSAGE("setup StringUtils");
   }
 

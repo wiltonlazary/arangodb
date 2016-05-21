@@ -28,48 +28,83 @@
 #include "Basics/AssocMulti.h"
 #include "Indexes/Index.h"
 #include "Indexes/IndexIterator.h"
-#include "VocBase/edge-collection.h"
 #include "VocBase/vocbase.h"
 #include "VocBase/voc-types.h"
+
+#include <velocypack/Iterator.h>
+#include <velocypack/Slice.h>
 
 namespace arangodb {
 
 class EdgeIndexIterator final : public IndexIterator {
  public:
-  typedef arangodb::basics::AssocMulti<TRI_edge_header_t, TRI_doc_mptr_t,
-                                       uint32_t, true> TRI_EdgeIndexHash_t;
+  typedef arangodb::basics::AssocMulti<arangodb::velocypack::Slice,
+                                       TRI_doc_mptr_t, uint32_t,
+                                       true> TRI_EdgeIndexHash_t;
 
   TRI_doc_mptr_t* next() override;
+
+  void nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t) override;
 
   void reset() override;
 
   EdgeIndexIterator(arangodb::Transaction* trx,
                     TRI_EdgeIndexHash_t const* index,
-                    std::vector<TRI_edge_header_t>& searchValues)
+                    arangodb::velocypack::Builder&& searchValues)
       : _trx(trx),
         _index(index),
-        _keys(std::move(searchValues)),
-        _position(0),
-        _last(nullptr),
-        _buffer(nullptr),
+        _searchValues(searchValues),
+        _keys(_searchValues.slice()),
+        _iterator(_keys, true),
         _posInBuffer(0),
-        _batchSize(50) {  // This might be adjusted
-  }
+        _batchSize(1000) {}
 
-  ~EdgeIndexIterator() {
-    // Free the vector space, not the content
-    delete _buffer;
-  }
+  EdgeIndexIterator(arangodb::Transaction* trx,
+                    TRI_EdgeIndexHash_t const* index,
+                    arangodb::velocypack::Slice searchValues)
+      : _trx(trx),
+        _index(index),
+        _searchValues(arangodb::velocypack::Builder::clone(searchValues)),
+        _keys(_searchValues.slice()),
+        _iterator(_keys, true),
+        _posInBuffer(0),
+        _batchSize(1000) {}
 
  private:
   arangodb::Transaction* _trx;
   TRI_EdgeIndexHash_t const* _index;
-  std::vector<TRI_edge_header_t> _keys;
-  size_t _position;
-  TRI_doc_mptr_t* _last;
-  std::vector<TRI_doc_mptr_t*>* _buffer;
+  arangodb::velocypack::Builder const _searchValues;
+  arangodb::velocypack::Slice const _keys;
+  arangodb::velocypack::ArrayIterator _iterator;
+  std::vector<TRI_doc_mptr_t*> _buffer;
   size_t _posInBuffer;
   size_t _batchSize;
+};
+
+class AnyDirectionEdgeIndexIterator final : public IndexIterator {
+ public:
+  TRI_doc_mptr_t* next() override;
+
+  void nextBabies(std::vector<TRI_doc_mptr_t*>&, size_t) override;
+
+  void reset() override;
+
+  AnyDirectionEdgeIndexIterator(EdgeIndexIterator* outboundIterator,
+                                EdgeIndexIterator* inboundIterator)
+      : _outbound(outboundIterator),
+        _inbound(inboundIterator),
+        _useInbound(false) {}
+
+  ~AnyDirectionEdgeIndexIterator() {
+    delete _outbound;
+    delete _inbound;
+  }
+
+ private:
+  EdgeIndexIterator* _outbound;
+  EdgeIndexIterator* _inbound;
+  std::unordered_set<TRI_doc_mptr_t*> _seen;
+  bool _useInbound;
 };
 
 class EdgeIndex final : public Index {
@@ -82,18 +117,30 @@ class EdgeIndex final : public Index {
 
   ~EdgeIndex();
 
+  static void buildSearchValue(TRI_edge_direction_e, std::string const&,
+                               arangodb::velocypack::Builder&);
+
+  static void buildSearchValue(TRI_edge_direction_e, VPackSlice const&,
+                               arangodb::velocypack::Builder&);
+
+  static void buildSearchValueFromArray(TRI_edge_direction_e,
+                                        arangodb::velocypack::Slice const,
+                                        arangodb::velocypack::Builder&);
+
  public:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief typedef for hash tables
   //////////////////////////////////////////////////////////////////////////////
 
-  typedef arangodb::basics::AssocMulti<TRI_edge_header_t, TRI_doc_mptr_t,
+  typedef arangodb::basics::AssocMulti<arangodb::velocypack::Slice, TRI_doc_mptr_t,
                                        uint32_t, true> TRI_EdgeIndexHash_t;
 
  public:
   IndexType type() const override final {
     return Index::TRI_IDX_TYPE_EDGE_INDEX;
   }
+  
+  bool canBeDropped() const override final { return false; }
 
   bool isSorted() const override final { return false; }
 
@@ -114,14 +161,6 @@ class EdgeIndex final : public Index {
 
   int remove(arangodb::Transaction*, struct TRI_doc_mptr_t const*,
              bool) override final;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief looks up edges using the index, restarting at the edge pointed at
-  /// by next
-  //////////////////////////////////////////////////////////////////////////////
-
-  void lookup(arangodb::Transaction*, TRI_edge_index_iterator_t const*,
-              std::vector<TRI_doc_mptr_copy_t>&, TRI_doc_mptr_t*&, size_t);
 
   int batchInsert(arangodb::Transaction*,
                   std::vector<TRI_doc_mptr_t const*> const*,
@@ -148,6 +187,35 @@ class EdgeIndex final : public Index {
 
   arangodb::aql::AstNode* specializeCondition(
       arangodb::aql::AstNode*, arangodb::aql::Variable const*) const override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Transform the list of search slices to search values.
+  ///        This will multiply all IN entries and simply return all other
+  ///        entries.
+  //////////////////////////////////////////////////////////////////////////////
+
+  void expandInSearchValues(arangodb::velocypack::Slice const,
+                            arangodb::velocypack::Builder&) const override;
+
+  ////////////////////////////////////////////////////////////////////////////////
+  /// @brief creates an IndexIterator for the given VelocyPackSlices.
+  ///        The searchValue is a an Array with exactly two Entries, one of them
+  ///        has to be NONE.
+  ///        If the first is set it means we are searching for _from (OUTBOUND),
+  ///        if the second is set we are searching for _to (INBOUND).
+  ///        The slice that is set has to be list of keys to search for.
+  ///        Each key needs to have the following formats:
+  ///
+  ///        1) {"eq": <compareValue>} // The value in index is exactly this
+  ///
+  ///        Reverse is not supported, hence ignored
+  ///        NOTE: The iterator is only valid as long as the slice points to
+  ///        a valid memory region.
+  ////////////////////////////////////////////////////////////////////////////////
+
+  IndexIterator* iteratorForSlice(arangodb::Transaction*, IndexIteratorContext*,
+                                  arangodb::velocypack::Slice const,
+                                  bool) const override;
 
  private:
   //////////////////////////////////////////////////////////////////////////////

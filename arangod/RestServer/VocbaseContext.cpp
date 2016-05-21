@@ -174,10 +174,8 @@ bool VocbaseContext::useClusterAuthentication() const {
 ////////////////////////////////////////////////////////////////////////////////
 
 std::string VocbaseContext::realm() const {
-  static std::string EMPTY = "";
-
   if (_vocbase == nullptr) {
-    return EMPTY;
+    return std::string("");
   }
 
   return _vocbase->_name;
@@ -273,7 +271,7 @@ GeneralResponse::ResponseCode VocbaseContext::authenticate() {
     // no cookie found. fall-through to regular HTTP authentication
   }
 
-  std::string const& authStr = _request->header("authorization", found);
+  std::string const& authStr = _request->header(StaticStrings::Authorization, found);
 
   if (!found || !TRI_CaseEqualString(authStr.c_str(), "basic ", 6)) {
     return GeneralResponse::ResponseCode::UNAUTHORIZED;
@@ -303,25 +301,17 @@ GeneralResponse::ResponseCode VocbaseContext::authenticate() {
       return GeneralResponse::ResponseCode::BAD;
     }
 
-    std::string const username = up.substr(0, n);
-    _request->setUser(username);
+    _request->setUser(up.substr(0, n));
 
     return GeneralResponse::ResponseCode::OK;
   }
 
   // look up the info in the cache first
   bool mustChange;
-  char* cached = TRI_CheckCacheAuthInfo(_vocbase, auth, &mustChange);
-  std::string username;
+  std::string username = TRI_CheckCacheAuthInfo(_vocbase, auth, &mustChange);
 
-  // found a cached entry, access must be granted
-  if (cached != 0) {
-    username = std::string(cached);
-    TRI_Free(TRI_CORE_MEM_ZONE, cached);
-  }
-
-  // no entry found in cache, decode the basic auth info and look it up
-  else {
+  if (username.empty()) {
+    // no entry found in cache, decode the basic auth info and look it up
     std::string const up = StringUtils::decodeBase64(auth);
     std::string::size_type n = up.find(':', 0);
 
@@ -343,8 +333,7 @@ GeneralResponse::ResponseCode VocbaseContext::authenticate() {
     }
   }
 
-  // TODO: create a user object for the VocbaseContext
-  _request->setUser(username);
+  _request->setUser(std::move(username));
 
   if (mustChange) {
     if ((_request->requestType() == GeneralRequest::RequestType::PUT ||

@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "EndpointList.h"
+
 #include "Logger/Logger.h"
 #include "Basics/StringUtils.h"
 
@@ -120,18 +121,29 @@ std::vector<std::string> EndpointList::all() const {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief return all endpoints with a certain prefix
+/// @brief return all typed endpoints
 ////////////////////////////////////////////////////////////////////////////////
 
-std::map<std::string, Endpoint*> EndpointList::getByPrefix(
-    std::string const& prefix) const {
-  std::map<std::string, Endpoint*> result;
+std::vector<std::string> EndpointList::all(
+    Endpoint::TransportType transport) const {
+  std::vector<std::string> result;
+  std::string prefix;
+
+  switch (transport) {
+    case Endpoint::TransportType::HTTP:
+      prefix = "http+";
+      break;
+
+    case Endpoint::TransportType::VPP:
+      prefix = "vpp+";
+      break;
+  }
 
   for (auto& it : _endpoints) {
     std::string const& key = it.first;
 
     if (StringUtils::isPrefix(key, prefix)) {
-      result[key] = it.second;
+      result.emplace_back(it.first);
     }
   }
 

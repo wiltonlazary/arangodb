@@ -39,7 +39,9 @@ using namespace arangodb::basics;
                 windowsErrorBuf, sizeof(windowsErrorBuf), NULL);     \
   errno = GetLastError();
 #else
-#warning TODO move to system or os file
+//YYY #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+//YYY #warning FRANK move to system or os file
+//YYY #endif
 #define STR_ERROR() strerror(errno)
 #endif
 
@@ -104,7 +106,8 @@ EndpointIp::EndpointIp(DomainType domainType, EndpointType type,
       _host(host),
       _port(port),
       _reuseAddress(reuseAddress) {
-  TRI_ASSERT(domainType == DomainType::IPV4 || domainType == DomainType::IPV6);
+  TRI_ASSERT(domainType == Endpoint::DomainType::IPV4 ||
+             domainType == Endpoint::DomainType::IPV6);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -21,8 +21,8 @@
 /// @author Jan Steemann
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef LIB_REST_ENDPOINT_H
-#define LIB_REST_ENDPOINT_H 1
+#ifndef ARANGODB_ENDPOINT_ENDPOINT_H
+#define ARANGODB_ENDPOINT_ENDPOINT_H 1
 
 #include "Basics/Common.h"
 
@@ -52,6 +52,7 @@ class Endpoint {
   virtual ~Endpoint() {}
 
  public:
+  static std::string uriForm(std::string const&);
   static std::string unifiedForm(std::string const&);
   static Endpoint* serverFactory(std::string const&, int, bool reuseAddress);
   static Endpoint* clientFactory(std::string const&);

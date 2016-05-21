@@ -67,8 +67,7 @@ void Builder::doActualSort(std::vector<SortEntry>& entries) {
   });
 };
 
-uint8_t const* Builder::findAttrName(uint8_t const* base, uint64_t& len,
-                                     Options const* options) {
+uint8_t const* Builder::findAttrName(uint8_t const* base, uint64_t& len) {
   uint8_t const b = *base;
   if (b >= 0x40 && b <= 0xbe) {
     // short UTF-8 string
@@ -86,13 +85,11 @@ uint8_t const* Builder::findAttrName(uint8_t const* base, uint64_t& len,
   }
 
   // translate attribute name
-  Slice s(base, options);
-  return findAttrName(s.makeKey().start(), len, options);
+  return findAttrName(Slice(base).makeKey().start(), len);
 }
 
 void Builder::sortObjectIndexShort(uint8_t* objBase,
-                                   std::vector<ValueLength>& offsets,
-                                   Options const* options) {
+                                   std::vector<ValueLength>& offsets) {
   auto cmp = [&](ValueLength a, ValueLength b) -> bool {
     uint8_t const* aa = objBase + a;
     uint8_t const* bb = objBase + b;
@@ -104,8 +101,8 @@ void Builder::sortObjectIndexShort(uint8_t* objBase,
     } else {
       uint64_t lena;
       uint64_t lenb;
-      aa = findAttrName(aa, lena, options);
-      bb = findAttrName(bb, lenb, options);
+      aa = findAttrName(aa, lena);
+      bb = findAttrName(bb, lenb);
       uint64_t m = (std::min)(lena, lenb);
       int c = memcmp(aa, bb, checkOverflow(m));
       return (c < 0 || (c == 0 && lena < lenb));
@@ -115,8 +112,7 @@ void Builder::sortObjectIndexShort(uint8_t* objBase,
 }
 
 void Builder::sortObjectIndexLong(uint8_t* objBase,
-                                  std::vector<ValueLength>& offsets,
-                                  Options const* options) {
+                                  std::vector<ValueLength>& offsets) {
 // on some platforms we can use a thread-local vector
 #if __llvm__ == 1
   // nono thread local
@@ -134,7 +130,7 @@ void Builder::sortObjectIndexLong(uint8_t* objBase,
   for (size_t i = 0; i < n; i++) {
     SortEntry e;
     e.offset = offsets[i];
-    e.nameStart = findAttrName(objBase + e.offset, e.nameSize, options);
+    e.nameStart = findAttrName(objBase + e.offset, e.nameSize);
     entries.push_back(e);
   }
   VELOCYPACK_ASSERT(entries.size() == n);
@@ -147,12 +143,11 @@ void Builder::sortObjectIndexLong(uint8_t* objBase,
 }
 
 void Builder::sortObjectIndex(uint8_t* objBase,
-                              std::vector<ValueLength>& offsets,
-                              Options const* options) {
+                              std::vector<ValueLength>& offsets) {
   if (offsets.size() > 32) {
-    sortObjectIndexLong(objBase, offsets, options);
+    sortObjectIndexLong(objBase, offsets);
   } else {
-    sortObjectIndexShort(objBase, offsets, options);
+    sortObjectIndexShort(objBase, offsets);
   }
 }
 
@@ -297,7 +292,7 @@ Builder& Builder::close() {
 
   // Maybe we need to move down data:
   if (offsetSize == 1) {
-    unsigned int targetPos = 3;
+    ValueLength targetPos = 3;
     if (!needIndexTable && _start[tos] == 0x06) {
       targetPos = 2;
     }
@@ -305,9 +300,11 @@ Builder& Builder::close() {
       ValueLength len = _pos - (tos + 9);
       memmove(_start + tos + targetPos, _start + tos + 9, checkOverflow(len));
     }
-    _pos -= (9 - targetPos);
-    for (size_t i = 0; i < index.size(); i++) {
-      index[i] -= (9 - targetPos);
+    ValueLength const diff = 9 - targetPos;
+    _pos -= diff;
+    size_t const n = index.size();
+    for (size_t i = 0; i < n; i++) {
+      index[i] -= diff;
     }
   }
   // One could move down things in the offsetSize == 2 case as well,
@@ -325,7 +322,7 @@ Builder& Builder::close() {
       if (!options->sortAttributeNames) {
         _start[tos] = 0x0f;  // unsorted
       } else if (index.size() >= 2 && options->sortAttributeNames) {
-        sortObjectIndex(_start + tos, index, options);
+        sortObjectIndex(_start + tos, index);
       }
     }
     for (size_t i = 0; i < index.size(); i++) {
@@ -373,7 +370,7 @@ Builder& Builder::close() {
   if (options->checkAttributeUniqueness && index.size() > 1 &&
       _start[tos] >= 0x0b) {
     // check uniqueness of attribute names
-    checkAttributeUniqueness(Slice(_start + tos, options));
+    checkAttributeUniqueness(Slice(_start + tos));
   }
 
   // Now the array or object is complete, we pop a ValueLength
@@ -397,7 +394,7 @@ bool Builder::hasKey(std::string const& key) const {
     return false;
   }
   for (size_t i = 0; i < index.size(); ++i) {
-    Slice s(_start + tos + index[i], options);
+    Slice s(_start + tos + index[i]);
     if (s.makeKey().isEqualString(key)) {
       return true;
     }
@@ -419,16 +416,16 @@ Slice Builder::getKey(std::string const& key) const {
     return Slice();
   }
   for (size_t i = 0; i < index.size(); ++i) {
-    Slice s(_start + tos + index[i], options);
+    Slice s(_start + tos + index[i]);
     if (s.makeKey().isEqualString(key)) {
-      return Slice(s.start() + s.byteSize(), options);
+      return Slice(s.start() + s.byteSize());
     }
   }
   return Slice();
 }
 
 uint8_t* Builder::set(Value const& item) {
-  auto const oldPos = _start + _pos;
+  auto const oldPos = _pos;
   auto ctype = item.cType();
 
   checkKeyIsString(item.valueType() == ValueType::String);
@@ -598,18 +595,17 @@ uint8_t* Builder::set(Value const& item) {
       break;
     }
     case ValueType::String: {
-      if (ctype != Value::CType::String && ctype != Value::CType::CharPtr) {
-        throw Exception(
-            Exception::BuilderUnexpectedValue,
-            "Must give a string or char const* for ValueType::String");
-      }
       std::string const* s;
       std::string value;
       if (ctype == Value::CType::String) {
         s = item.getString();
-      } else {
+      } else if (ctype == Value::CType::CharPtr) {
         value = item.getCharPtr();
         s = &value;
+      } else {
+        throw Exception(
+            Exception::BuilderUnexpectedValue,
+            "Must give a string or char const* for ValueType::String");
       }
       size_t const size = s->size();
       if (size <= 126) {
@@ -655,6 +651,11 @@ uint8_t* Builder::set(Value const& item) {
       _pos += v;
       break;
     }
+    case ValueType::Illegal: {
+      reserveSpace(1);
+      _start[_pos++] = 0x17;
+      break;
+    }
     case ValueType::MinKey: {
       reserveSpace(1);
       _start[_pos++] = 0x1e;
@@ -673,7 +674,7 @@ uint8_t* Builder::set(Value const& item) {
                       "Cannot set a ValueType::Custom with this method");
     }
   }
-  return oldPos;
+  return _start + oldPos;
 }
 
 uint8_t* Builder::set(Slice const& item) {
@@ -692,6 +693,8 @@ uint8_t* Builder::set(ValuePair const& pair) {
   // ValueType::Binary, or ValueType::Custom, which can be built
   // with two pieces of information
 
+  auto const oldPos = _pos;
+
   checkKeyIsString(pair.valueType() == ValueType::String);
 
   if (pair.valueType() == ValueType::Binary) {
@@ -699,7 +702,7 @@ uint8_t* Builder::set(ValuePair const& pair) {
     appendUInt(v, 0xbf);
     memcpy(_start + _pos, pair.getStart(), checkOverflow(v));
     _pos += v;
-    return nullptr;  // unused here
+    return _start + oldPos;
   } else if (pair.valueType() == ValueType::String) {
     uint64_t size = pair.getSize();
     if (size > 126) {
@@ -707,18 +710,16 @@ uint8_t* Builder::set(ValuePair const& pair) {
       reserveSpace(1 + 8 + size);
       _start[_pos++] = 0xbf;
       appendLength(size, 8);
+      memcpy(_start + _pos, pair.getStart(), checkOverflow(size));
       _pos += size;
     } else {
       // short string
       reserveSpace(1 + size);
       _start[_pos++] = static_cast<uint8_t>(0x40 + size);
+      memcpy(_start + _pos, pair.getStart(), checkOverflow(size));
       _pos += size;
     }
-    // Note that the data is not filled in! It is the responsibility
-    // of the caller to fill in
-    //   _start + _pos - size .. _start + _pos - 1
-    // with valid UTF-8!
-    return _start + _pos - size;
+    return _start + oldPos;
   } else if (pair.valueType() == ValueType::Custom) {
     // We only reserve space here, the caller has to fill in the custom type
     uint64_t size = pair.getSize();
@@ -782,11 +783,23 @@ uint8_t* Builder::add(std::string const& attrName, Value const& sub) {
   return addInternal<Value>(attrName, sub);
 }
 
+uint8_t* Builder::add(char const* attrName, Value const& sub) {
+  return addInternal<Value>(attrName, sub);
+}
+
 uint8_t* Builder::add(std::string const& attrName, ValuePair const& sub) {
   return addInternal<ValuePair>(attrName, sub);
 }
 
+uint8_t* Builder::add(char const* attrName, ValuePair const& sub) {
+  return addInternal<ValuePair>(attrName, sub);
+}
+
 uint8_t* Builder::add(std::string const& attrName, Slice const& sub) {
+  return addInternal<Slice>(attrName, sub);
+}
+
+uint8_t* Builder::add(char const* attrName, Slice const& sub) {
   return addInternal<Slice>(attrName, sub);
 }
   
@@ -807,12 +820,13 @@ uint8_t* Builder::add(ObjectIterator&& sub) {
   if (_keyWritten) {
     throw Exception(Exception::BuilderKeyAlreadyWritten);
   }
-  auto const oldPos = _start + _pos;
+  auto const oldPos = _pos;
   while (sub.valid()) {
-    add(sub.key().copyString(), sub.value());
+    add(sub.key());
+    add(sub.value());
     sub.next();
   }
-  return oldPos;
+  return _start + oldPos;
 }
 
 uint8_t* Builder::add(Value const& sub) { return addInternal<Value>(sub); }
@@ -837,12 +851,12 @@ uint8_t* Builder::add(ArrayIterator&& sub) {
   if (_start[tos] != 0x06 && _start[tos] != 0x13) {
     throw Exception(Exception::BuilderNeedOpenArray);
   }
-  auto const oldPos = _start + _pos;
+  auto const oldPos = _pos;
   while (sub.valid()) {
     add(sub.value());
     sub.next();
   }
-  return oldPos;
+  return _start + oldPos;
 }
 
 static_assert(sizeof(double) == 8, "double is not 8 bytes");

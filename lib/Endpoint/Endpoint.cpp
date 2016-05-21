@@ -51,9 +51,21 @@ Endpoint::Endpoint(DomainType domainType, EndpointType type,
   TRI_invalidatesocket(&_socket);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief return the endpoint specification in a unified form
-////////////////////////////////////////////////////////////////////////////////
+std::string Endpoint::uriForm (std::string const& endpoint) {
+  static std::string illegal;
+
+  if (StringUtils::isPrefix(endpoint, "http+tcp://")) {
+    return "http://" + endpoint.substr(11);
+  } else if (StringUtils::isPrefix(endpoint, "http+ssl://")) {
+    return "https://" + endpoint.substr(11);
+  } else if (StringUtils::isPrefix(endpoint, "tcp://")) {
+    return "http://" + endpoint.substr(6);
+  } else if (StringUtils::isPrefix(endpoint, "ssl://")) {
+    return "https://" + endpoint.substr(6);
+  } else {
+    return illegal;
+  }
+}
 
 std::string Endpoint::unifiedForm(std::string const& specification) {
   static std::string illegal;
@@ -68,13 +80,13 @@ std::string Endpoint::unifiedForm(std::string const& specification) {
   std::string copy = StringUtils::tolower(specification);
   StringUtils::trimInPlace(copy);
 
-  if (specification[specification.size() - 1] == '/') {
+  if (specification.back() == '/') {
     // address ends with a slash => remove
-    copy = copy.substr(0, copy.size() - 1);
+    copy.pop_back();
   }
 
   // read protocol from string
-  if (StringUtils::isPrefix(copy, "http+")) {
+  if (StringUtils::isPrefix(copy, "http+") || StringUtils::isPrefix(copy, "http@")) {
     protocol = TransportType::HTTP;
     prefix = "http+";
     copy = copy.substr(5);
@@ -194,16 +206,13 @@ Endpoint* Endpoint::factory(const Endpoint::EndpointType type,
   }
 
   std::string copy = unifiedForm(specification);
-  std::string prefix = "http";
   TransportType protocol = TransportType::HTTP;
 
   if (StringUtils::isPrefix(copy, "http+")) {
     protocol = TransportType::HTTP;
-    prefix = "http+";
     copy = copy.substr(5);
   } else if (StringUtils::isPrefix(copy, "vpp+")) {
     protocol = TransportType::VPP;
-    prefix = "vpp+";
     copy = copy.substr(4);
   } else {
     // invalid protocol
@@ -372,10 +381,10 @@ bool Endpoint::setSocketFlags(TRI_socket_t s) {
 
 std::ostream& operator<<(std::ostream& stream, arangodb::Endpoint::TransportType type) {
   switch (type) {
-    case arangodb::Endpoint::TransportType::HTTP: 
+    case arangodb::Endpoint::TransportType::HTTP:
       stream << "http";
       break;
-    case arangodb::Endpoint::TransportType::VPP: 
+    case arangodb::Endpoint::TransportType::VPP:
       stream << "vsp";
       break;
   }
