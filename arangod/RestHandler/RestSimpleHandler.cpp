@@ -28,9 +28,13 @@
 #include "Basics/MutexLocker.h"
 #include "Basics/ScopeGuard.h"
 #include "Basics/StaticStrings.h"
-#include "Basics/VelocyPackHelper.h"
 #include "Basics/VPackStringBufferAdapter.h"
+#include "Basics/VelocyPackHelper.h"
+#include "Utils/CollectionNameResolver.h"
 #include "Utils/SingleCollectionTransaction.h"
+#include "Utils/StandaloneTransactionContext.h"
+#include "Utils/TransactionContext.h"
+#include "VocBase/LogicalCollection.h"
 #include "VocBase/Traverser.h"
 
 #include <velocypack/Builder.h>
@@ -43,32 +47,33 @@ using namespace arangodb;
 using namespace arangodb::rest;
 
 RestSimpleHandler::RestSimpleHandler(
-    HttpRequest* request, arangodb::aql::QueryRegistry* queryRegistry)
-    : RestVocbaseBaseHandler(request),
+    GeneralRequest* request, GeneralResponse* response,
+    arangodb::aql::QueryRegistry* queryRegistry)
+    : RestVocbaseBaseHandler(request, response),
       _queryRegistry(queryRegistry),
       _queryLock(),
       _query(nullptr),
       _queryKilled(false) {}
 
-HttpHandler::status_t RestSimpleHandler::execute() {
+RestStatus RestSimpleHandler::execute() {
   // extract the request type
   auto const type = _request->requestType();
 
-  if (type == GeneralRequest::RequestType::PUT) {
+  if (type == rest::RequestType::PUT) {
     bool parsingSuccess = true;
     std::shared_ptr<VPackBuilder> parsedBody =
         parseVelocyPackBody(&VPackOptions::Defaults, parsingSuccess);
 
     if (!parsingSuccess) {
-      return status_t(HANDLER_DONE);
+      return RestStatus::DONE;
     }
 
     VPackSlice body = parsedBody.get()->slice();
 
     if (!body.isObject()) {
-      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+      generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                     "expecting JSON object body");
-      return status_t(HANDLER_DONE);
+      return RestStatus::DONE;
     }
 
     std::string const& prefix = _request->requestPath();
@@ -78,19 +83,22 @@ HttpHandler::status_t RestSimpleHandler::execute() {
     } else if (prefix == RestVocbaseBaseHandler::SIMPLE_LOOKUP_PATH) {
       lookupByKeys(body);
     } else {
-      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+      generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                     "unsupported value for <operation>");
     }
 
-    return status_t(HANDLER_DONE);
+    return RestStatus::DONE;
   }
 
-  generateError(GeneralResponse::ResponseCode::METHOD_NOT_ALLOWED,
+  generateError(rest::ResponseCode::METHOD_NOT_ALLOWED,
                 TRI_ERROR_HTTP_METHOD_NOT_ALLOWED);
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }
 
-bool RestSimpleHandler::cancel() { return cancelQuery(); }
+bool RestSimpleHandler::cancel() {
+  RestHandler::cancel();
+  return cancelQuery();
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief register the currently running query
@@ -150,7 +158,7 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
       VPackSlice const value = slice.get("collection");
 
       if (!value.isString()) {
-        generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+        generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                       "expecting string for <collection>");
         return;
       }
@@ -168,7 +176,7 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
     VPackSlice const keys = slice.get("keys");
 
     if (!keys.isArray()) {
-      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+      generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                     "expecting array for <keys>");
       return;
     }
@@ -213,9 +221,8 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
       }
     }
 
-    arangodb::aql::Query query(
-        false, _vocbase, aql.c_str(), aql.size(),
-        bindVars, nullptr, arangodb::aql::PART_MAIN);
+    arangodb::aql::Query query(false, _vocbase, aql.c_str(), aql.size(),
+                               bindVars, nullptr, arangodb::aql::PART_MAIN);
 
     registerQuery(&query);
     auto queryResult = query.execute(_queryRegistry);
@@ -224,10 +231,12 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
     if (queryResult.code != TRI_ERROR_NO_ERROR) {
       if (queryResult.code == TRI_ERROR_REQUEST_CANCELED ||
           (queryResult.code == TRI_ERROR_QUERY_KILLED && wasCanceled())) {
-        THROW_ARANGO_EXCEPTION(TRI_ERROR_REQUEST_CANCELED);
+        generateError(GeneralResponse::responseCode(TRI_ERROR_REQUEST_CANCELED), TRI_ERROR_REQUEST_CANCELED);
+        return;
       }
 
-      THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code, queryResult.details);
+      generateError(GeneralResponse::responseCode(queryResult.code), queryResult.code, queryResult.details);
+      return;
     }
 
     {
@@ -255,22 +264,18 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
       result.add("removed", VPackValue(removed));
       result.add("ignored", VPackValue(ignored));
       result.add("error", VPackValue(false));
-      result.add("code", VPackValue(static_cast<int>(GeneralResponse::ResponseCode::OK)));
+      result.add("code", VPackValue(static_cast<int>(rest::ResponseCode::OK)));
       if (!silent) {
         result.add("old", queryResult.result->slice());
       }
       result.close();
 
-      generateResult(GeneralResponse::ResponseCode::OK, result.slice(), queryResult.context);
+      generateResult(rest::ResponseCode::OK, result.slice(),
+                     queryResult.context);
     }
-  } catch (arangodb::basics::Exception const& ex) {
-    unregisterQuery();
-    generateError(GeneralResponse::responseCode(ex.code()), ex.code(),
-                  ex.what());
   } catch (...) {
     unregisterQuery();
-    generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
-                  TRI_ERROR_INTERNAL);
+    throw;
   }
 }
 
@@ -279,25 +284,30 @@ void RestSimpleHandler::removeByKeys(VPackSlice const& slice) {
 ////////////////////////////////////////////////////////////////////////////////
 
 void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
+  auto response = _response.get();
+
+  if (response == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
+  }
+
   try {
     std::string collectionName;
     {
       VPackSlice const value = slice.get("collection");
       if (!value.isString()) {
-        generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+        generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                       "expecting string for <collection>");
         return;
       }
       collectionName = value.copyString();
 
       if (!collectionName.empty()) {
-        auto const* col =
-            TRI_LookupCollectionByNameVocBase(_vocbase, collectionName);
+        auto const* col = _vocbase->lookupCollection(collectionName);
 
-        if (col != nullptr && collectionName.compare(col->_name) != 0) {
+        if (col != nullptr && collectionName != col->name()) {
           // user has probably passed in a numeric collection id.
           // translate it into a "real" collection name
-          collectionName = std::string(col->_name);
+          collectionName = col->name();
         }
       }
     }
@@ -305,7 +315,7 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
     VPackSlice const keys = slice.get("keys");
 
     if (!keys.isArray()) {
-      generateError(GeneralResponse::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
+      generateError(rest::ResponseCode::BAD, TRI_ERROR_TYPE_ERROR,
                     "expecting array for <keys>");
       return;
     }
@@ -323,9 +333,8 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
     std::string const aql(
         "FOR doc IN @@collection FILTER doc._key IN @keys RETURN doc");
 
-    arangodb::aql::Query query(
-        false, _vocbase, aql.c_str(), aql.size(),
-        bindVars, nullptr, arangodb::aql::PART_MAIN);
+    arangodb::aql::Query query(false, _vocbase, aql.c_str(), aql.size(),
+                               bindVars, nullptr, arangodb::aql::PART_MAIN);
 
     registerQuery(&query);
     auto queryResult = query.execute(_queryRegistry);
@@ -334,10 +343,12 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
     if (queryResult.code != TRI_ERROR_NO_ERROR) {
       if (queryResult.code == TRI_ERROR_REQUEST_CANCELED ||
           (queryResult.code == TRI_ERROR_QUERY_KILLED && wasCanceled())) {
-        THROW_ARANGO_EXCEPTION(TRI_ERROR_REQUEST_CANCELED);
+        generateError(GeneralResponse::responseCode(TRI_ERROR_REQUEST_CANCELED), TRI_ERROR_REQUEST_CANCELED);
+        return;
       }
 
-      THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code, queryResult.details);
+      generateError(GeneralResponse::responseCode(queryResult.code), queryResult.code, queryResult.details);
+      return;
     }
 
     size_t resultSize = 10;
@@ -346,14 +357,15 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
       resultSize = static_cast<size_t>(qResult.length());
     }
 
-    VPackBuilder result;
+    VPackBuffer<uint8_t> resultBuffer;
+    VPackBuilder result(resultBuffer);
     {
       VPackObjectBuilder guard(&result);
-      createResponse(GeneralResponse::ResponseCode::OK);
-      _response->setContentType(HttpResponse::CONTENT_TYPE_JSON);
+      resetResponse(rest::ResponseCode::OK);
+
+      response->setContentType(rest::ContentType::JSON);
 
       if (qResult.isArray()) {
-
         // This is for internal use of AQL Traverser only.
         // Should not be documented
         VPackSlice const postFilter = slice.get("filter");
@@ -377,12 +389,14 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
               expression.release();
             }
           }
-          
+
           result.add(VPackValue("documents"));
           std::vector<std::string> filteredIds;
 
           // just needed to build the result
-          SingleCollectionTransaction trx(StandaloneTransactionContext::Create(_vocbase), collectionName, TRI_TRANSACTION_READ);
+          SingleCollectionTransaction trx(
+              StandaloneTransactionContext::Create(_vocbase), collectionName,
+              TRI_TRANSACTION_READ);
 
           result.openArray();
           for (auto const& tmp : VPackArrayIterator(qResult)) {
@@ -392,7 +406,7 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
                 if (!e->isEdgeAccess && !e->matchesCheck(&trx, tmp)) {
                   add = false;
                   std::string _id = trx.extractIdString(tmp);
-                  filteredIds.emplace_back(_id);
+                  filteredIds.emplace_back(std::move(_id));
                   break;
                 }
               }
@@ -420,36 +434,21 @@ void RestSimpleHandler::lookupByKeys(VPackSlice const& slice) {
         queryResult.result = nullptr;
       }
       result.add("error", VPackValue(false));
-      result.add("code", VPackValue(static_cast<int>(_response->responseCode())));
+      result.add("code",
+                 VPackValue(static_cast<int>(_response->responseCode())));
 
       // reserve a few bytes per result document by default
-      int res = _response->body().reserve(32 * resultSize);
+      int res = response->reservePayload(32 * resultSize);
 
       if (res != TRI_ERROR_NO_ERROR) {
         THROW_ARANGO_EXCEPTION(res);
       }
     }
 
-    auto transactionContext = std::make_shared<StandaloneTransactionContext>(_vocbase);
-    auto customTypeHandler = transactionContext->orderCustomTypeHandler();
-    VPackOptions options = VPackOptions::Defaults; // copy defaults
-    options.customTypeHandler = customTypeHandler.get();
-     
-    arangodb::basics::VPackStringBufferAdapter buffer(
-        _response->body().stringBuffer());
-    VPackDumper dumper(&buffer, &options);
-    dumper.dump(result.slice());
-  } catch (arangodb::basics::Exception const& ex) {
-    unregisterQuery();
-    generateError(GeneralResponse::responseCode(ex.code()), ex.code(),
-                  ex.what());
-  } catch (std::exception const& ex) {
-    unregisterQuery();
-    generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
-                  TRI_ERROR_INTERNAL, ex.what());
+    generateResult(rest::ResponseCode::OK, std::move(resultBuffer),
+                   queryResult.context);
   } catch (...) {
     unregisterQuery();
-    generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
-                  TRI_ERROR_INTERNAL);
+    throw;
   }
 }

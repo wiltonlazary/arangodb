@@ -49,13 +49,13 @@ using namespace arangodb::rest;
 ServerFeature::ServerFeature(application_features::ApplicationServer* server,
                              int* res)
     : ApplicationFeature(server, "Server"),
+      _vppMaxSize(1024 * 30),
       _result(res),
       _operationMode(OperationMode::MODE_SERVER) {
   setOptional(true);
   requiresElevatedPrivileges(false);
   startsAfter("Cluster");
   startsAfter("Database");
-  startsAfter("Dispatcher");
   startsAfter("Recovery");
   startsAfter("Scheduler");
   startsAfter("Statistics");
@@ -77,12 +77,6 @@ void ServerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
                      "timeout of web interface server sessions (in seconds)",
                      new DoubleParameter(&VocbaseContext::ServerSessionTtl));
 
-//YYY #warning TODO
-#if 0
-  // other options
-      "start-service", "used to start as windows service")
-#endif
-
   options->addSection("javascript", "Configure the Javascript engine");
 
   options->addHiddenOption("--javascript.unit-tests", "run unit-tests and exit",
@@ -91,6 +85,11 @@ void ServerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
   options->addOption("--javascript.script", "run scripts and exit",
                      new VectorParameter<StringParameter>(&_scripts));
 
+  options->addSection("vst", "Configure the VelocyStream protocol");
+
+  options->addOption("--vst.maxsize",
+                     "maximal size (in bytes) for a VelocyPack chunk",
+                     new UInt32Parameter(&_vppMaxSize));
 }
 
 void ServerFeature::validateOptions(std::shared_ptr<ProgramOptions>) {
@@ -124,20 +123,20 @@ void ServerFeature::validateOptions(std::shared_ptr<ProgramOptions>) {
   }
 
   if (!_restServer) {
-    ApplicationServer::disableFeatures({"Daemon", "Dispatcher", "Endpoint",
-                                        "RestServer", "Scheduler", "SslServer",
+    ApplicationServer::disableFeatures({"Daemon", "Endpoint", "GeneralServer",
+                                        "Scheduler", "SslServer",
                                         "Supervisor"});
 
-    DatabaseFeature* database = 
+    DatabaseFeature* database =
         ApplicationServer::getFeature<DatabaseFeature>("Database");
     database->disableReplicationApplier();
 
-    StatisticsFeature* statistics = 
+    StatisticsFeature* statistics =
         ApplicationServer::getFeature<StatisticsFeature>("Statistics");
     statistics->disableStatistics();
   }
 
-  V8DealerFeature* v8dealer = 
+  V8DealerFeature* v8dealer =
       ApplicationServer::getFeature<V8DealerFeature>("V8Dealer");
 
   if (_operationMode == OperationMode::MODE_SCRIPT ||
@@ -160,7 +159,7 @@ void ServerFeature::validateOptions(std::shared_ptr<ProgramOptions>) {
 
 void ServerFeature::start() {
   if (_operationMode != OperationMode::MODE_CONSOLE && _restServer) {
-    auto scheduler = 
+    auto scheduler =
         ApplicationServer::getFeature<SchedulerFeature>("Scheduler");
 
     scheduler->buildControlCHandler();
@@ -172,9 +171,9 @@ void ServerFeature::start() {
 
   // flush all log output before we go on... this is sensible because any
   // of the following options may print or prompt, and pending log entries
-  // might overwrite that 
+  // might overwrite that
   Logger::flush();
-   
+
   switch (_operationMode) {
     case OperationMode::MODE_UNITTESTS:
     case OperationMode::MODE_SCRIPT:
@@ -206,18 +205,18 @@ void ServerFeature::waitForHeartbeat() {
     usleep(100 * 1000);
   }
 }
-  
+
 std::string ServerFeature::operationModeString(OperationMode mode) {
   switch (mode) {
-    case OperationMode::MODE_CONSOLE: 
+    case OperationMode::MODE_CONSOLE:
       return "console";
-    case OperationMode::MODE_UNITTESTS: 
+    case OperationMode::MODE_UNITTESTS:
       return "unittests";
-    case OperationMode::MODE_SCRIPT: 
+    case OperationMode::MODE_SCRIPT:
       return "script";
-    case OperationMode::MODE_SERVER: 
+    case OperationMode::MODE_SERVER:
       return "server";
-    default: 
+    default:
       return "unknown";
   }
 }

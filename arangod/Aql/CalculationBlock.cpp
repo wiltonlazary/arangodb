@@ -32,8 +32,6 @@
 
 using namespace arangodb::aql;
 
-using Json = arangodb::basics::Json;
-
 CalculationBlock::CalculationBlock(ExecutionEngine* engine,
                                    CalculationNode const* en)
     : ExecutionBlock(engine, en),
@@ -78,8 +76,6 @@ CalculationBlock::CalculationBlock(ExecutionEngine* engine,
 }
 
 CalculationBlock::~CalculationBlock() {}
-
-int CalculationBlock::initialize() { return ExecutionBlock::initialize(); }
 
 /// @brief fill the target register in the item block with a reference to
 /// another variable
@@ -194,16 +190,21 @@ void CalculationBlock::doEvaluation(AqlItemBlock* result) {
 
 AqlItemBlock* CalculationBlock::getSome(size_t atLeast, size_t atMost) {
   DEBUG_BEGIN_BLOCK();
+  traceGetSomeBegin();
   std::unique_ptr<AqlItemBlock> res(
       ExecutionBlock::getSomeWithoutRegisterClearout(atLeast, atMost));
 
   if (res.get() == nullptr) {
+    traceGetSomeEnd(nullptr);
     return nullptr;
   }
 
   doEvaluation(res.get());
   // Clear out registers no longer needed later:
   clearRegisters(res.get());
+  traceGetSomeEnd(res.get());
   return res.release();
+
+  // cppcheck-suppress *
   DEBUG_END_BLOCK();
 }

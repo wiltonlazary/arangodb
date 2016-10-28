@@ -38,7 +38,8 @@ ConsoleFeature::ConsoleFeature(application_features::ApplicationServer* server)
       _operationMode(OperationMode::MODE_SERVER),
       _consoleThread(nullptr) {
   startsAfter("Server");
-  startsAfter("RestServer");
+  startsAfter("GeneralServer");
+  startsAfter("Bootstrap");
 }
 
 void ConsoleFeature::start() {
@@ -55,11 +56,11 @@ void ConsoleFeature::start() {
   auto database = ApplicationServer::getFeature<DatabaseFeature>("Database");
 
   _consoleThread.reset(
-      new ConsoleThread(ApplicationFeature::server(), database->vocbase()));
+      new ConsoleThread(ApplicationFeature::server(), database->systemDatabase()));
   _consoleThread->start();
 }
 
-void ConsoleFeature::stop() {
+void ConsoleFeature::unprepare() {
   if (_operationMode != OperationMode::MODE_CONSOLE) {
     return;
   }

@@ -22,9 +22,10 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "Basics/Common.h"
+#include "Basics/directories.h"
 
-#include "ApplicationFeatures/ClientFeature.h"
 #include "ApplicationFeatures/ConfigFeature.h"
+#include "ApplicationFeatures/GreetingsFeature.h"
 #include "ApplicationFeatures/ShutdownFeature.h"
 #include "ApplicationFeatures/TempFeature.h"
 #include "ApplicationFeatures/VersionFeature.h"
@@ -33,6 +34,7 @@
 #include "Logger/LoggerFeature.h"
 #include "ProgramOptions/ProgramOptions.h"
 #include "Random/RandomFeature.h"
+#include "Shell/ClientFeature.h"
 #include "Ssl/SslFeature.h"
 
 using namespace arangodb;
@@ -41,19 +43,20 @@ using namespace arangodb::basics;
 using namespace arangodb::rest;
 
 int main(int argc, char* argv[]) {
-  ArangoGlobalContext context(argc, argv);
+  ArangoGlobalContext context(argc, argv, BIN_DIRECTORY);
   context.installHup();
 
   std::shared_ptr<options::ProgramOptions> options(new options::ProgramOptions(
-      argv[0], "Usage: arangobench [<options>]", "For more information use:"));
+      argv[0], "Usage: arangobench [<options>]", "For more information use:", BIN_DIRECTORY));
 
-  ApplicationServer server(options);
+  ApplicationServer server(options, BIN_DIRECTORY);
 
   int ret;
 
   server.addFeature(new BenchFeature(&server, &ret));
   server.addFeature(new ClientFeature(&server));
   server.addFeature(new ConfigFeature(&server, "arangobench"));
+  server.addFeature(new GreetingsFeature(&server, "arangobench"));
   server.addFeature(new LoggerFeature(&server, false));
   server.addFeature(new RandomFeature(&server));
   server.addFeature(new ShutdownFeature(&server, {"Bench"}));
@@ -63,6 +66,10 @@ int main(int argc, char* argv[]) {
 
   try {
     server.run(argc, argv);
+    if (server.helpShown()) {
+      // --help was displayed
+      ret = EXIT_SUCCESS;
+    }
   } catch (std::exception const& ex) {
     LOG(ERR) << "arangobench terminated because of an unhandled exception: "
              << ex.what();

@@ -22,12 +22,11 @@
 
 #include "QueryRegistryFeature.h"
 
+#include "Aql/Query.h"
 #include "Aql/QueryCache.h"
 #include "Aql/QueryRegistry.h"
 #include "ProgramOptions/ProgramOptions.h"
 #include "ProgramOptions/Section.h"
-#include "RestServer/DatabaseServerFeature.h"
-#include "VocBase/server.h"
 
 using namespace arangodb;
 using namespace arangodb::application_features;
@@ -37,25 +36,39 @@ using namespace arangodb::options;
 aql::QueryRegistry* QueryRegistryFeature::QUERY_REGISTRY = nullptr;
 
 QueryRegistryFeature::QueryRegistryFeature(ApplicationServer* server)
-    : ApplicationFeature(server, "QueryRegistry") {
+    : ApplicationFeature(server, "QueryRegistry"),
+      _queryTracking(true),
+      _slowThreshold(10.0),
+      _queryCacheMode("off"),
+      _queryCacheEntries(128) {
   setOptional(false);
   requiresElevatedPrivileges(false);
-  startsAfter("DatabaseServer");
+  startsAfter("DatabasePath");
+  startsAfter("Database");
+  startsAfter("LogfileManager");
+  startsAfter("Cluster");
 }
 
 void QueryRegistryFeature::collectOptions(
     std::shared_ptr<ProgramOptions> options) {
   options->addSection("query", "Configure queries");
+  
+  options->addOldOption("database.query-cache-mode", "query.cache-mode");
+  options->addOldOption("database.query-cache-max-results", "query.cache-entries");
+  options->addOldOption("database.disable-query-tracking", "query.tracking");
 
-  options->addOption("--query.tracking", "whether to track queries",
+  options->addOption("--query.tracking", "whether to track slow AQL queries",
                      new BooleanParameter(&_queryTracking));
+  
+  options->addOption("--query.slow-threshold", "threshold for slow AQL queries (in seconds)",
+                     new DoubleParameter(&_slowThreshold));
 
   options->addOption("--query.cache-mode",
-                     "mode for the AQL query cache (on, off, demand)",
+                     "mode for the AQL query result cache (on, off, demand)",
                      new StringParameter(&_queryCacheMode));
 
   options->addOption("--query.cache-entries",
-                     "maximum number of results in query cache per database",
+                     "maximum number of results in query result cache per database",
                      new UInt64Parameter(&_queryCacheEntries));
 }
 
@@ -66,6 +79,9 @@ void QueryRegistryFeature::validateOptions(
 void QueryRegistryFeature::prepare() {
   // set global query tracking flag
   arangodb::aql::Query::DisableQueryTracking(!_queryTracking);
+  
+  // set global threshold value for slow queries  
+  arangodb::aql::Query::SlowQueryThreshold(_slowThreshold);
 
   // configure the query cache
   std::pair<std::string, size_t> cacheProperties{_queryCacheMode,
@@ -78,11 +94,9 @@ void QueryRegistryFeature::prepare() {
 }
 
 void QueryRegistryFeature::start() {
-  DatabaseServerFeature::SERVER->_queryRegistry = _queryRegistry.get();
 }
 
-void QueryRegistryFeature::stop() {
+void QueryRegistryFeature::unprepare() {
   // clear the query registery
-  DatabaseServerFeature::SERVER->_queryRegistry = nullptr;
-  // TODO: reset QUERY_REGISTRY as well?
+  QUERY_REGISTRY = nullptr;
 }

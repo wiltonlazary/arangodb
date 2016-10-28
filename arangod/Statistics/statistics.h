@@ -28,6 +28,10 @@
 #include "Rest/HttpRequest.h"
 #include "Statistics/figures.h"
 
+#include <iomanip>
+#include <sstream>
+#include <string>
+
 struct TRI_request_statistics_t {
 #ifdef USE_DEV_TIMERS
   static thread_local TRI_request_statistics_t* STATS;
@@ -44,7 +48,7 @@ struct TRI_request_statistics_t {
         _writeEnd(0.0),
         _receivedBytes(0.0),
         _sentBytes(0.0),
-        _requestType(arangodb::GeneralRequest::RequestType::ILLEGAL),
+        _requestType(arangodb::rest::RequestType::ILLEGAL),
         _async(false),
         _tooLarge(false),
         _executeError(false),
@@ -65,7 +69,7 @@ struct TRI_request_statistics_t {
     _writeEnd = 0.0;
     _receivedBytes = 0.0;
     _sentBytes = 0.0;
-    _requestType = arangodb::GeneralRequest::RequestType::ILLEGAL;
+    _requestType = arangodb::rest::RequestType::ILLEGAL;
     _async = false;
     _tooLarge = false;
     _executeError = false;
@@ -76,11 +80,33 @@ struct TRI_request_statistics_t {
 #endif
   }
 
-  double _readStart;
-  double _readEnd;
-  double _queueStart;
-  double _queueEnd;
-  double _requestStart;
+  std::string to_string() {
+    std::stringstream ss;
+    ss << std::boolalpha << std::setprecision(20) << "statistics      "
+       << std::endl
+       << "_readStart      " << _readStart << std::endl
+       << "_readEnd        " << _readEnd << std::endl
+       << "_queueStart     " << _queueStart << std::endl
+       << "_queueEnd       " << _queueEnd << std::endl
+       << "_requestStart   " << _requestStart << std::endl
+       << "_requestEnd     " << _requestEnd << std::endl
+       << "_writeStart     " << _writeStart << std::endl
+       << "_writeEnd       " << _writeEnd << std::endl
+       << "_receivedBytes  " << _receivedBytes << std::endl
+       << "_sentBytes      " << _sentBytes << std::endl
+       << "_async          " << _async << std::endl
+       << "_tooLarge       " << _tooLarge << std::endl
+       << "_executeError   " << _executeError << std::endl
+       << "_ignore         " << _ignore << std::endl;
+
+    return ss.str();
+  }
+
+  double _readStart;     // CommTask::processRead - read first byte of message
+  double _readEnd;       // CommTask::processRead - message complete
+  double _queueStart;    // addJob to queue GeneralServer::handleRequest
+  double _queueEnd;      // exit queue DispatcherThread::handleJob
+  double _requestStart;  // GeneralServerJob::work
   double _requestEnd;
   double _writeStart;
   double _writeEnd;
@@ -88,7 +114,7 @@ struct TRI_request_statistics_t {
   double _receivedBytes;
   double _sentBytes;
 
-  arangodb::GeneralRequest::RequestType _requestType;
+  arangodb::rest::RequestType _requestType;
 
   bool _async;
   bool _tooLarge;
@@ -181,7 +207,6 @@ extern TRI_server_statistics_t TRI_ServerStatistics;
 
 inline double TRI_StatisticsTime() { return TRI_microtime(); }
 
-void TRI_InitializeStatistics(void);
-void TRI_ShutdownStatistics(void);
+void TRI_InitializeStatistics();
 
 #endif

@@ -25,6 +25,16 @@
   cursor: pointer;
 }
 
+%not-selectable {
+  outline: 0;
+  -webkit-touch-callout: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 %animated {
   -moz-transition: all .2s ease-in;
   -o-transition: all .2s ease-in;
@@ -185,6 +195,16 @@
   }
 }
 
+%default {
+  background-color: $c-white;
+
+  &:hover,
+  &:focus {
+    background-color: $c-neutral;
+    color: $c-white;
+  }
+}
+
 %icon-neutral {
   color: $c-neutral;
 
@@ -328,6 +348,7 @@
   }
   box-shadow: none;
   display: none;
+  left: initial;
   list-style: none;
   margin: 5px 0 0;
   padding: 5px 0;

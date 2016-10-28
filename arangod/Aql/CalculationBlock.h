@@ -26,7 +26,6 @@
 
 #include "Aql/ExecutionBlock.h"
 #include "Aql/ExecutionNode.h"
-#include "Utils/AqlTransaction.h"
 
 namespace arangodb {
 namespace aql {
@@ -40,8 +39,6 @@ class CalculationBlock : public ExecutionBlock {
   CalculationBlock(ExecutionEngine*, CalculationNode const*);
 
   ~CalculationBlock();
-
-  int initialize() override;
 
  private:
   /// @brief fill the target register in the item block with a reference to

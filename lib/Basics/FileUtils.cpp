@@ -343,12 +343,13 @@ bool copyRecursive(std::string const& source, std::string const& target,
 
 bool copyDirectoryRecursive(std::string const& source,
                             std::string const& target, std::string& error) {
-  bool rc = true;
-#ifdef TRI_HAVE_WIN32_LIST_FILES
-  auto isSubDirectory = [](struct _finddata_t item) -> bool {
-    return ((item.attrib & _A_SUBDIR) != 0);
-  };
 
+  bool rc = true;
+  
+  auto isSubDirectory = [](std::string const& name) -> bool {
+	  return isDirectory(name);
+  };
+#ifdef TRI_HAVE_WIN32_LIST_FILES
   struct _finddata_t oneItem;
   intptr_t handle;
 
@@ -362,10 +363,6 @@ bool copyDirectoryRecursive(std::string const& source,
 
   do {
 #else
-  auto isSubDirectory = [](struct dirent* item) -> bool {
-    return isDirectory(item->d_name);
-  };
-
   struct dirent* d = (struct dirent*)TRI_Allocate(
       TRI_UNKNOWN_MEM_ZONE, (offsetof(struct dirent, d_name) + PATH_MAX + 1),
       false);
@@ -397,7 +394,7 @@ bool copyDirectoryRecursive(std::string const& source,
     std::string src = source + TRI_DIR_SEPARATOR_STR + TRI_DIR_FN(oneItem);
 
     // Handle subdirectories:
-    if (isSubDirectory(oneItem)) {
+    if (isSubDirectory(src)) {
       long systemError;
       int rc = TRI_CreateDirectory(dst.c_str(), systemError, error);
       if (rc != TRI_ERROR_NO_ERROR) {
@@ -410,7 +407,7 @@ bool copyDirectoryRecursive(std::string const& source,
         break;
       }
 #ifndef _WIN32
-    } else if (isSymbolicLink(oneItem->d_name)) {
+    } else if (isSymbolicLink(src)) {
       if (!TRI_CopySymlink(src, dst, error)) {
         break;
       }
@@ -485,6 +482,7 @@ std::vector<std::string> listFiles(std::string const& directory) {
 bool isDirectory(std::string const& path) {
   TRI_stat_t stbuf;
   int res = TRI_STAT(path.c_str(), &stbuf);
+
 #ifdef _WIN32
   return (res == 0) && ((stbuf.st_mode & S_IFMT) == S_IFDIR);
 #else
@@ -594,8 +592,8 @@ std::string homeDirectory() {
   return result;
 }
 
-std::string configDirectory() {
-  char* dir = TRI_LocateConfigDirectory();
+std::string configDirectory(const char* binaryPath) {
+  char* dir = TRI_LocateConfigDirectory(binaryPath);
 
   if (dir == nullptr) {
     return currentDirectory();
@@ -618,6 +616,16 @@ std::string dirname(std::string const& name) {
 
   return base;
 }
+
+void makePathAbsolute(std::string &path) {
+  int err = 0;
+
+  std::string cwd = FileUtils::currentDirectory(&err);
+  char * p = TRI_GetAbsolutePath(path.c_str(), cwd.c_str());
+  path = p;
+  TRI_FreeString(TRI_CORE_MEM_ZONE, p);
+}
+
 }
 }
 }

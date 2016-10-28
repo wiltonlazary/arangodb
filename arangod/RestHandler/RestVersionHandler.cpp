@@ -38,38 +38,41 @@ using namespace arangodb::rest;
 /// @brief ArangoDB server
 ////////////////////////////////////////////////////////////////////////////////
 
-RestVersionHandler::RestVersionHandler(HttpRequest* request)
-    : RestBaseHandler(request) {}
+RestVersionHandler::RestVersionHandler(GeneralRequest* request,
+                                       GeneralResponse* response)
+    : RestBaseHandler(request, response) {}
 
 bool RestVersionHandler::isDirect() const { return true; }
 
-HttpHandler::status_t RestVersionHandler::execute() {
-  try {
-    VPackBuilder result;
-    result.add(VPackValue(VPackValueType::Object));
-    result.add("server", VPackValue("arango"));
-    result.add("version", VPackValue(ARANGODB_VERSION));
+RestStatus RestVersionHandler::execute() {
+  VPackBuilder result;
+  result.add(VPackValue(VPackValueType::Object));
+  result.add("server", VPackValue("arango"));
+  result.add("version", VPackValue(ARANGODB_VERSION));
 
-    bool found;
-    std::string const& detailsStr = _request->value("details", found);
+  #ifdef USE_ENTERPRISE
+    result.add("license", VPackValue("enterprise"));
+  #else
+    result.add("license", VPackValue("community"));
+  #endif
 
-    if (found && StringUtils::boolean(detailsStr)) {
-      result.add("details", VPackValue(VPackValueType::Object));
+  bool found;
+  std::string const& detailsStr = _request->value("details", found);
 
-      Version::getVPack(result);
+  if (found && StringUtils::boolean(detailsStr)) {
+    result.add("details", VPackValue(VPackValueType::Object));
 
-      if (application_features::ApplicationServer::server != nullptr) {
-        auto server = application_features::ApplicationServer::server
-                          ->getFeature<ServerFeature>("Server");
-        result.add("mode", VPackValue(server->operationModeString()));
-      }
+    Version::getVPack(result);
 
-      result.close();
+    if (application_features::ApplicationServer::server != nullptr) {
+      auto server = application_features::ApplicationServer::server
+                        ->getFeature<ServerFeature>("Server");
+      result.add("mode", VPackValue(server->operationModeString()));
     }
+
     result.close();
-    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
-  } catch (...) {
-    // Ignore this error
   }
-  return status_t(HANDLER_DONE);
+  result.close();
+  generateResult(rest::ResponseCode::OK, result.slice());
+  return RestStatus::DONE;
 }

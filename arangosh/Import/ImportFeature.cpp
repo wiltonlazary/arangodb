@@ -23,12 +23,12 @@
 #include "ImportFeature.h"
 
 #include "ApplicationFeatures/ApplicationServer.h"
-#include "ApplicationFeatures/ClientFeature.h"
-#include "Basics/StringUtils.h"
 #include "Basics/FileUtils.h"
+#include "Basics/StringUtils.h"
 #include "Import/ImportHelper.h"
 #include "Logger/Logger.h"
 #include "ProgramOptions/ProgramOptions.h"
+#include "Shell/ClientFeature.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 
@@ -42,6 +42,7 @@ ImportFeature::ImportFeature(application_features::ApplicationServer* server,
     : ApplicationFeature(server, "Import"),
       _filename(""),
       _useBackslash(false),
+      _convert(true),
       _chunkSize(1024 * 1024 * 16),
       _collectionName(""),
       _fromCollectionPrefix(""),
@@ -51,9 +52,10 @@ ImportFeature::ImportFeature(application_features::ApplicationServer* server,
       _typeImport("json"),
       _overwrite(false),
       _quote("\""),
-      _separator(","),
+      _separator(""),
       _progress(true),
       _onDuplicateAction("error"),
+      _rowsToSkip(0),
       _result(result) {
   requiresElevatedPrivileges(false);
   setOptional(false);
@@ -88,6 +90,14 @@ void ImportFeature::collectOptions(
   options->addOption("--create-collection",
                      "create collection if it does not yet exist",
                      new BooleanParameter(&_createCollection));
+  
+  options->addOption("--skip-lines",
+                     "number of lines to skip for formats (csv and tsv only)",
+                     new UInt64Parameter(&_rowsToSkip));
+  
+  options->addOption("--convert",
+                     "convert the strings 'null', 'false', 'true' and strings containing numbers into non-string types (csv and tsv only)",
+                     new BooleanParameter(&_convert));
 
   std::unordered_set<std::string> types = {"document", "edge"};
   std::vector<std::string> typesVector(types.begin(), types.end());
@@ -116,7 +126,7 @@ void ImportFeature::collectOptions(
   options->addOption("--quote", "quote character(s), used for csv",
                      new StringParameter(&_quote));
 
-  options->addOption("--separator", "field separator, used for csv",
+  options->addOption("--separator", "field separator, used for csv and tsv",
                      new StringParameter(&_separator));
 
   options->addOption("--progress", "show progress",
@@ -132,7 +142,7 @@ void ImportFeature::collectOptions(
       "action to perform when a unique key constraint "
       "violation occurs. Possible values: " +
           actionsJoined,
-      new DiscreteValuesParameter<StringParameter>(&_typeImport, actions));
+      new DiscreteValuesParameter<StringParameter>(&_onDuplicateAction, actions));
 }
 
 void ImportFeature::validateOptions(
@@ -150,6 +160,16 @@ void ImportFeature::validateOptions(
     LOG(FATAL) << "expecting at most one filename, got " +
                       StringUtils::join(positionals, ", ");
     FATAL_ERROR_EXIT();
+  }
+
+  static unsigned const MaxBatchSize = 768 * 1024 * 1024;
+
+  if (_chunkSize > MaxBatchSize) {
+    // it's not sensible to raise the batch size beyond this value 
+    // because the server has a built-in limit for the batch size too 
+    // and will reject bigger HTTP request bodies
+    LOG(WARN) << "capping --batch-size value to " << MaxBatchSize;
+    _chunkSize = MaxBatchSize;
   }
 }
 
@@ -205,6 +225,8 @@ void ImportFeature::start() {
 
   if (_typeImport == "csv") {
     std::cout << "quote:                  " << _quote << std::endl;
+  } 
+  if (_typeImport == "csv" || _typeImport == "tsv") {
     std::cout << "separator:              " << _separator << std::endl;
   }
 
@@ -223,6 +245,8 @@ void ImportFeature::start() {
     ih.setCreateCollectionType(_createCollectionType);
   }
 
+  ih.setConversion(_convert);
+  ih.setRowsToSkip(static_cast<size_t>(_rowsToSkip));
   ih.setOverwrite(_overwrite);
   ih.useBackslash(_useBackslash);
 
@@ -234,8 +258,15 @@ void ImportFeature::start() {
     FATAL_ERROR_EXIT();
   }
 
+  if (_separator.empty()) {
+    _separator = ",";
+    if (_typeImport == "tsv") {
+      _separator = "\\t";
+    }
+  }
+
   // separator
-  if (_separator.length() == 1) {
+  if (_separator.length() == 1 || _separator == "\\r" || _separator == "\\n" || _separator == "\\t") {
     ih.setSeparator(_separator);
   } else {
     LOG(FATAL) << "_separator must be exactly one character.";
@@ -298,7 +329,6 @@ void ImportFeature::start() {
     else if (_typeImport == "tsv") {
       std::cout << "Starting TSV import..." << std::endl;
       ih.setQuote("");
-      ih.setSeparator("\\t");
       ok = ih.importDelimited(_collectionName, _filename,
                               arangodb::import::ImportHelper::TSV);
     }

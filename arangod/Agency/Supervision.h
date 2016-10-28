@@ -24,32 +24,17 @@
 #ifndef ARANGOD_CONSENSUS_SUPERVISION_H
 #define ARANGOD_CONSENSUS_SUPERVISION_H 1
 
+#include "Agency/Node.h"
 #include "AgencyCommon.h"
-#include "Node.h"
-
-#include "Basics/Thread.h"
 #include "Basics/ConditionVariable.h"
+#include "Basics/Mutex.h"
+#include "Basics/Thread.h"
 
 namespace arangodb {
 namespace consensus {
 
 class Agent;
 class Store;
-
-struct JobResult {
-  JobResult() {}
-};
-
-struct JobCallback {
-  JobCallback() {}
-  virtual ~JobCallback(){};
-  virtual bool operator()(JobResult*) = 0;
-};
-
-struct Job {
-  Job() {}
-  ~Job() {}
-};
 
 struct check_t {
   bool good;
@@ -79,27 +64,27 @@ class Supervision : public arangodb::Thread {
   };
 
   struct VitalSign {
-    VitalSign(ServerStatus s, ServerTimestamp t)
+    VitalSign(ServerStatus const& s, ServerTimestamp const& t)
         : myTimestamp(std::chrono::system_clock::now()),
           serverStatus(s),
           serverTimestamp(t),
-          jobId(0) {}
+          jobId("0") {}
 
-    void update(ServerStatus s, ServerTimestamp t) {
+    void update(ServerStatus const& s, ServerTimestamp const& t) {
       myTimestamp = std::chrono::system_clock::now();
       serverStatus = s;
       serverTimestamp = t;
-      jobId = 0;
+      jobId = "0";
     }
 
-    void maintenance(uint64_t jid) { jobId = jid; }
+    void maintenance(std::string const& jid) { jobId = jid; }
 
-    uint64_t maintenance() { return jobId; }
+    std::string const& maintenance() const { return jobId; }
 
     TimePoint myTimestamp;
     ServerStatus serverStatus;
     ServerTimestamp serverTimestamp;
-    uint64_t jobId;
+    std::string jobId;
   };
 
   /// @brief Construct sanity checking
@@ -123,11 +108,17 @@ class Supervision : public arangodb::Thread {
   /// @brief Wake up to task
   void wakeUp();
 
+  /// @brief Upgrade agency
+  void upgradeAgency();
+
  private:
+  static constexpr const char* HEALTH_STATUS_GOOD = "GOOD";
+  static constexpr const char* HEALTH_STATUS_BAD = "BAD";
+  static constexpr const char* HEALTH_STATUS_FAILED = "FAILED";
 
   /// @brief Update agency prefix from agency itself
-  bool updateAgencyPrefix (size_t nTries = 10, int intervalSec = 1);
-  
+  bool updateAgencyPrefix(size_t nTries = 10, int intervalSec = 1);
+
   /// @brief Move shard from one db server to other db server
   bool moveShard(std::string const& from, std::string const& to);
 
@@ -139,38 +130,84 @@ class Supervision : public arangodb::Thread {
 
   /// @brief Check machines under path in agency
   std::vector<check_t> checkDBServers();
+  std::vector<check_t> checkCoordinators();
   std::vector<check_t> checkShards();
 
-  /// @brief Get unique ids from agency
-  bool getUniqueIds();
+  void workJobs();
 
-  /// @brief Update local cache from agency
-  void updateFromAgency();
+  /// @brief Get unique ids from agency
+  void getUniqueIds();
 
   /// @brief Read db
   Store const& store() const;
 
   /// @brief Perform sanity checking
-  bool doChecks(bool);
+  bool doChecks();
 
+  /// @brief update my local agency snapshot
+  bool updateSnapshot();
+
+  void shrinkCluster();
+
+  bool isShuttingDown();
+
+  bool handleJobs();
+  void handleShutdown();
+
+  Mutex _lock; // guards snapshot, _jobId, jobIdMax, _selfShutdown
   Agent* _agent; /**< @brief My agent */
   Node _snapshot;
 
   arangodb::basics::ConditionVariable _cv; /**< @brief Control if thread
                                               should run */
 
-  ///@brief last vital signs as reported through heartbeats to agency
-  ///
-  std::map<ServerID, std::shared_ptr<VitalSign>> _vitalSigns;
-
   long _frequency;
   long _gracePeriod;
-  long _jobId;
-  long _jobIdMax;
+  uint64_t _jobId;
+  uint64_t _jobIdMax;
+
+  // mop: this feels very hacky...we have a hen and egg problem here
+  // we are using /Shutdown in the agency to determine that the cluster should
+  // shutdown. When every member is down we should of course not persist this
+  // flag so we don't immediately initiate shutdown after restart. we use this
+  // flag to temporarily store that shutdown was initiated...when the /Shutdown
+  // stuff has been removed we shutdown ourselves. The assumption (heheh...) is
+  // that while the cluster is shutting down every agent hit the shutdown stuff
+  // at least once so this flag got set at some point
+  bool _selfShutdown;
+
+  std::string serverHealth(std::string const&);
 
   static std::string _agencyPrefix;
 };
+
+inline std::string timepointToString(Supervision::TimePoint const& t) {
+  time_t tt = std::chrono::system_clock::to_time_t(t);
+  struct tm tb;
+  size_t const len(21);
+  char buffer[len];
+  TRI_localtime(tt, &tb);
+  ::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tb);
+  return std::string(buffer, len - 1);
+}
+
+inline Supervision::TimePoint stringToTimepoint(std::string const& s) {
+  std::tm tt;
+  try {
+    tt.tm_year = std::stoi(s.substr(0, 4)) - 1900;
+    tt.tm_mon = std::stoi(s.substr(5, 2)) - 1;
+    tt.tm_mday = std::stoi(s.substr(8, 2));
+    tt.tm_hour = std::stoi(s.substr(11, 2));
+    tt.tm_min = std::stoi(s.substr(14, 2));
+    tt.tm_sec = std::stoi(s.substr(17, 2));
+    tt.tm_isdst = -1;
+    auto time_c = ::mktime(&tt);
+    return std::chrono::system_clock::from_time_t(time_c);
+  } catch (...) {
+    return std::chrono::system_clock::now();
+  }
 }
 }
+}  // Name spaces
 
 #endif

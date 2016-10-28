@@ -30,7 +30,6 @@
 #include "Aql/ModificationOptions.h"
 #include "Aql/types.h"
 #include "Aql/Variable.h"
-#include "Basics/JsonHelper.h"
 #include "VocBase/voc-types.h"
 #include "VocBase/vocbase.h"
 
@@ -61,7 +60,7 @@ class ModificationNode : public ExecutionNode {
     TRI_ASSERT(_collection != nullptr);
   }
 
-  ModificationNode(ExecutionPlan*, arangodb::basics::Json const& json);
+  ModificationNode(ExecutionPlan*, arangodb::velocypack::Slice const& slice);
 
   /// @brief export to VelocyPack
   virtual void toVelocyPackHelper(arangodb::velocypack::Builder&,
@@ -72,7 +71,10 @@ class ModificationNode : public ExecutionNode {
   TRI_vocbase_t* vocbase() const { return _vocbase; }
 
   /// @brief return the collection
-  Collection const* collection() const { return _collection; }
+  Collection* collection() const { return _collection; }
+
+  /// @brief modify collection afterwards
+  void setCollection(Collection* coll) { _collection = coll; }
 
   /// @brief estimateCost
   /// Note that all the modifying nodes use this estimateCost method which is
@@ -112,6 +114,16 @@ class ModificationNode : public ExecutionNode {
   /// @brief clear the "$NEW" out variable
   void clearOutVariableNew() { _outVariableNew = nullptr; }
 
+  /// @brief set the "$OLD" out variable
+  void setOutVariableOld(Variable const* oldVar) {
+    _outVariableOld = oldVar;
+  }
+
+  /// @brief set the "$NEW" out variable
+  void setOutVariableNew(Variable const* newVar) {
+    _outVariableNew = newVar;
+  }
+
   /// @brief whether or not the node is a data modification node
   bool isModificationNode() const override { return true; }
 
@@ -150,7 +162,7 @@ class RemoveNode : public ModificationNode {
     TRI_ASSERT(_inVariable != nullptr);
   }
 
-  RemoveNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  RemoveNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return REMOVE; }
@@ -172,6 +184,10 @@ class RemoveNode : public ModificationNode {
   void getVariablesUsedHere(
       std::unordered_set<Variable const*>& vars) const override final {
     vars.emplace(_inVariable);
+  }
+
+  void setInVariable(Variable const* var) {
+    _inVariable = var;
   }
 
  private:
@@ -198,7 +214,7 @@ class InsertNode : public ModificationNode {
     // _outVariable might be a nullptr
   }
 
-  InsertNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  InsertNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return INSERT; }
@@ -220,6 +236,10 @@ class InsertNode : public ModificationNode {
   void getVariablesUsedHere(
       std::unordered_set<Variable const*>& vars) const override final {
     vars.emplace(_inVariable);
+  }
+
+  void setInVariable(Variable const* var) {
+    _inVariable = var;
   }
 
  private:
@@ -249,7 +269,7 @@ class UpdateNode : public ModificationNode {
     // _inKeyVariable might be a nullptr
   }
 
-  UpdateNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  UpdateNode(ExecutionPlan*, arangodb::velocypack::Slice const&);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return UPDATE; }
@@ -284,6 +304,11 @@ class UpdateNode : public ModificationNode {
     }
   }
 
+  /// @brief set the input document variable
+  void setInDocVariable(Variable const* var) {
+    _inDocVariable = var;
+  }
+
  private:
   /// @brief input variable for documents
   Variable const* _inDocVariable;
@@ -314,7 +339,7 @@ class ReplaceNode : public ModificationNode {
     // _inKeyVariable might be a nullptr
   }
 
-  ReplaceNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  ReplaceNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return REPLACE; }
@@ -347,6 +372,11 @@ class ReplaceNode : public ModificationNode {
     if (_inKeyVariable != nullptr) {
       vars.emplace(_inKeyVariable);
     }
+  }
+
+  /// @brief set the input document variable
+  void setInDocVariable(Variable const* var) {
+    _inDocVariable = var;
   }
 
  private:
@@ -385,7 +415,7 @@ class UpsertNode : public ModificationNode {
     TRI_ASSERT(_outVariableOld == nullptr);
   }
 
-  UpsertNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  UpsertNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return UPSERT; }
@@ -414,6 +444,22 @@ class UpsertNode : public ModificationNode {
     vars.emplace(_updateVariable);
   }
 
+  void setInDocVariable(Variable const* var) {
+    _inDocVariable = var;
+  }
+
+  void setInsertVariable(Variable const* var) {
+    _insertVariable = var;
+  }
+
+  void setUpdateVariable(Variable const* var) {
+    _updateVariable = var;
+  }
+
+  void setIsReplace(bool var) {
+    _isReplace = var;
+  }
+
  private:
   /// @brief input variable for the search document
   Variable const* _inDocVariable;
@@ -425,7 +471,7 @@ class UpsertNode : public ModificationNode {
   Variable const* _updateVariable;
 
   /// @brief whether to perform a REPLACE (or an UPDATE alternatively)
-  bool const _isReplace;
+  bool _isReplace;
 };
 
 }  // namespace arangodb::aql

@@ -21,8 +21,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "DumpFeature.h"
+
 #include "ApplicationFeatures/ApplicationServer.h"
-#include "ApplicationFeatures/ClientFeature.h"
 #include "Basics/FileUtils.h"
 #include "Basics/StringUtils.h"
 #include "Basics/VelocyPackHelper.h"
@@ -32,6 +32,7 @@
 #include "ProgramOptions/ProgramOptions.h"
 #include "Rest/HttpResponse.h"
 #include "Rest/Version.h"
+#include "Shell/ClientFeature.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
@@ -62,6 +63,7 @@ DumpFeature::DumpFeature(application_features::ApplicationServer* server,
       _progress(true),
       _tickStart(0),
       _tickEnd(0),
+      _compat28(false),
       _result(result),
       _batchId(0),
       _clusterMode(false),
@@ -115,6 +117,9 @@ void DumpFeature::collectOptions(
 
   options->addOption("--tick-end", "last tick to be included in data dump",
                      new UInt64Parameter(&_tickEnd));
+  
+  options->addOption("--compat28", "produce a dump compatible with ArangoDB 2.8",
+                     new BooleanParameter(&_compat28));
 }
 
 void DumpFeature::validateOptions(
@@ -162,7 +167,7 @@ void DumpFeature::prepare() {
     if (isDirectory) {
       std::vector<std::string> files(TRI_FullTreeDirectory(_outputDirectory.c_str()));
       // we don't care if the target directory is empty
-      isEmptyDirectory = (files.empty()); // TODO: TRI_FullTreeDirectory always returns at least one element (""), even if directory is empty?
+      isEmptyDirectory = (files.size() <= 1); // TODO: TRI_FullTreeDirectory always returns at least one element (""), even if directory is empty?
     }
   }
 
@@ -205,7 +210,7 @@ int DumpFeature::startBatch(std::string DBserver, std::string& errorMsg) {
   }
 
   std::unique_ptr<SimpleHttpResult> response(
-      _httpClient->request(GeneralRequest::RequestType::POST, url + urlExt,
+      _httpClient->request(rest::RequestType::POST, url + urlExt,
                            body.c_str(), body.size()));
 
   if (response == nullptr || !response->isComplete()) {
@@ -258,7 +263,7 @@ void DumpFeature::extendBatch(std::string DBserver) {
   }
 
   std::unique_ptr<SimpleHttpResult> response(
-      _httpClient->request(GeneralRequest::RequestType::PUT, url + urlExt,
+      _httpClient->request(rest::RequestType::PUT, url + urlExt,
                            body.c_str(), body.size()));
 
   // ignore any return value
@@ -278,7 +283,7 @@ void DumpFeature::endBatch(std::string DBserver) {
   _batchId = 0;
 
   std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
-      GeneralRequest::RequestType::DELETE_REQ, url + urlExt, nullptr, 0));
+      rest::RequestType::DELETE_REQ, url + urlExt, nullptr, 0));
 
   // ignore any return value
 }
@@ -302,16 +307,14 @@ int DumpFeature::dumpCollection(int fd, std::string const& cid,
       url += "&to=" + StringUtils::itoa(maxTick);
     }
 
-    if (_force) {
-      url += "&failOnUnknown=false";
-    } else {
-      url += "&failOnUnknown=true";
+    if (_compat28) {
+      url += "&compat28=true";
     }
 
     _stats._totalBatches++;
 
     std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
-        GeneralRequest::RequestType::GET, url, nullptr, 0));
+        rest::RequestType::GET, url, nullptr, 0));
 
     if (response == nullptr || !response->isComplete()) {
       errorMsg =
@@ -400,7 +403,7 @@ void DumpFeature::flushWal() {
       "/_admin/wal/flush?waitForSync=true&waitForCollector=true";
 
   std::unique_ptr<SimpleHttpResult> response(
-      _httpClient->request(GeneralRequest::RequestType::PUT, url, nullptr, 0));
+      _httpClient->request(rest::RequestType::PUT, url, nullptr, 0));
 
   if (response == nullptr || !response->isComplete() ||
       response->wasHttpError()) {
@@ -417,7 +420,7 @@ int DumpFeature::runDump(std::string& dbName, std::string& errorMsg) {
       std::string(_includeSystemCollections ? "true" : "false");
 
   std::unique_ptr<SimpleHttpResult> response(
-      _httpClient->request(GeneralRequest::RequestType::GET, url, nullptr, 0));
+      _httpClient->request(rest::RequestType::GET, url, nullptr, 0));
 
   if (response == nullptr || !response->isComplete()) {
     errorMsg =
@@ -540,8 +543,7 @@ int DumpFeature::runDump(std::string& dbName, std::string& errorMsg) {
       return TRI_ERROR_INTERNAL;
     }
 
-    std::string const cid = arangodb::basics::VelocyPackHelper::getStringValue(
-        parameters, "cid", "");
+    uint64_t const cid = arangodb::basics::VelocyPackHelper::extractIdValue(parameters);
     std::string const name = arangodb::basics::VelocyPackHelper::getStringValue(
         parameters, "name", "");
     bool const deleted = arangodb::basics::VelocyPackHelper::getBooleanValue(
@@ -550,7 +552,7 @@ int DumpFeature::runDump(std::string& dbName, std::string& errorMsg) {
         parameters, "type", 2);
     std::string const collectionType(type == 2 ? "document" : "edge");
 
-    if (cid == "" || name == "") {
+    if (cid == 0 || name == "") {
       errorMsg = "got malformed JSON response from server";
 
       return TRI_ERROR_INTERNAL;
@@ -640,7 +642,7 @@ int DumpFeature::runDump(std::string& dbName, std::string& errorMsg) {
       }
 
       extendBatch("");
-      int res = dumpCollection(fd, cid, name, maxTick, errorMsg);
+      int res = dumpCollection(fd, std::to_string(cid), name, maxTick, errorMsg);
 
       TRI_CLOSE(fd);
 
@@ -678,7 +680,7 @@ int DumpFeature::dumpShard(int fd, std::string const& DBserver,
     _stats._totalBatches++;
 
     std::unique_ptr<SimpleHttpResult> response(_httpClient->request(
-        GeneralRequest::RequestType::GET, url, nullptr, 0));
+        rest::RequestType::GET, url, nullptr, 0));
 
     if (response == nullptr || !response->isComplete()) {
       errorMsg =
@@ -761,7 +763,7 @@ int DumpFeature::runClusterDump(std::string& errorMsg) {
       std::string(_includeSystemCollections ? "true" : "false");
 
   std::unique_ptr<SimpleHttpResult> response(
-      _httpClient->request(GeneralRequest::RequestType::GET, url, nullptr, 0));
+      _httpClient->request(rest::RequestType::GET, url, nullptr, 0));
 
   if (response == nullptr || !response->isComplete()) {
     errorMsg =
@@ -823,14 +825,13 @@ int DumpFeature::runClusterDump(std::string& errorMsg) {
       return TRI_ERROR_INTERNAL;
     }
 
-    std::string const id = arangodb::basics::VelocyPackHelper::getStringValue(
-        parameters, "id", "");
+    uint64_t const cid = arangodb::basics::VelocyPackHelper::extractIdValue(parameters);
     std::string const name = arangodb::basics::VelocyPackHelper::getStringValue(
         parameters, "name", "");
     bool const deleted = arangodb::basics::VelocyPackHelper::getBooleanValue(
         parameters, "deleted", false);
 
-    if (id == "" || name == "") {
+    if (cid == 0 || name == "") {
       errorMsg = "got malformed JSON response from server";
 
       return TRI_ERROR_INTERNAL;

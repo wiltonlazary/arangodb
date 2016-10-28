@@ -106,7 +106,9 @@ function optimizerIndexesSortTestSuite () {
       });
 
       assertNotEqual(-1, nodeTypes.indexOf("IndexNode"), query);
-      assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      }
 
       var results = AQL_EXECUTE(query);
       var expected = [ ];
@@ -116,7 +118,9 @@ function optimizerIndexesSortTestSuite () {
       }
       assertEqual(expected.sort(), results.json.sort(), query);
       assertEqual(0, results.stats.scannedFull);
-      assertEqual(expected.length, results.stats.scannedIndex);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(expected.length, results.stats.scannedIndex);
+      }
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -139,7 +143,9 @@ function optimizerIndexesSortTestSuite () {
       });
 
       assertNotEqual(-1, nodeTypes.indexOf("IndexNode"), query);
-      assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      }
 
       var results = AQL_EXECUTE(query);
       var expected = [ ];
@@ -148,7 +154,9 @@ function optimizerIndexesSortTestSuite () {
       }
       assertEqual(expected, results.json, query);
       assertEqual(0, results.stats.scannedFull);
-      assertEqual(expected.length, results.stats.scannedIndex);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(expected.length, results.stats.scannedIndex);
+      }
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -171,7 +179,9 @@ function optimizerIndexesSortTestSuite () {
       });
 
       assertNotEqual(-1, nodeTypes.indexOf("IndexNode"), query);
-      assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
+      }
 
       var results = AQL_EXECUTE(query);
       var expected = [ ];
@@ -181,7 +191,9 @@ function optimizerIndexesSortTestSuite () {
       }
       assertEqual(expected.sort(), results.json.sort(), query);
       assertEqual(0, results.stats.scannedFull);
-      assertEqual(expected.length, results.stats.scannedIndex);
+      if (!require("@arangodb/cluster").isCluster()) {
+        assertEqual(expected.length, results.stats.scannedIndex);
+      }
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -196,7 +208,6 @@ function optimizerIndexesSortTestSuite () {
 
       var queries = [
         "FOR j IN " + c.name() + " FILTER j.value2 == 2 FOR i IN " + c.name() + " FILTER i.value2 == 2 SORT i.value2 RETURN i.value2",
-        "FOR j IN 1..1 FOR i IN " + c.name() + " FILTER i.value2 == 2 SORT i.value2 RETURN i.value2",
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 || i.value2 == 3 SORT i.value2 RETURN i.value2",
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 || i.value2 == 3 SORT i.value3 RETURN i.value2",
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 SORT i.value3 RETURN i.value2",
@@ -232,7 +243,8 @@ function optimizerIndexesSortTestSuite () {
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 SORT i.value2 DESC RETURN i.value2",
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 3 SORT i.value2 RETURN i.value2",
         "FOR i IN " + c.name() + " FILTER i.value2 == 2 && PASSTHRU(1) SORT i.value2 RETURN i.value2",
-        "FOR i IN " + c.name() + " FILTER PASSTHRU(1) && i.value2 == 2 SORT i.value2 RETURN i.value2"
+        "FOR i IN " + c.name() + " FILTER PASSTHRU(1) && i.value2 == 2 SORT i.value2 RETURN i.value2",
+        "FOR j IN 1..1 FOR i IN " + c.name() + " FILTER i.value2 == 2 SORT i.value2 RETURN i.value2",
       ];
 
       queries.forEach(function(query) {
@@ -257,12 +269,13 @@ function optimizerIndexesSortTestSuite () {
       c.ensureHashIndex("value2", "value3");
 
       var queries = [
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC RETURN i.value2", false ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2, i.value3 RETURN i.value2", false ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC, i.value3 DESC RETURN i.value2", false ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC, i.value3 DESC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && PASSTHRU(1) SORT i.value2 RETURN i.value2", true ]
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && PASSTHRU(1) SORT i.value2 RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2, i.value4 RETURN i.value2", true ]
       ];
 
       queries.forEach(function(query) {
@@ -313,10 +326,12 @@ function optimizerIndexesSortTestSuite () {
       var queries = [
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC, i.value3 ASC RETURN i.value2", false ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC, i.value3 DESC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 ASC RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 DESC RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC RETURN i.value2", true ]
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 ASC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 ASC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 DESC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2 DESC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value2, i.value4 DESC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value4, i.value2 DESC RETURN i.value2", true ]
       ];
 
       queries.forEach(function(query) {
@@ -356,12 +371,12 @@ function optimizerIndexesSortTestSuite () {
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 ASC, i.value4 ASC RETURN i.value2", false ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 SORT i.value3 DESC, i.value4 DESC RETURN i.value2" ,false ],
 
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 ASC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 DESC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 ASC, i.value4 ASC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 DESC, i.value4 DESC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value4 ASC RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value4 DESC RETURN i.value2", false ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 ASC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 DESC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 ASC, i.value4 ASC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value3 DESC, i.value4 DESC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value4 ASC RETURN i.value2", true ],
+        [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value4 DESC RETURN i.value2", true ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value2 ASC, i.value3 ASC, i.value4 ASC RETURN i.value2", true ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value2 DESC, i.value3 DESC, i.value4 DESC RETURN i.value2", true ],
         [ "FOR i IN " + c.name() + " FILTER i.value2 == 2 && i.value3 == 2 && i.value4 == 2 SORT i.value2 ASC, i.value3 ASC, i.value4 DESC RETURN i.value2", true ]
@@ -610,15 +625,15 @@ function optimizerIndexesSortTestSuite () {
       var idx = c.ensureSkiplist("value2", { sparse: true });
 
       var queries = [
-        [ "FOR i IN " + c.name() + " FILTER i.value2 > 10 SORT i.value2 RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 >= 10 SORT i.value2 RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 10 SORT i.value2 RETURN i.value2", false ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 > null SORT i.value2 RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 >= true SORT i.value2 RETURN i.value2", true ]
+        "FOR i IN " + c.name() + " FILTER i.value2 > 10 SORT i.value2 RETURN i.value2",
+        "FOR i IN " + c.name() + " FILTER i.value2 >= 10 SORT i.value2 RETURN i.value2",
+        "FOR i IN " + c.name() + " FILTER i.value2 == 10 SORT i.value2 RETURN i.value2",
+        "FOR i IN " + c.name() + " FILTER i.value2 > null SORT i.value2 RETURN i.value2",
+        "FOR i IN " + c.name() + " FILTER i.value2 >= true SORT i.value2 RETURN i.value2"
       ];
 
       queries.forEach(function(query) {
-        var plan = AQL_EXPLAIN(query[0]).plan;
+        var plan = AQL_EXPLAIN(query).plan;
         var nodeTypes = plan.nodes.map(function(node) {
           if (node.type === "IndexNode") {
             assertEqual(node.indexes.length, 1);
@@ -632,12 +647,7 @@ function optimizerIndexesSortTestSuite () {
         // index is used for sorting we made sure it is not null
         assertNotEqual(-1, nodeTypes.indexOf("IndexNode"), query);
         // right now sparse indexes are not able to deliver sorting
-        if (query[1]) {
-          assertNotEqual(-1, nodeTypes.indexOf("SortNode"), query);
-        }
-        else {
-          assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
-        }
+        assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
       });
     },
 
@@ -716,12 +726,12 @@ function optimizerIndexesSortTestSuite () {
       var idx = c.ensureSkiplist("value2", "value3", { sparse: true });
 
       var queries = [
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 10 && i.value3 >= 4 SORT i.value2, i.value3 RETURN i.value2", true ],
-        [ "FOR i IN " + c.name() + " FILTER i.value2 == 10 && i.value3 == 4 SORT i.value2, i.value3 RETURN i.value2", false ]
+        "FOR i IN " + c.name() + " FILTER i.value2 == 10 && i.value3 >= 4 SORT i.value2, i.value3 RETURN i.value2",
+        "FOR i IN " + c.name() + " FILTER i.value2 == 10 && i.value3 == 4 SORT i.value2, i.value3 RETURN i.value2"
       ];
 
       queries.forEach(function(query) {
-        var plan = AQL_EXPLAIN(query[0]).plan;
+        var plan = AQL_EXPLAIN(query).plan;
         var nodeTypes = plan.nodes.map(function(node) {
           if (node.type === "IndexNode") {
             assertEqual(node.indexes.length, 1);
@@ -734,12 +744,7 @@ function optimizerIndexesSortTestSuite () {
 
         // index is used for sorting and filtering. We made sure it is never null
         assertNotEqual(-1, nodeTypes.indexOf("IndexNode"), query);
-        if (query[1]) {
-          assertNotEqual(-1, nodeTypes.indexOf("SortNode"), query);
-        }
-        else {
-          assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
-        }
+        assertEqual(-1, nodeTypes.indexOf("SortNode"), query);
       });
     },
 

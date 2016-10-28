@@ -26,12 +26,11 @@
 #include "ProgramOptions/ProgramOptions.h"
 #include "ProgramOptions/Section.h"
 #include "RestServer/DatabaseFeature.h"
-#include "RestServer/DatabaseServerFeature.h"
 #include "V8Server/V8Context.h"
 #include "V8Server/V8DealerFeature.h"
 #include "V8Server/v8-query.h"
 #include "V8Server/v8-vocbase.h"
-#include "VocBase/server.h"
+#include "VocBase/vocbase.h"
 
 using namespace arangodb;
 using namespace arangodb::application_features;
@@ -55,6 +54,8 @@ void CheckVersionFeature::collectOptions(
     std::shared_ptr<ProgramOptions> options) {
   options->addSection("database", "Configure the database");
 
+  options->addOldOption("check-version", "database.check-version");
+
   options->addHiddenOption("--database.check-version",
                            "checks the versions of the database and exit",
                            new BooleanParameter(&_checkVersion));
@@ -68,15 +69,17 @@ void CheckVersionFeature::validateOptions(
 
   ApplicationServer::forceDisableFeatures(_nonServerFeatures);
 
-  LoggerFeature* logger = ApplicationServer::getFeature<LoggerFeature>("Logger");
+  LoggerFeature* logger =
+      ApplicationServer::getFeature<LoggerFeature>("Logger");
   logger->disableThreaded();
 
-  DatabaseFeature* database = ApplicationServer::getFeature<DatabaseFeature>("Database");
-  database->disableReplicationApplier();
-  database->disableCompactor();
-  database->enableCheckVersion();
+  DatabaseFeature* databaseFeature =
+      ApplicationServer::getFeature<DatabaseFeature>("Database");
+  databaseFeature->disableReplicationApplier();
+  databaseFeature->enableCheckVersion();
 
-  V8DealerFeature* v8dealer = ApplicationServer::getFeature<V8DealerFeature>("V8Dealer");
+  V8DealerFeature* v8dealer =
+      ApplicationServer::getFeature<V8DealerFeature>("V8Dealer");
   v8dealer->setNumberContexts(1);
 }
 
@@ -102,7 +105,7 @@ void CheckVersionFeature::checkVersion() {
   // run version check
   LOG(TRACE) << "starting version check";
 
-  auto* vocbase = DatabaseFeature::DATABASE->vocbase();
+  auto* vocbase = DatabaseFeature::DATABASE->systemDatabase();
 
   // enter context and isolate
   {
@@ -113,6 +116,8 @@ void CheckVersionFeature::checkVersion() {
       LOG(FATAL) << "could not enter context #0";
       FATAL_ERROR_EXIT();
     }
+
+    TRI_DEFER(V8DealerFeature::DEALER->exitContext(context));
 
     {
       v8::HandleScope scope(context->_isolate);
@@ -127,23 +132,23 @@ void CheckVersionFeature::checkVersion() {
         LOG(DEBUG) << "running database version check";
 
         // can do this without a lock as this is the startup
-        auto server = DatabaseServerFeature::SERVER;
-        auto unuser = server->_databasesProtector.use();
-        auto theLists = server->_databasesLists.load();
+        DatabaseFeature* databaseFeature = application_features::ApplicationServer::getFeature<DatabaseFeature>("Database");
 
-        for (auto& p : theLists->_databases) {
-          TRI_vocbase_t* vocbase = p.second;
+        for (auto& name : databaseFeature->getDatabaseNames()) {
+          TRI_vocbase_t* vocbase = databaseFeature->lookupDatabase(name);
 
-          // special check script to be run just once in first thread (not in all)
-          // but for all databases
+          TRI_ASSERT(vocbase != nullptr);
 
+          // special check script to be run just once in first thread (not in
+          // all) but for all databases
           int status = TRI_CheckDatabaseVersion(vocbase, localContext);
 
           LOG(DEBUG) << "version check return status " << status;
 
           if (status < 0) {
-            LOG(FATAL) << "Database version check failed for '" << vocbase->_name
-                      << "'. Please inspect the logs for any errors";
+            LOG(FATAL) << "Database version check failed for '"
+                       << vocbase->name()
+                       << "'. Please inspect the logs for any errors";
             FATAL_ERROR_EXIT();
           } else if (status == 3) {
             *_result = 3;
@@ -153,11 +158,10 @@ void CheckVersionFeature::checkVersion() {
         }
       }
 
-      // issue #391: when invoked with --database.auto-upgrade, the server will not always shut
-      // down
+      // issue #391: when invoked with --database.auto-upgrade, the server will
+      // not always shut down
       localContext->Exit();
     }
-    V8DealerFeature::DEALER->exitContext(context);
   }
 
   if (*_result == 1) {

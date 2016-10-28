@@ -27,8 +27,6 @@
 #include "Basics/Common.h"
 #include "Basics/AttributeNameParser.h"
 #include "Basics/Exceptions.h"
-#include "Basics/json.h"
-#include "Basics/JsonHelper.h"
 
 #include <velocypack/Slice.h>
 
@@ -37,10 +35,13 @@
 namespace arangodb {
 namespace velocypack {
 class Builder;
+class Slice;
 }
 namespace basics {
 class StringBuffer;
 }
+
+class Transaction;
 
 namespace aql {
 class Ast;
@@ -78,7 +79,7 @@ enum AstNodeFlagType : AstNodeFlagsType {
   FLAG_KEEP_VARIABLENAME = 16384,  // node is a reference to a variable name,
                                    // not the variable value (used in KEEP
                                    // nodes)
-  FLAG_BIND_PARAMETER = 32768  // node was created from a JSON bind parameter
+  FLAG_BIND_PARAMETER = 32768  // node was created from a bind parameter
 };
 
 /// @brief enumeration of AST node value types
@@ -188,7 +189,8 @@ enum AstNodeType : uint32_t {
   NODE_TYPE_OPERATOR_BINARY_ARRAY_IN = 71,
   NODE_TYPE_OPERATOR_BINARY_ARRAY_NIN = 72,
   NODE_TYPE_QUANTIFIER = 73,
-  NODE_TYPE_WITH = 74
+  NODE_TYPE_WITH = 74,
+  NODE_TYPE_SHORTEST_PATH = 75,
 };
 
 static_assert(NODE_TYPE_VALUE < NODE_TYPE_ARRAY, "incorrect node types order");
@@ -217,13 +219,13 @@ struct AstNode {
   /// @brief create a string node, with defining a value type
   AstNode(char const*, size_t, AstNodeValueType);
 
-  /// @brief create the node from JSON
-  AstNode(Ast*, arangodb::basics::Json const& json);
+  /// @brief create the node from VPack
+  AstNode(Ast*, arangodb::velocypack::Slice const& slice);
 
-  /// @brief create the node from JSON
+  /// @brief create the node from VPack
   AstNode(std::function<void(AstNode*)> registerNode,
           std::function<char const*(std::string const&)> registerString,
-          arangodb::basics::Json const& json);
+          arangodb::velocypack::Slice const& slice);
 
   /// @brief destroy the node
   ~AstNode();
@@ -246,8 +248,8 @@ struct AstNode {
 
   /// @brief compute the value for a constant value node
   /// the value is owned by the node and must not be freed by the caller
-  /// note that the return value might be NULL in case of OOM
   arangodb::velocypack::Slice computeValue() const;
+  arangodb::velocypack::Slice computeValue(arangodb::Transaction*) const;
 
   /// @brief sort the members of an (array) node
   /// this will also set the FLAG_SORTED flag for the node
@@ -269,16 +271,8 @@ struct AstNode {
   /// throws exception if not
   static void validateValueType(int type);
 
-  /// @brief fetch a node's type from json
-  static AstNodeType getNodeTypeFromJson(arangodb::basics::Json const& json);
-
-  /// @brief return a JSON representation of the node value
-  /// the caller is responsible for freeing the JSON later
-  TRI_json_t* toJsonValue(TRI_memory_zone_t*) const;
-
-  /// @brief return a JSON representation of the node
-  /// the caller is responsible for freeing the JSON later
-  TRI_json_t* toJson(TRI_memory_zone_t*, bool) const;
+  /// @brief fetch a node's type from VPack
+  static AstNodeType getNodeTypeFromVPack(arangodb::velocypack::Slice const& slice);
 
   /// @brief return a VelocyPack representation of the node value
   std::shared_ptr<arangodb::velocypack::Builder> toVelocyPackValue() const;
@@ -292,10 +286,6 @@ struct AstNode {
 
   /// @brief Create a VelocyPack representation of the node
   void toVelocyPack(arangodb::velocypack::Builder&, bool) const;
-
-  /// @brief adds a JSON representation of the node to the JSON array specified
-  /// in the first argument
-  void toJson(TRI_json_t*, TRI_memory_zone_t*, bool) const;
 
   /// @brief convert the node's value to a boolean value
   /// this may create a new node or return the node itself if it is already a
@@ -567,6 +557,10 @@ struct AstNode {
     }
     members.erase(members.begin() + i, members.end());
   }
+  
+  inline void clearMembers() {
+    members.clear();
+  }
 
   /// @brief set the node's value type
   inline void setValueType(AstNodeValueType type) { value.type = type; }
@@ -623,6 +617,11 @@ struct AstNode {
     }
     return (strncmp(getStringValue(), other, getStringLength()) == 0);
   }
+  
+  /// @brief whether or not a string is equal to another
+  inline bool stringEquals(std::string const& other) const {
+    return (other.size() == getStringLength() && memcmp(other.c_str(), getStringValue(), getStringLength()) == 0);
+  }
 
   /// @brief return the data value of a node
   inline void* getData() const { return value.value._data; }
@@ -647,6 +646,9 @@ struct AstNode {
   /// this method is used when generated JavaScript code for the node!
   /// this creates an equivalent to what JSON.stringify() would do
   void appendValue(arangodb::basics::StringBuffer*) const;
+
+  /// @brief Steals the computed value and frees it.
+  void stealComputedValue();
 
  public:
   /// @brief the node type

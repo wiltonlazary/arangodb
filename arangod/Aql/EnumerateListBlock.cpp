@@ -28,8 +28,6 @@
 
 using namespace arangodb::aql;
 
-using Json = arangodb::basics::Json;
-
 EnumerateListBlock::EnumerateListBlock(ExecutionEngine* engine,
                                        EnumerateListNode const* en)
     : ExecutionBlock(engine, en),
@@ -50,9 +48,6 @@ EnumerateListBlock::EnumerateListBlock(ExecutionEngine* engine,
 
 EnumerateListBlock::~EnumerateListBlock() {}
 
-/// @brief initialize, here we get the inVariable
-int EnumerateListBlock::initialize() { return ExecutionBlock::initialize(); }
-
 int EnumerateListBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   DEBUG_BEGIN_BLOCK();  
   int res = ExecutionBlock::initializeCursor(items, pos);
@@ -72,7 +67,9 @@ int EnumerateListBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
 
 AqlItemBlock* EnumerateListBlock::getSome(size_t, size_t atMost) {
   DEBUG_BEGIN_BLOCK();  
+  traceGetSomeBegin();
   if (_done) {
+    traceGetSomeEnd(nullptr);
     return nullptr;
   }
 
@@ -88,6 +85,7 @@ AqlItemBlock* EnumerateListBlock::getSome(size_t, size_t atMost) {
       size_t toFetch = (std::min)(DefaultBatchSize(), atMost);
       if (!ExecutionBlock::getBlock(toFetch, toFetch)) {
         _done = true;
+        traceGetSomeEnd(nullptr);
         return nullptr;
       }
       _pos = 0;  // this is in the first block
@@ -129,14 +127,6 @@ AqlItemBlock* EnumerateListBlock::getSome(size_t, size_t atMost) {
       inheritRegisters(cur, res.get(), _pos);
 
       for (size_t j = 0; j < toSend; j++) {
-        if (j > 0) {
-          // re-use already copied AqlValues
-          for (RegisterId i = 0; i < cur->getNrRegs(); i++) {
-            res->setValue(j, i, res->getValueReference(0, i));
-            // Note that if this throws, all values will be
-            // deleted properly, since the first row is.
-          }
-        }
         // add the new register value . . .
         bool mustDestroy;
         AqlValue a = getAqlValue(inVarReg, mustDestroy);
@@ -150,6 +140,11 @@ AqlItemBlock* EnumerateListBlock::getSome(size_t, size_t atMost) {
         }
         res->setValue(j, cur->getNrRegs(), a);
         guard.steal(); // itemblock is now responsible for value
+        
+        if (j > 0) {
+          // re-use already copied AqlValues
+          res->copyValuesFromFirstRow(j, cur->getNrRegs());
+        }
       }
     }
 
@@ -168,6 +163,7 @@ AqlItemBlock* EnumerateListBlock::getSome(size_t, size_t atMost) {
 
   // Clear out registers no longer needed later:
   clearRegisters(res.get());
+  traceGetSomeEnd(res.get());
   return res.release();
   DEBUG_END_BLOCK();  
 }
@@ -251,7 +247,7 @@ AqlValue EnumerateListBlock::getAqlValue(AqlValue const& inVarReg, bool& mustDes
     return out;
   }
 
-  return inVarReg.at(_index++, mustDestroy, true);
+  return inVarReg.at(_trx, _index++, mustDestroy, true);
   DEBUG_END_BLOCK();  
 }
 

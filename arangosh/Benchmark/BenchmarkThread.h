@@ -29,12 +29,13 @@
 #include "Basics/ConditionLocker.h"
 #include "Basics/ConditionVariable.h"
 #include "Basics/Exceptions.h"
-#include "Logger/Logger.h"
 #include "Basics/Thread.h"
 #include "Basics/hashes.h"
 #include "Benchmark/BenchmarkCounter.h"
 #include "Benchmark/BenchmarkOperation.h"
+#include "Logger/Logger.h"
 #include "Rest/HttpResponse.h"
+#include "Shell/ClientFeature.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpClient.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
@@ -96,7 +97,7 @@ class BenchmarkThread : public arangodb::Thread {
 
     // test the connection
     httpclient::SimpleHttpResult* result =
-        _httpClient->request(GeneralRequest::RequestType::GET, "/_api/version",
+        _httpClient->request(rest::RequestType::GET, "/_api/version",
                              nullptr, 0, _headers);
 
     if (!result || !result->isComplete()) {
@@ -221,7 +222,7 @@ class BenchmarkThread : public arangodb::Thread {
       char const* payload =
           _operation->payload(&payloadLength, _threadNumber, threadCounter,
                               globalCounter, &mustFree);
-      const GeneralRequest::RequestType type =
+      const rest::RequestType type =
           _operation->type(_threadNumber, threadCounter, globalCounter);
       if (url.empty()) {
         LOG(WARN) << "URL is empty!";
@@ -252,7 +253,7 @@ class BenchmarkThread : public arangodb::Thread {
 
     double start = TRI_microtime();
     httpclient::SimpleHttpResult* result = _httpClient->request(
-        GeneralRequest::RequestType::POST, "/_api/batch", batchPayload.c_str(),
+        rest::RequestType::POST, "/_api/batch", batchPayload.c_str(),
         batchPayload.length(), _headers);
     _time += TRI_microtime() - start;
 
@@ -320,7 +321,7 @@ class BenchmarkThread : public arangodb::Thread {
   void executeSingleRequest() {
     size_t const threadCounter = _counter++;
     size_t const globalCounter = _offset + threadCounter;
-    GeneralRequest::RequestType const type =
+    rest::RequestType const type =
         _operation->type(_threadNumber, threadCounter, globalCounter);
     std::string const url =
         _operation->url(_threadNumber, threadCounter, globalCounter);

@@ -131,8 +131,11 @@ class Logger {
   static LogTopic AGENCYCOMM;
   static LogTopic COLLECTOR;
   static LogTopic COMPACTOR;
+  static LogTopic COMMUNICATION;
   static LogTopic CONFIG;
+  static LogTopic CLUSTER;
   static LogTopic DATAFILES;
+  static LogTopic GRAPHS;
   static LogTopic HEARTBEAT;
   static LogTopic MMAP;
   static LogTopic PERFORMANCE;
@@ -140,6 +143,7 @@ class Logger {
   static LogTopic REPLICATION;
   static LogTopic REQUESTS;
   static LogTopic STARTUP;
+  static LogTopic SUPERVISION;
   static LogTopic THREADS;
   static LogTopic V8;
 
@@ -184,6 +188,9 @@ class Logger {
   static void setShowLineNumber(bool);
   static void setShowThreadIdentifier(bool);
   static void setUseLocalTime(bool);
+  static bool getUseLocalTime() {return _useLocalTime;};
+  static void setUseMicrotime(bool);
+  static bool getUseMicrotime() {return _useMicrotime;};
   static void setKeepLogrotate(bool);
 
   static std::string const& translateLogLevel(LogLevel);
@@ -219,6 +226,7 @@ class Logger {
   static bool _threaded;
   static bool _useLocalTime;
   static bool _keepLogRotate;
+  static bool _useMicrotime;
   static std::string _outputPrefix;
 
   static std::unique_ptr<LogThread> _loggingThread;

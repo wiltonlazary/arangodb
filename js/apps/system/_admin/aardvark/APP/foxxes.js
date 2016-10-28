@@ -27,6 +27,8 @@
 const fs = require('fs');
 const joi = require('joi');
 const dd = require('dedent');
+const internal = require('internal');
+const crypto = require('@arangodb/crypto');
 const marked = require('marked');
 const highlightAuto = require('highlight.js').highlightAuto;
 const errors = require('@arangodb').errors;
@@ -36,18 +38,21 @@ const createRouter = require('@arangodb/foxx/router');
 
 const DEFAULT_THUMBNAIL = module.context.fileName('default-thumbnail.png');
 
+const anonymousRouter = createRouter();
 const router = createRouter();
-module.exports = router;
+anonymousRouter.use(router);
 
+module.exports = anonymousRouter;
 
 router.use((req, res, next) => {
-  if (global.AUTHENTICATION_ENABLED()) {
-    if (!req.session.uid) {
+  if (internal.authenticationEnabled()) {
+    if (!req.arangoUser) {
       res.throw('unauthorized');
     }
   }
   next();
-});
+})
+.header('authorization', joi.string().optional(), 'ArangoDB credentials.');
 
 
 const foxxRouter = createRouter();
@@ -59,6 +64,9 @@ router.use(foxxRouter)
 
 const installer = createRouter();
 foxxRouter.use(installer)
+.queryParam('legacy', joi.boolean().default(false), dd`
+  Flag to install the service in legacy mode.
+`)
 .queryParam('upgrade', joi.boolean().default(false), dd`
   Flag to upgrade the service installed at the mountpoint.
   Triggers setup.
@@ -80,8 +88,9 @@ installer.use(function (req, res, next) {
     options = req.body;
   } else {
     appInfo = req.body;
-    options = undefined;
+    options = {};
   }
+  options.legacy = req.queryParams.legacy;
   let service;
   try {
     if (upgrade) {
@@ -95,16 +104,28 @@ installer.use(function (req, res, next) {
     if (e.isArangoError && [
       errors.ERROR_MODULE_FAILURE.code,
       errors.ERROR_MALFORMED_MANIFEST_FILE.code,
-      errors.ERROR_INVALID_APPLICATION_MANIFEST.code
+      errors.ERROR_INVALID_SERVICE_MANIFEST.code
     ].indexOf(e.errorNum) !== -1) {
       res.throw('bad request', e);
+    }
+    if (
+      e.isArangoError &&
+      e.errorNum === errors.ERROR_SERVICE_NOT_FOUND.code
+    ) {
+      res.throw('not found', e);
+    }
+    if (
+      e.isArangoError &&
+      e.errorNum === errors.ERROR_SERVICE_MOUNTPOINT_CONFLICT.code
+    ) {
+      res.throw('conflict', e);
     }
     throw e;
   }
   const configuration = FoxxManager.configuration(mount);
   res.json(Object.assign(
     {error: false, configuration},
-    service
+    service.simpleJSON()
   ));
 });
 
@@ -165,7 +186,7 @@ foxxRouter.delete('/', function (req, res) {
   });
   res.json(Object.assign(
     {error: false},
-    service
+    service.simpleJSON()
   ));
 })
 .queryParam('teardown', joi.boolean().default(true))
@@ -217,7 +238,8 @@ foxxRouter.get('/config', function (req, res) {
 foxxRouter.patch('/config', function (req, res) {
   const mount = decodeURIComponent(req.queryParams.mount);
   const configuration = req.body;
-  res.json(FoxxManager.configure(mount, {configuration}));
+  FoxxManager.setConfiguration(mount, {configuration});
+  res.json(FoxxManager.configuration(mount));
 })
 .body(joi.object().optional(), 'Configuration to apply.')
 .summary('Set the configuration for a service')
@@ -228,7 +250,18 @@ foxxRouter.patch('/config', function (req, res) {
 
 foxxRouter.get('/deps', function (req, res) {
   const mount = decodeURIComponent(req.queryParams.mount);
-  res.json(FoxxManager.dependencies(mount));
+  const deps = FoxxManager.dependencies(mount);
+  for (const key of Object.keys(deps)) {
+    const dep = deps[key];
+    deps[key] = {
+      definition: dep,
+      title: dep.title,
+      current: dep.current
+    };
+    delete dep.title;
+    delete dep.current;
+  }
+  res.json(deps);
 })
 .summary('Get the dependencies for a service')
 .description(dd`
@@ -239,9 +272,10 @@ foxxRouter.get('/deps', function (req, res) {
 foxxRouter.patch('/deps', function (req, res) {
   const mount = decodeURIComponent(req.queryParams.mount);
   const dependencies = req.body;
-  res.json(FoxxManager.updateDeps(mount, {dependencies}));
+  FoxxManager.setDependencies(mount, {dependencies});
+  res.json(FoxxManager.dependencies(mount));
 })
-.body(joi.object().optional(), 'Dependency settings to apply.')
+.body(joi.object().optional(), 'Dependency options to apply.')
 .summary('Set the dependencies for a service')
 .description(dd`
   Used to overwrite the dependencies options for services.
@@ -261,7 +295,7 @@ foxxRouter.post('/tests', function (req, res) {
 
 foxxRouter.post('/scripts/:name', function (req, res) {
   const mount = decodeURIComponent(req.queryParams.mount);
-  const name = req.queryParams.name;
+  const name = req.pathParams.name;
   try {
     res.json(FoxxManager.runScript(name, mount, req.body));
   } catch (e) {
@@ -279,26 +313,12 @@ foxxRouter.post('/scripts/:name', function (req, res) {
 foxxRouter.patch('/devel', function (req, res) {
   const mount = decodeURIComponent(req.queryParams.mount);
   const activate = Boolean(req.body);
-  res.json(FoxxManager[activate ? 'development' : 'production'](mount));
+  res.json(FoxxManager[activate ? 'development' : 'production'](mount).simpleJSON());
 })
 .body(joi.boolean().optional())
 .summary('Activate/Deactivate development mode for a service')
 .description(dd`
   Used to toggle between production and development mode.
-`);
-
-
-foxxRouter.get('/download/zip', function (req, res) {
-  const mount = decodeURIComponent(req.queryParams.mount);
-  const service = FoxxManager.lookupService(mount);
-  const dir = fs.join(fs.makeAbsolute(service.root), service.path);
-  const zipPath = fmUtils.zipDirectory(dir);
-  const name = mount.replace(/^\/|\/$/g, '').replace(/\//g, '_');
-  res.download(zipPath, `${name}.zip`);
-})
-.summary('Download a service as zip archive')
-.description(dd`
-  Download a foxx service packed in a zip archive.
 `);
 
 
@@ -316,16 +336,52 @@ router.get('/fishbowl', function (req, res) {
 `);
 
 
-router.get('/docs/standalone/*', module.context.apiDocumentation(
-  (req) => ({
-    appPath: decodeURIComponent(req.queryParams.mount)
-  })
-));
+router.post('/download/nonce', function (req, res) {
+  const nonce = crypto.createNonce();
+  res.status('created');
+  res.json({nonce});
+})
+.response('created', joi.object({nonce: joi.string().required()}).required(), 'The created nonce.')
+.summary('Creates a nonce for downloading the service')
+.description(dd`
+  Creates a cryptographic nonce that can be used to download the service without authentication.
+`);
 
 
-router.get('/docs/*', module.context.apiDocumentation(
-  (req) => ({
-    appPath: decodeURIComponent(req.queryParams.mount),
+anonymousRouter.get('/download/zip', function (req, res) {
+  const nonce = decodeURIComponent(req.queryParams.nonce);
+  const checked = nonce && crypto.checkAndMarkNonce(nonce);
+  if (!checked) {
+    res.throw(403, 'Nonce missing or invalid');
+  }
+  const mount = decodeURIComponent(req.queryParams.mount);
+  const service = FoxxManager.lookupService(mount);
+  const dir = fs.join(fs.makeAbsolute(service.root), service.path);
+  const zipPath = fmUtils.zipDirectory(dir);
+  const name = mount.replace(/^\/|\/$/g, '').replace(/\//g, '_');
+  res.download(zipPath, `${name}_${service.manifest.version}.zip`);
+})
+.queryParam('nonce', joi.string().required(), 'Cryptographic nonce that authorizes the download.')
+.summary('Download a service as zip archive')
+.description(dd`
+  Download a foxx service packed in a zip archive.
+`);
+
+anonymousRouter.use('/docs/standalone', module.context.createDocumentationRouter((req, res) => {
+  if (req.suffix === 'swagger.json' && !req.arangoUser && internal.authenticationEnabled()) {
+    res.throw('unauthorized');
+  }
+  return {
+    mount: decodeURIComponent(req.queryParams.mount)
+  };
+}));
+
+anonymousRouter.use('/docs', module.context.createDocumentationRouter((req, res) => {
+  if (req.suffix === 'swagger.json' && !req.arangoUser && internal.authenticationEnabled()) {
+    res.throw('unauthorized');
+  }
+  return {
+    mount: decodeURIComponent(req.queryParams.mount),
     indexFile: 'index-alt.html'
-  })
-));
+  };
+}));

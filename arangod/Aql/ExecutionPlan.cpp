@@ -26,6 +26,7 @@
 #include "Aql/Ast.h"
 #include "Aql/AstNode.h"
 #include "Aql/CollectNode.h"
+#include "Aql/Collection.h"
 #include "Aql/ExecutionNode.h"
 #include "Aql/Expression.h"
 #include "Aql/Function.h"
@@ -33,12 +34,15 @@
 #include "Aql/NodeFinder.h"
 #include "Aql/Optimizer.h"
 #include "Aql/Query.h"
+#include "Aql/ShortestPathNode.h"
+#include "Aql/ShortestPathOptions.h"
 #include "Aql/SortNode.h"
 #include "Aql/TraversalNode.h"
 #include "Aql/Variable.h"
 #include "Aql/WalkerWorker.h"
 #include "Basics/Exceptions.h"
-#include "Basics/JsonHelper.h"
+#include "Basics/SmallVector.h"
+#include "Basics/StaticStrings.h"
 #include "Basics/tri-strings.h"
 #include "Basics/VelocyPackHelper.h"
 
@@ -46,10 +50,130 @@
 #include <velocypack/Options.h>
 #include <velocypack/velocypack-aliases.h>
 
+using namespace arangodb;
 using namespace arangodb::aql;
 using namespace arangodb::basics;
 
-using JsonHelper = arangodb::basics::JsonHelper;
+static uint64_t checkTraversalDepthValue(AstNode const* node) {
+  if (!node->isNumericValue()) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_QUERY_PARSE,
+                                   "invalid traversal depth");
+  }
+  double v = node->getDoubleValue();
+  double intpart;
+  if (modf(v, &intpart) != 0.0 || v < 0.0) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_QUERY_PARSE,
+                                   "invalid traversal depth");
+  }
+  return static_cast<uint64_t>(v);
+}
+
+static std::unique_ptr<traverser::TraverserOptions> CreateTraversalOptions(
+    Transaction* trx, AstNode const* direction, AstNode const* optionsNode) {
+
+  auto options = std::make_unique<traverser::TraverserOptions>(trx);
+
+  TRI_ASSERT(direction != nullptr);
+  TRI_ASSERT(direction->type == NODE_TYPE_DIRECTION);
+  TRI_ASSERT(direction->numMembers() == 2);
+
+  auto steps = direction->getMember(1);
+
+  if (steps->isNumericValue()) {
+    // Check if a double value is integer
+    options->minDepth = checkTraversalDepthValue(steps);
+    options->maxDepth = options->minDepth;
+  } else if (steps->type == NODE_TYPE_RANGE) {
+    // Range depth
+    options->minDepth = checkTraversalDepthValue(steps->getMember(0));
+    options->maxDepth = checkTraversalDepthValue(steps->getMember(1));
+
+    if (options->maxDepth < options->minDepth) {
+      THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_QUERY_PARSE,
+                                     "invalid traversal depth");
+    }
+  } else {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_QUERY_PARSE,
+                                   "invalid traversal depth");
+  }
+
+  if (optionsNode != nullptr && optionsNode->type == NODE_TYPE_OBJECT) {
+    size_t n = optionsNode->numMembers();
+
+    for (size_t i = 0; i < n; ++i) {
+      auto member = optionsNode->getMember(i);
+
+      if (member != nullptr && member->type == NODE_TYPE_OBJECT_ELEMENT) {
+        std::string const name = member->getString();
+        auto value = member->getMember(0);
+
+        TRI_ASSERT(value->isConstant());
+
+        if (name == "bfs") {
+          options->useBreadthFirst = value->isTrue();
+        } else if (name == "uniqueVertices" && value->isStringValue()) {
+          if (value->stringEquals("path", true)) {
+            options->uniqueVertices =
+                arangodb::traverser::TraverserOptions::UniquenessLevel::PATH;
+          } else if (value->stringEquals("global", true)) {
+            options->uniqueVertices =
+                arangodb::traverser::TraverserOptions::UniquenessLevel::GLOBAL;
+          }
+        } else if (name == "uniqueEdges" && value->isStringValue()) {
+          if (value->stringEquals("none", true)) {
+            options->uniqueEdges =
+                arangodb::traverser::TraverserOptions::UniquenessLevel::NONE;
+          } else if (value->stringEquals("global", true)) {
+            THROW_ARANGO_EXCEPTION_MESSAGE(
+                TRI_ERROR_BAD_PARAMETER,
+                "uniqueEdges: 'global' is not supported, "
+                "due to unpredictable results. Use 'path' "
+                "or 'none' instead");
+          }
+        }
+      }
+    }
+  }
+  if (options->uniqueVertices ==
+          arangodb::traverser::TraverserOptions::UniquenessLevel::GLOBAL &&
+      !options->useBreadthFirst) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_BAD_PARAMETER,
+                                   "uniqueVertices: 'global' is only "
+                                   "supported, with bfs: true due to "
+                                   "unpredictable results.");
+  }
+  return options;
+}
+
+static ShortestPathOptions CreateShortestPathOptions(AstNode const* node) {
+  ShortestPathOptions options;
+
+  if (node != nullptr && node->type == NODE_TYPE_OBJECT) {
+    size_t n = node->numMembers();
+
+    for (size_t i = 0; i < n; ++i) {
+      auto member = node->getMember(i);
+
+      if (member != nullptr && member->type == NODE_TYPE_OBJECT_ELEMENT) {
+        std::string const name = member->getString();
+        auto value = member->getMember(0);
+
+        TRI_ASSERT(value->isConstant());
+
+        if (name == "weightAttribute" && value->isStringValue()) {
+          options.weightAttribute =
+              std::string(value->getStringValue(), value->getStringLength());
+        } else if (name == "defaultWeight" && value->isNumericValue()) {
+          options.defaultWeight = value->getDoubleValue();
+        }
+      }
+    }
+  }
+  return options;
+}
+
+
+
 
 /// @brief create the plan
 ExecutionPlan::ExecutionPlan(Ast* ast)
@@ -123,11 +247,7 @@ ExecutionPlan* ExecutionPlan::instantiateFromVelocyPack(
   TRI_ASSERT(ast != nullptr);
 
   auto plan = std::make_unique<ExecutionPlan>(ast);
-
-  // TODO: in place slice => Json
-  Json json(TRI_UNKNOWN_MEM_ZONE,
-            arangodb::basics::VelocyPackHelper::velocyPackToJson(slice));
-  plan->_root = plan->fromJson(json);
+  plan->_root = plan->fromSlice(slice);
   plan->_varUsageComputed = true;
 
   return plan.release();
@@ -187,51 +307,6 @@ ExecutionPlan* ExecutionPlan::clone(Query const& query) {
   }
 
   return otherPlan.release();
-}
-
-/// @brief export to JSON, returns an AUTOFREE Json object
-/// DEPRECATED
-arangodb::basics::Json ExecutionPlan::toJson(Ast* ast, TRI_memory_zone_t* zone,
-                                             bool verbose) const {
-  // TODO
-  VPackBuilder b;
-  _root->toVelocyPack(b, verbose);
-  TRI_json_t* tmp = arangodb::basics::VelocyPackHelper::velocyPackToJson(b.slice());
-  arangodb::basics::Json result(zone, tmp);
-
-  // set up rules
-  auto appliedRules(Optimizer::translateRules(_appliedRules));
-  arangodb::basics::Json rules(arangodb::basics::Json::Array,
-                               appliedRules.size());
-
-  for (auto const& r : appliedRules) {
-    rules.add(arangodb::basics::Json(r));
-  }
-  result.set("rules", rules);
-
-  auto usedCollections = *ast->query()->collections()->collections();
-  arangodb::basics::Json jsonCollectionList(arangodb::basics::Json::Array,
-                                            usedCollections.size());
-
-  for (auto const& c : usedCollections) {
-    arangodb::basics::Json json(arangodb::basics::Json::Object);
-
-    jsonCollectionList(json("name", arangodb::basics::Json(c.first))(
-        "type", arangodb::basics::Json(
-                    TRI_TransactionTypeGetStr(c.second->accessType))));
-  }
-
-  result.set("collections", jsonCollectionList);
-
-  VPackBuilder tmpTwo;
-  ast->variables()->toVelocyPack(tmpTwo);
-  result.set("variables", arangodb::basics::VelocyPackHelper::velocyPackToJson(tmpTwo.slice()));
-  size_t nrItems = 0;
-  result.set("estimatedCost", arangodb::basics::Json(_root->getCost(nrItems)));
-  result.set("estimatedNrItems",
-             arangodb::basics::Json(static_cast<double>(nrItems)));
-
-  return result;
 }
 
 /// @brief export to VelocyPack
@@ -339,6 +414,7 @@ ExecutionNode* ExecutionPlan::createCalculation(
   // DISTINCT expression is implemented by creating an anonymous COLLECT node
   auto collectNode = createAnonymousCollect(en);
 
+  TRI_ASSERT(en != nullptr);
   collectNode->addDependency(en);
 
   return collectNode;
@@ -609,8 +685,8 @@ ExecutionNode* ExecutionPlan::fromNodeFor(ExecutionNode* previous,
 ExecutionNode* ExecutionPlan::fromNodeTraversal(ExecutionNode* previous,
                                                 AstNode const* node) {
   TRI_ASSERT(node != nullptr && node->type == NODE_TYPE_TRAVERSAL);
-  TRI_ASSERT(node->numMembers() >= 4);
-  TRI_ASSERT(node->numMembers() <= 6);
+  TRI_ASSERT(node->numMembers() >= 5);
+  TRI_ASSERT(node->numMembers() <= 7);
 
   // the first 3 members are used by traversal internally.
   // The members 4-6, where 5 and 6 are optional, are used
@@ -624,7 +700,7 @@ ExecutionNode* ExecutionPlan::fromNodeTraversal(ExecutionNode* previous,
     for (size_t i = 0; i < n; ++i) {
       auto member = start->getMember(i);
       if (member->type == NODE_TYPE_OBJECT_ELEMENT &&
-          member->getString() == TRI_VOC_ATTRIBUTE_ID) {
+          member->getString() == StaticStrings::IdString) {
         start = member->getMember(0);
         break;
       }
@@ -637,26 +713,30 @@ ExecutionNode* ExecutionPlan::fromNodeTraversal(ExecutionNode* previous,
     start = _ast->createNodeReference(getOutVariable(calc));
     previous = calc;
   }
+
+  auto options = CreateTraversalOptions(getAst()->query()->trx(), direction,
+                                        node->getMember(3));
+
   // First create the node
   auto travNode = new TraversalNode(this, nextId(), _ast->query()->vocbase(),
-                                    direction, start, graph);
+                                    direction, start, graph, options);
 
-  auto variable = node->getMember(3);
+  auto variable = node->getMember(4);
   TRI_ASSERT(variable->type == NODE_TYPE_VARIABLE);
   auto v = static_cast<Variable*>(variable->getData());
   TRI_ASSERT(v != nullptr);
   travNode->setVertexOutput(v);
 
-  if (node->numMembers() > 4) {
+  if (node->numMembers() > 5) {
     // return the edge as well
-    variable = node->getMember(4);
+    variable = node->getMember(5);
     TRI_ASSERT(variable->type == NODE_TYPE_VARIABLE);
     v = static_cast<Variable*>(variable->getData());
     TRI_ASSERT(v != nullptr);
     travNode->setEdgeOutput(v);
-    if (node->numMembers() > 5) {
+    if (node->numMembers() > 6) {
       // return the path as well
-      variable = node->getMember(5);
+      variable = node->getMember(6);
       TRI_ASSERT(variable->type == NODE_TYPE_VARIABLE);
       v = static_cast<Variable*>(variable->getData());
       TRI_ASSERT(v != nullptr);
@@ -665,6 +745,75 @@ ExecutionNode* ExecutionPlan::fromNodeTraversal(ExecutionNode* previous,
   }
 
   ExecutionNode* en = registerNode(travNode);
+  TRI_ASSERT(en != nullptr);
+  return addDependency(previous, en);
+}
+
+AstNode const* ExecutionPlan::parseTraversalVertexNode(ExecutionNode*& previous,
+                                                       AstNode const* vertex) {
+  if (vertex->type == NODE_TYPE_OBJECT && vertex->isConstant()) {
+    size_t n = vertex->numMembers();
+    for (size_t i = 0; i < n; ++i) {
+      auto member = vertex->getMember(i);
+      if (member->type == NODE_TYPE_OBJECT_ELEMENT &&
+          member->getString() == StaticStrings::IdString) {
+        vertex = member->getMember(0);
+        break;
+      }
+    }
+  }
+
+  if (vertex->type != NODE_TYPE_REFERENCE && vertex->type != NODE_TYPE_VALUE) {
+    // operand is some misc expression
+    auto calc = createTemporaryCalculation(vertex, previous);
+    vertex = _ast->createNodeReference(getOutVariable(calc));
+    // update previous so the caller has an updated value
+    previous = calc;
+  }
+
+  return vertex;
+}
+
+/// @brief create an execution plan element from an AST for SHORTEST_PATH node
+ExecutionNode* ExecutionPlan::fromNodeShortestPath(ExecutionNode* previous,
+                                                   AstNode const* node) {
+  TRI_ASSERT(node != nullptr && node->type == NODE_TYPE_SHORTEST_PATH);
+  TRI_ASSERT(node->numMembers() >= 6);
+  TRI_ASSERT(node->numMembers() <= 7);
+
+  // the first 4 members are used by shortest_path internally.
+  // The members 5-6, where 6 is optional, are used
+  // as out variables.
+  AstNode const* direction = node->getMember(0);
+  TRI_ASSERT(direction->isIntValue());
+  AstNode const* start = parseTraversalVertexNode(previous, node->getMember(1));
+  AstNode const* target = parseTraversalVertexNode(previous, node->getMember(2));
+  AstNode const* graph = node->getMember(3);
+
+  ShortestPathOptions options = CreateShortestPathOptions(node->getMember(4));
+
+
+  // First create the node
+  auto spNode = new ShortestPathNode(this, nextId(), _ast->query()->vocbase(),
+                                     direction->getIntValue(), start, target,
+                                     graph, options);
+
+  auto variable = node->getMember(5);
+  TRI_ASSERT(variable->type == NODE_TYPE_VARIABLE);
+  auto v = static_cast<Variable*>(variable->getData());
+  TRI_ASSERT(v != nullptr);
+  spNode->setVertexOutput(v);
+
+  if (node->numMembers() > 6) {
+    // return the edge as well
+    variable = node->getMember(6);
+    TRI_ASSERT(variable->type == NODE_TYPE_VARIABLE);
+    v = static_cast<Variable*>(variable->getData());
+    TRI_ASSERT(v != nullptr);
+    spNode->setEdgeOutput(v);
+  }
+
+  ExecutionNode* en = registerNode(spNode);
   TRI_ASSERT(en != nullptr);
   return addDependency(previous, en);
 }
@@ -837,6 +986,7 @@ ExecutionNode* ExecutionPlan::fromNodeSort(ExecutionNode* previous,
 
   // properly link the temporary calculations in the plan
   for (auto it = temp.begin(); it != temp.end(); ++it) {
+    TRI_ASSERT(previous != nullptr);
     (*it)->addDependency(previous);
     previous = (*it);
   }
@@ -1410,6 +1560,11 @@ ExecutionNode* ExecutionPlan::fromNode(AstNode const* node) {
         break;
       }
 
+      case NODE_TYPE_SHORTEST_PATH: {
+        en = fromNodeShortestPath(en, member);
+        break;
+      }
+
       case NODE_TYPE_FILTER: {
         en = fromNodeFilter(en, member);
         break;
@@ -1486,31 +1641,27 @@ ExecutionNode* ExecutionPlan::fromNode(AstNode const* node) {
 }
 
 /// @brief find nodes of a certain type
-std::vector<ExecutionNode*> ExecutionPlan::findNodesOfType(
-    ExecutionNode::NodeType type, bool enterSubqueries) {
-  std::vector<ExecutionNode*> result;
+void ExecutionPlan::findNodesOfType(SmallVector<ExecutionNode*>& result,
+                                    ExecutionNode::NodeType type,
+                                    bool enterSubqueries) {
   NodeFinder<ExecutionNode::NodeType> finder(type, result, enterSubqueries);
   root()->walk(&finder);
-  return result;
 }
 
+
 /// @brief find nodes of a certain types
-std::vector<ExecutionNode*> ExecutionPlan::findNodesOfType(
+void ExecutionPlan::findNodesOfType(SmallVector<ExecutionNode*>& result,
     std::vector<ExecutionNode::NodeType> const& types, bool enterSubqueries) {
-  std::vector<ExecutionNode*> result;
   NodeFinder<std::vector<ExecutionNode::NodeType>> finder(types, result,
                                                           enterSubqueries);
   root()->walk(&finder);
-  return result;
 }
 
 /// @brief find all end nodes in a plan
-std::vector<ExecutionNode*> ExecutionPlan::findEndNodes(
+void ExecutionPlan::findEndNodes(SmallVector<ExecutionNode*>& result,
     bool enterSubqueries) const {
-  std::vector<ExecutionNode*> result;
   EndNodeFinder finder(result, enterSubqueries);
   root()->walk(&finder);
-  return result;
 }
 
 /// @brief check linkage of execution plan
@@ -1666,6 +1817,7 @@ void ExecutionPlan::unlinkNode(ExecutionNode* node, bool allowUnlinkingRoot) {
     p->removeDependency(node);
 
     for (auto* x : dep) {
+      TRI_ASSERT(x != nullptr);
       p->addDependency(x);
     }
   }
@@ -1690,6 +1842,7 @@ void ExecutionPlan::replaceNode(ExecutionNode* oldNode,
   std::vector<ExecutionNode*> deps = oldNode->getDependencies();
 
   for (auto* x : deps) {
+    TRI_ASSERT(x != nullptr);
     newNode->addDependency(x);
     oldNode->removeDependency(x);
   }
@@ -1718,6 +1871,7 @@ void ExecutionPlan::insertDependency(ExecutionNode* oldNode,
   TRI_ASSERT(oldNode->getDependencies().size() == 1);
 
   auto oldDeps = oldNode->getDependencies();  // Intentional copy
+  TRI_ASSERT(!oldDeps.empty());
 
   if (!oldNode->replaceDependency(oldDeps[0], newNode)) {
     THROW_ARANGO_EXCEPTION_MESSAGE(
@@ -1725,41 +1879,43 @@ void ExecutionPlan::insertDependency(ExecutionNode* oldNode,
   }
 
   newNode->removeDependencies();
+  TRI_ASSERT(oldDeps[0] != nullptr);
   newNode->addDependency(oldDeps[0]);
   _varUsageComputed = false;
 }
 
-/// @brief create a plan from the JSON provided
-ExecutionNode* ExecutionPlan::fromJson(arangodb::basics::Json const& json) {
+/// @brief create a plan from VPack
+ExecutionNode* ExecutionPlan::fromSlice(VPackSlice const& slice) {
   ExecutionNode* ret = nullptr;
-  arangodb::basics::Json nodes = json.get("nodes");
 
-  if (!nodes.isArray()) {
-    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "nodes is not an array");
+  if (!slice.isObject()) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "plan slice is not an object");
   }
 
-  // first, re-create all nodes from the JSON, using the node ids
+  VPackSlice nodes = slice.get("nodes");
+
+  if (!nodes.isArray()) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "plan \"nodes\" attribute is not an array");
+  }
+
+  // first, re-create all nodes from the Slice, using the node ids
   // no dependency links will be set up in this step
-  auto const size = nodes.size();
-
-  for (size_t i = 0; i < size; i++) {
-    arangodb::basics::Json oneJsonNode = nodes.at(static_cast<int>(i));
-
-    if (!oneJsonNode.isObject()) {
+  for (auto const& it : VPackArrayIterator(nodes)) {
+    if (!it.isObject()) {
       THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
-                                     "json node is not an object");
+                                     "node entry in plan is not an object");
     }
 
-    ret = ExecutionNode::fromJsonFactory(this, oneJsonNode);
+    ret = ExecutionNode::fromVPackFactory(this, it);
     registerNode(ret);
 
     TRI_ASSERT(ret != nullptr);
 
     if (ret->getType() == arangodb::aql::ExecutionNode::SUBQUERY) {
       // found a subquery node. now do magick here
-      arangodb::basics::Json subquery = oneJsonNode.get("subquery");
+      VPackSlice subquery = it.get("subquery");
       // create the subquery nodes from the "subquery" sub-node
-      auto subqueryNode = fromJson(subquery);
+      auto subqueryNode = fromSlice(subquery);
 
       // register the just created subquery
       static_cast<SubqueryNode*>(ret)->setSubquery(subqueryNode, false);
@@ -1767,30 +1923,17 @@ ExecutionNode* ExecutionPlan::fromJson(arangodb::basics::Json const& json) {
   }
 
   // all nodes have been created. now add the dependencies
-
-  for (size_t i = 0; i < size; i++) {
-    arangodb::basics::Json oneJsonNode = nodes.at(static_cast<int>(i));
-
-    if (!oneJsonNode.isObject()) {
-      THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
-                                     "json node is not an object");
-    }
-
+  for (auto const& it : VPackArrayIterator(nodes)) {
     // read the node's own id
-    auto thisId = arangodb::basics::JsonHelper::checkAndGetNumericValue<size_t>(
-        oneJsonNode.json(), "id");
+    auto thisId = it.get("id").getNumericValue<size_t>();
     auto thisNode = getNodeById(thisId);
 
     // now re-link the dependencies
-    arangodb::basics::Json dependencies = oneJsonNode.get("dependencies");
-    if (arangodb::basics::JsonHelper::isArray(dependencies.json())) {
-      size_t const nDependencies = dependencies.size();
-
-      for (size_t j = 0; j < nDependencies; j++) {
-        if (arangodb::basics::JsonHelper::isNumber(
-                dependencies.at(static_cast<int>(j)).json())) {
-          auto depId = arangodb::basics::JsonHelper::getNumericValue<size_t>(
-              dependencies.at(static_cast<int>(j)).json(), 0);
+    VPackSlice dependencies = it.get("dependencies");
+    if (dependencies.isArray()) {
+      for (auto const& it2 : VPackArrayIterator(dependencies)) {
+        if (it2.isNumber()) {
+          auto depId = it2.getNumericValue<size_t>();
           thisNode->addDependency(getNodeById(depId));
         }
       }
@@ -1812,6 +1955,7 @@ bool ExecutionPlan::isDeadSimple() const {
         nodeType == ExecutionNode::ENUMERATE_COLLECTION ||
         nodeType == ExecutionNode::ENUMERATE_LIST ||
         nodeType == ExecutionNode::TRAVERSAL ||
+        nodeType == ExecutionNode::SHORTEST_PATH ||
         nodeType == ExecutionNode::INDEX) {
       // these node types are not simple
       return false;

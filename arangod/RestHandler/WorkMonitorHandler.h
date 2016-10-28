@@ -28,12 +28,12 @@
 namespace arangodb {
 class WorkMonitorHandler : public arangodb::RestBaseHandler {
  public:
-  explicit WorkMonitorHandler(HttpRequest*);
+  explicit WorkMonitorHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestWorkMonitorHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
+  RestStatus execute() override;
 };
 }
 

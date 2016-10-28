@@ -85,6 +85,8 @@ void TRI_sleep(unsigned long);
 
 // .............................................................................
 // there is no usleep (micro sleep) in windows, so we create one here
+// This is only a Windows workaround, use usleep, which is mapped to 
+// TRI_usleep on Windows!
 // .............................................................................
 
 void TRI_usleep(unsigned long);
@@ -93,7 +95,7 @@ void TRI_usleep(unsigned long);
 /// @brief fixes the ICU_DATA environment path
 ////////////////////////////////////////////////////////////////////////////////
 
-void TRI_FixIcuDataEnv();
+void TRI_FixIcuDataEnv(const char* binaryPath);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief converts a Windows error to a *nix system error
@@ -107,6 +109,10 @@ int TRI_MapSystemError(DWORD);
 
 bool TRI_InitWindowsEventLog(void);
 void TRI_CloseWindowsEventlog(void);
+
+typedef void (*TRI_serviceAbort_t)(void);
+
+void TRI_SetWindowsServiceAbortFunction(TRI_serviceAbort_t);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief logs a message to the windows event log.

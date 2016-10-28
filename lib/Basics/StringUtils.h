@@ -218,6 +218,8 @@ std::string lTrim(std::string const& sourceStr,
 std::string rTrim(std::string const& sourceStr,
                   std::string const& trimStr = " \t\n\r");
 
+void rTrimInPlace(std::string& str, std::string const& trimStr = " \t\n\r");
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief fills string from left
 ////////////////////////////////////////////////////////////////////////////////
@@ -235,7 +237,7 @@ std::string rFill(std::string const& sourceStr, size_t size, char fill = ' ');
 ////////////////////////////////////////////////////////////////////////////////
 
 std::vector<std::string> wrap(std::string const& sourceStr, size_t size,
-                              std::string breaks = " ");
+                              std::string const& breaks = " ");
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief substring replace
@@ -452,6 +454,20 @@ inline uint64_t uint64_check(char const* value, size_t size) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief parses an unsigned integer
+/// the caller must make sure that the input buffer only contains valid
+/// numeric characters - otherwise the uint64_t result will be wrong.
+/// because the input is restricted to some valid characters, this function
+/// is highly optimized
+////////////////////////////////////////////////////////////////////////////////
+
+uint64_t uint64_trusted(char const* value, size_t length);
+
+inline uint64_t uint64_trusted(std::string const& value) {
+  return uint64_trusted(value.c_str(), value.size());
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief parses an integer
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -578,6 +594,16 @@ std::string encodeHex(std::string const& str);
 ////////////////////////////////////////////////////////////////////////////////
 
 std::string decodeHex(std::string const& str);
+
+bool gzipUncompress(char const* compressed, size_t compressedLength,
+                    std::string& uncompressed);
+
+bool gzipUncompress(std::string const& compressed, std::string& uncompressed);
+
+bool gzipDeflate(char const* compressed, size_t compressedLength,
+                 std::string& uncompressed);
+
+bool gzipDeflate(std::string const& compressed, std::string& uncompressed);
 }
 }
 }

@@ -38,7 +38,8 @@ class ServerState {
     ROLE_SINGLE,         // is set when cluster feature is off
     ROLE_PRIMARY,
     ROLE_SECONDARY,
-    ROLE_COORDINATOR
+    ROLE_COORDINATOR,
+    ROLE_AGENT
   };
 
   /// @brief an enum describing the possible states a server can have
@@ -87,12 +88,6 @@ class ServerState {
   /// @brief sets the initialized flag
   void setClusterEnabled() { _clusterEnabled = true; }
 
-  /// @brief set the authentication data for cluster-internal communication
-  void setAuthentication(std::string const&, std::string const&);
-
-  /// @brief get the authentication data for cluster-internal communication
-  std::string getAuthentication();
-
   /// @brief flush the server state (used for testing)
   void flush();
 
@@ -121,6 +116,14 @@ class ServerState {
             role == ServerState::ROLE_SECONDARY ||
             role == ServerState::ROLE_COORDINATOR);
   }
+  
+  /// @brief check whether the server is an agent 
+  bool isAgent() { return isAgent(loadRole()); }
+
+  /// @brief check whether the server is an agent
+  static bool isAgent(ServerState::RoleEnum role) {
+    return (role == ServerState::ROLE_AGENT);
+  }
 
   /// @brief check whether the server is running in a cluster
   bool isRunningInCluster() { return isClusterRole(loadRole()); }
@@ -134,6 +137,8 @@ class ServerState {
   RoleEnum getRole();
   
   bool registerWithRole(RoleEnum);
+  
+  bool unregister();
 
   /// @brief set the server role
   void setRole(RoleEnum);
@@ -214,6 +219,16 @@ class ServerState {
   /// agency or is not unique, then the system keeps the old role.
   /// Returns true if there is a change and false otherwise.
   bool redetermineRole();
+  
+  bool isFoxxmaster();
+
+  std::string const& getFoxxmaster();
+
+  void setFoxxmaster(std::string const&);
+
+  void setFoxxmasterQueueupdate(bool);
+  
+  bool getFoxxmasterQueueupdate();
 
  private:
   /// @brief atomically fetches the server role
@@ -291,9 +306,6 @@ class ServerState {
   /// @brief the server's own address, can be set just once
   std::string _address;
 
-  /// @brief the authentication data used for cluster-internal communication
-  std::string _authentication;
-
   /// @brief r/w lock for state
   arangodb::basics::ReadWriteLock _lock;
 
@@ -311,6 +323,10 @@ class ServerState {
 
   /// @brief whether or not we are a cluster member
   bool _clusterEnabled;
+
+  std::string _foxxmaster;
+  
+  bool _foxxmasterQueueupdate;
 };
 }
 

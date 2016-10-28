@@ -31,6 +31,7 @@
 #include <velocypack/velocypack-aliases.h>
 
 #include <deque>
+#include <regex>
 
 using namespace arangodb::consensus;
 using namespace arangodb::basics;
@@ -44,7 +45,7 @@ struct Empty {
 };
 
 /// @brief Split strings by separator
-inline std::vector<std::string> split(const std::string& value,
+inline static std::vector<std::string> split(const std::string& value,
                                       char separator) {
   std::vector<std::string> result;
   std::string::size_type p = (value.find(separator) == 0) ? 1 : 0;
@@ -59,43 +60,73 @@ inline std::vector<std::string> split(const std::string& value,
   return result;
 }
 
-// Construct with node name
+/// Construct with node name
 Node::Node(std::string const& name)
-    : _node_name(name), _parent(nullptr), _store(nullptr) {
-  _value.clear();
-}
+    : _node_name(name),
+      _parent(nullptr),
+      _store(nullptr),
+      _vecBufDirty(true),
+      _isArray(false) {}
 
-// Construct with node name in tree structure
+/// Construct with node name in tree structure
 Node::Node(std::string const& name, Node* parent)
-    : _node_name(name), _parent(parent), _store(nullptr) {
-  _value.clear();
-}
+    : _node_name(name),
+      _parent(parent),
+      _store(nullptr),
+      _vecBufDirty(true),
+      _isArray(false) {}
 
-// Construct for store
+/// Construct for store
 Node::Node(std::string const& name, Store* store)
-    : _node_name(name), _parent(nullptr), _store(store) {
-  _value.clear();
-}
+    : _node_name(name),
+      _parent(nullptr),
+      _store(store),
+      _vecBufDirty(true),
+      _isArray(false) {}
 
-// Default dtor
+/// Default dtor
 Node::~Node() {}
 
+/// Get slice to value buffer
 Slice Node::slice() const {
-  return (_value.size() == 0)
-             ? arangodb::basics::VelocyPackHelper::EmptyObjectValue()
-             : Slice(_value.data());
+  // Some array
+  if (_isArray) {
+    rebuildVecBuf();
+    return Slice(_vecBuf.data());
+  }
+
+  // Some value
+  if (!_value.empty()) {
+    return Slice(_value.front().data());
+  }
+
+  // Empty object
+  return arangodb::basics::VelocyPackHelper::EmptyObjectValue();
 }
 
-// Get name of this node
+void Node::rebuildVecBuf() const {
+  if (_vecBufDirty) {  // Dirty vector buffer
+    Builder tmp;
+    tmp.openArray();
+    for (auto const& i : _value) {
+      tmp.add(Slice(i.data()));
+    }
+    tmp.close();
+    _vecBuf = *tmp.steal();
+    _vecBufDirty = false;
+  }
+}
+
+/// Get name of this node
 std::string const& Node::name() const { return _node_name; }
 
-// Get full path of this node
+/// Get full path of this node
 std::string Node::uri() const {
   Node* par = _parent;
   std::stringstream path;
   std::deque<std::string> names;
   names.push_front(name());
-  while (par != 0) {
+  while (par != nullptr) {
     names.push_front(par->name());
     par = par->_parent;
   }
@@ -105,44 +136,73 @@ std::string Node::uri() const {
   return path.str();
 }
 
-Node::Node(Node&& other) :
-  _node_name(std::move(other._node_name)),
-  _children(std::move(other._children)), 
-  _value(std::move(other._value)) {}
+/// Move constructor
+Node::Node(Node&& other)
+    : _node_name(std::move(other._node_name)),
+      _children(std::move(other._children)),
+      _value(std::move(other._value)),
+      _vecBuf(std::move(other._vecBuf)),
+      _vecBufDirty(std::move(other._vecBufDirty)),
+      _isArray(std::move(other._isArray)) {}
 
-Node::Node(Node const& other) :
-  _node_name(other._node_name),
-  _children(other._children),
-  _value(other._value) {}
+/// Copy constructor
+Node::Node(Node const& other)
+    : _node_name(other._node_name),
+      _parent(nullptr),
+      _store(nullptr),
+      _value(other._value),
+      _vecBuf(other._vecBuf),
+      _vecBufDirty(other._vecBufDirty),
+      _isArray(other._isArray) {
+  for (auto const& p : other._children) {
+    auto copy = std::make_shared<Node>(*p.second);
+    _children.insert(std::make_pair(p.first, copy));
+  }
+}
 
-// Assignment of rhs slice
+/// Assignment operator (slice)
 Node& Node::operator=(VPackSlice const& slice) {
   // 1. remove any existing time to live entry
   // 2. clear children map
-  // 3. copy from rhs to buffer pointer
-  // 4. inform all observers here and above
+  // 3. copy from rhs buffer to my buffer
   // Must not copy _parent, _ttl, _observers
   removeTimeToLive();
   _children.clear();
-  _value.reset();
-  _value.append(reinterpret_cast<char const*>(slice.begin()), slice.byteSize());
+  _value.clear();
+  if (slice.isArray()) {
+    _isArray = true;
+    _value.resize(slice.length());
+    for (size_t i = 0; i < slice.length(); ++i) {
+      _value.at(i).append(reinterpret_cast<char const*>(slice[i].begin()),
+                          slice[i].byteSize());
+    }
+  } else {
+    _isArray = false;
+    _value.resize(1);
+    _value.front().append(reinterpret_cast<char const*>(slice.begin()),
+                          slice.byteSize());
+  }
+  _vecBufDirty = true;
   return *this;
 }
 
-// Assignment of rhs node
+/// Move operator
 Node& Node::operator=(Node&& rhs) {
   // 1. remove any existing time to live entry
-  // 2. copy children map
-  // 3. copy from rhs to buffer pointer
-  // Must not copy rhs's _parent, _ttl, _observers
+  // 2. move children map over
+  // 3. move value over
+  // Must not move ober rhs's _parent, _ttl, _observers
   removeTimeToLive();
   _node_name = std::move(rhs._node_name);
   _children = std::move(rhs._children);
   _value = std::move(rhs._value);
+  _vecBuf = std::move(rhs._vecBuf);
+  _vecBufDirty = std::move(rhs._vecBufDirty);
+  _isArray = std::move(rhs._isArray);
   return *this;
 }
 
-// Assignment of rhs node
+/// Assignment operator
 Node& Node::operator=(Node const& rhs) {
   // 1. remove any existing time to live entry
   // 2. clear children map
@@ -150,12 +210,19 @@ Node& Node::operator=(Node const& rhs) {
   // Must not move rhs's _parent, _ttl, _observers
   removeTimeToLive();
   _node_name = rhs._node_name;
-  _children = rhs._children;
+  _children.clear();
+  for (auto const& p : rhs._children) {
+    auto copy = std::make_shared<Node>(*p.second);
+    _children.insert(std::make_pair(p.first, copy));
+  }
   _value = rhs._value;
+  _vecBuf = rhs._vecBuf;
+  _vecBufDirty = rhs._vecBufDirty;
+  _isArray = rhs._isArray;
   return *this;
 }
 
-// Comparison with slice
+/// Comparison with slice
 bool Node::operator==(VPackSlice const& rhs) const {
   if (rhs.isObject()) {
     return rhs.toJson() == toJson();
@@ -167,13 +234,13 @@ bool Node::operator==(VPackSlice const& rhs) const {
 // Comparison with slice
 bool Node::operator!=(VPackSlice const& rhs) const { return !(*this == rhs); }
 
-// Remove this node from store
+/// Remove this node from store
 bool Node::remove() {
   Node& parent = *_parent;
   return parent.removeChild(_node_name);
 }
 
-// Remove child by name
+/// Remove child by name
 bool Node::removeChild(std::string const& key) {
   auto found = _children.find(key);
   if (found == _children.end()) {
@@ -184,13 +251,13 @@ bool Node::removeChild(std::string const& key) {
   return true;
 }
 
-// Node type
+/// Node type
 NodeType Node::type() const { return _children.size() ? NODE : LEAF; }
 
-// lh-value at path vector
+/// lh-value at path vector
 Node& Node::operator()(std::vector<std::string> const& pv) {
-  if (pv.size()) {
-    std::string const& key = pv.at(0);
+  if (!pv.empty()) {
+    std::string const& key = pv.front();
     if (_children.find(key) == _children.end()) {
       _children[key] = std::make_shared<Node>(key, this);
     }
@@ -204,8 +271,8 @@ Node& Node::operator()(std::vector<std::string> const& pv) {
 
 // rh-value at path vector
 Node const& Node::operator()(std::vector<std::string> const& pv) const {
-  if (pv.size()) {
-    std::string const& key = pv.at(0);
+  if (!pv.empty()) {
+    std::string const& key = pv.front();
     if (_children.find(key) == _children.end()) {
       throw StoreException(std::string("Node ") + key +
                            std::string(" not found"));
@@ -231,8 +298,8 @@ Node const& Node::operator()(std::string const& path) const {
 
 // lh-store
 Node const& Node::root() const {
-  Node* par = _parent, * tmp = 0;
-  while (par != 0) {
+  Node *par = _parent, *tmp = nullptr;
+  while (par != nullptr) {
     tmp = par;
     par = par->_parent;
   }
@@ -241,8 +308,8 @@ Node const& Node::root() const {
 
 // rh-store
 Node& Node::root() {
-  Node* par = _parent, * tmp = 0;
-  while (par != 0) {
+  Node *par = _parent, *tmp = nullptr;
+  while (par != nullptr) {
     tmp = par;
     par = par->_parent;
   }
@@ -286,6 +353,7 @@ inline bool Node::observedBy(std::string const& url) const {
 namespace arangodb {
 namespace consensus {
 
+/// Set value
 template <>
 bool Node::handle<SET>(VPackSlice const& slice) {
   Slice val = slice.get("new");
@@ -311,14 +379,15 @@ bool Node::handle<SET>(VPackSlice const& slice) {
                               : static_cast<long>(slice.get("ttl").getInt()));
       addTimeToLive(ttl);
     } else {
-      LOG_TOPIC(WARN, Logger::AGENCY)
-          << "Non-number value assigned to ttl: " << ttl_v.toJson();
+      LOG_TOPIC(WARN, Logger::AGENCY) << "Non-number value assigned to ttl: "
+                                      << ttl_v.toJson();
     }
   }
 
   return true;
 }
 
+/// Increment integer value or set 1
 template <>
 bool Node::handle<INCREMENT>(VPackSlice const& slice) {
   Builder tmp;
@@ -333,6 +402,7 @@ bool Node::handle<INCREMENT>(VPackSlice const& slice) {
   return true;
 }
 
+/// Decrement integer value or set -1
 template <>
 bool Node::handle<DECREMENT>(VPackSlice const& slice) {
   Builder tmp;
@@ -347,11 +417,12 @@ bool Node::handle<DECREMENT>(VPackSlice const& slice) {
   return true;
 }
 
+/// Append element to array
 template <>
 bool Node::handle<PUSH>(VPackSlice const& slice) {
   if (!slice.hasKey("new")) {
-    LOG_TOPIC(WARN, Logger::AGENCY)
-        << "Operator push without new value: " << slice.toJson();
+    LOG_TOPIC(WARN, Logger::AGENCY) << "Operator push without new value: "
+                                    << slice.toJson();
     return false;
   }
   Builder tmp;
@@ -365,6 +436,58 @@ bool Node::handle<PUSH>(VPackSlice const& slice) {
   return true;
 }
 
+/// Remove element from any place in array by value array
+template <>
+bool Node::handle<ERASE>(VPackSlice const& slice) {
+  if (!slice.hasKey("val")) {
+    LOG_TOPIC(WARN, Logger::AGENCY)
+        << "Operator erase without value to be erased: " << slice.toJson();
+    return false;
+  }
+  Builder tmp;
+  tmp.openArray();
+  if (this->slice().isArray()) {
+    for (auto const& old : VPackArrayIterator(this->slice())) {
+      if (old != slice.get("val")) {
+        tmp.add(old);
+      }
+    }
+  }
+  tmp.close();
+  *this = tmp.slice();
+  return true;
+}
+
+/// Replace element from any place in array by new value
+template <>
+bool Node::handle<REPLACE>(VPackSlice const& slice) {
+  if (!slice.hasKey("val")) {
+    LOG_TOPIC(WARN, Logger::AGENCY)
+        << "Operator erase without value to be erased: " << slice.toJson();
+    return false;
+  }
+  if (!slice.hasKey("new")) {
+    LOG_TOPIC(WARN, Logger::AGENCY) << "Operator replace without new value: "
+                                    << slice.toJson();
+    return false;
+  }
+  Builder tmp;
+  tmp.openArray();
+  if (this->slice().isArray()) {
+    for (auto const& old : VPackArrayIterator(this->slice())) {
+      if (old == slice.get("val")) {
+        tmp.add(slice.get("new"));
+      } else {
+        tmp.add(old);
+      }
+    }
+  }
+  tmp.close();
+  *this = tmp.slice();
+  return true;
+}
+
+/// Remove element from end of array.
 template <>
 bool Node::handle<POP>(VPackSlice const& slice) {
   Builder tmp;
@@ -384,11 +507,12 @@ bool Node::handle<POP>(VPackSlice const& slice) {
   return true;
 }
 
+/// Prepend element to array
 template <>
 bool Node::handle<PREPEND>(VPackSlice const& slice) {
   if (!slice.hasKey("new")) {
-    LOG_TOPIC(WARN, Logger::AGENCY)
-        << "Operator prepend without new value: " << slice.toJson();
+    LOG_TOPIC(WARN, Logger::AGENCY) << "Operator prepend without new value: "
+                                    << slice.toJson();
     return false;
   }
   Builder tmp;
@@ -402,6 +526,7 @@ bool Node::handle<PREPEND>(VPackSlice const& slice) {
   return true;
 }
 
+/// Remove element from front of array
 template <>
 bool Node::handle<SHIFT>(VPackSlice const& slice) {
   Builder tmp;
@@ -441,6 +566,7 @@ bool Node::handle<OBSERVE>(VPackSlice const& slice) {
   return false;
 }
 
+/// Remove observer for this node
 template <>
 bool Node::handle<UNOBSERVE>(VPackSlice const& slice) {
   if (!slice.hasKey("url")) return false;
@@ -473,7 +599,13 @@ bool Node::applieOp(VPackSlice const& slice) {
   std::string oper = slice.get("op").copyString();
 
   if (oper == "delete") {
-    return _parent->removeChild(_node_name);
+    if (_parent == nullptr) {  // root node
+      _children.clear();
+      _value.clear();
+      return true;
+    } else {
+      return _parent->removeChild(_node_name);
+    }
   } else if (oper == "set") {  // "op":"set"
     return handle<SET>(slice);
   } else if (oper == "increment") {  // "op":"increment"
@@ -492,9 +624,14 @@ bool Node::applieOp(VPackSlice const& slice) {
     return handle<OBSERVE>(slice);
   } else if (oper == "unobserve") {  // "op":"unobserve"
     return handle<UNOBSERVE>(slice);
+  } else if (oper == "erase") {  // "op":"erase"
+    return handle<ERASE>(slice);
+  } else if (oper == "replace") {  // "op":"replace"
+    return handle<REPLACE>(slice);
   } else {  // "op" might not be a key word after all
     LOG_TOPIC(WARN, Logger::AGENCY)
-        << "Keyword 'op' without known operation. Handling as regular key.";
+        << "Keyword 'op' without known operation. Handling as regular key: \""
+        << oper << "\"";
   }
 
   return false;
@@ -502,17 +639,14 @@ bool Node::applieOp(VPackSlice const& slice) {
 
 // Apply slice to this node
 bool Node::applies(VPackSlice const& slice) {
-  if (slice.isObject()) {
-    // Object is an operation?
-    if (slice.hasKey("op")) {
-      if (applieOp(slice)) {
-        return true;
-      }
-    }
+  std::regex reg("/+");
 
-    // Object is special case json
+  if (slice.isObject()) {
+    if (slice.isEmptyObject()) {
+      *this = slice;
+    }
     for (auto const& i : VPackObjectIterator(slice)) {
-      std::string key = i.key.copyString();
+      std::string key = std::regex_replace(i.key.copyString(), reg, "/");
       if (key.find('/') != std::string::npos) {
         (*this)(key).applies(i.value);
       } else {
@@ -523,7 +657,6 @@ bool Node::applies(VPackSlice const& slice) {
         _children[key]->applies(i.value);
       }
     }
-
   } else {
     *this = slice;
   }
@@ -531,11 +664,14 @@ bool Node::applies(VPackSlice const& slice) {
   return true;
 }
 
-void Node::toBuilder(Builder& builder) const {
+void Node::toBuilder(Builder& builder, bool showHidden) const {
   try {
     if (type() == NODE) {
       VPackObjectBuilder guard(&builder);
       for (auto const& child : _children) {
+        if (child.first[0] == '.' && !showHidden) {
+          continue;
+        }
         builder.add(VPackValue(child.first));
         child.second->toBuilder(builder);
       }
@@ -546,14 +682,14 @@ void Node::toBuilder(Builder& builder) const {
     }
 
   } catch (std::exception const& e) {
-    LOG_TOPIC(ERR, Logger::AGENCY) << e.what();
+    LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << __LINE__;
   }
 }
 
 // Print internals to ostream
 std::ostream& Node::print(std::ostream& o) const {
   Node const* par = _parent;
-  while (par != 0) {
+  while (par != nullptr) {
     par = par->_parent;
     o << "  ";
   }
@@ -590,3 +726,58 @@ std::string Node::toJson() const {
 }
 
 Node const* Node::parent() const { return _parent; }
+
+std::vector<std::string> Node::exists(
+    std::vector<std::string> const& rel) const {
+  std::vector<std::string> result;
+  Node const* cur = this;
+  for (auto const& sub : rel) {
+    auto tmp = cur->children().find(sub);
+    if (tmp != cur->children().end()) {
+      cur = tmp->second.get();
+      result.push_back(sub);
+    } else {
+      break;
+    }
+  }
+  return result;
+}
+
+std::vector<std::string> Node::exists(std::string const& rel) const {
+  return exists(split(rel, '/'));
+}
+
+int Node::getInt() const {
+  if (type() == NODE) {
+    throw StoreException("Must not convert NODE type to int");
+  }
+  return static_cast<int>(slice().getInt());
+}
+
+uint64_t Node::getUInt() const {
+  if (type() == NODE) {
+    throw StoreException("Must not convert NODE type to unsigned int");
+  }
+  return slice().getUInt();
+}
+
+bool Node::getBool() const {
+  if (type() == NODE) {
+    throw StoreException("Must not convert NODE type to bool");
+  }
+  return slice().getBool();
+}
+
+double Node::getDouble() const {
+  if (type() == NODE) {
+    throw StoreException("Must not convert NODE type to int");
+  }
+  return slice().getDouble();
+}
+
+std::string Node::getString() const {
+  if (type() == NODE) {
+    throw StoreException("Must not convert NODE type to string");
+  }
+  return slice().copyString();
+}

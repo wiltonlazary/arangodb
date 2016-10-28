@@ -29,13 +29,15 @@ namespace arangodb {
 class LoggerFeature final : public application_features::ApplicationFeature {
  public:
   LoggerFeature(application_features::ApplicationServer* server, bool threaded);
+  ~LoggerFeature();
 
  public:
   void collectOptions(std::shared_ptr<options::ProgramOptions>) override final;
-  void loadOptions(std::shared_ptr<options::ProgramOptions>) override final;
+  void loadOptions(std::shared_ptr<options::ProgramOptions>,
+                   const char *binaryPath) override final;
   void validateOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void prepare() override final;
-  void stop() override final;
+  void unprepare() override final;
 
  public:
   void setBackgrounded(bool backgrounded) { _backgrounded = backgrounded; }
@@ -45,20 +47,21 @@ class LoggerFeature final : public application_features::ApplicationFeature {
  private:
   std::vector<std::string> _output;
   std::vector<std::string> _levels;
-  bool _useLocalTime;
+  bool _useLocalTime = false;
   std::string _prefix;
   std::string _file;
-  bool _lineNumber;
-  bool _thread;
-  bool _performance;
-  bool _keepLogRotate;
-  bool _foregroundTty;
-  bool _forceDirect;
+  bool _lineNumber = false;
+  bool _thread = false;
+  bool _performance = false;
+  bool _keepLogRotate = false;
+  bool _foregroundTty = false;
+  bool _forceDirect = false;
+  bool _useMicrotime = false;
 
  private:
-  bool _supervisor;
-  bool _backgrounded;
-  bool _threaded;
+  bool _supervisor = false;
+  bool _backgrounded = false;
+  bool _threaded = false;
 };
 }
 

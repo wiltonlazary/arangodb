@@ -11,29 +11,31 @@ This is a synonym for [LENGTH()](#length).
 
 !SUBSECTION CONCAT()
 
-`CONCAT(value1, value2, ... valueN) → joinedString`
+`CONCAT(value1, value2, ... valueN) → str`
 
-Concatenate the strings passed as *value1* to *valueN*.
+Concatenate the values passed as *value1* to *valueN*.
 
-- **values** (string|array, *repeatable*): strings or arrays of strings as multiple
-  arguments, at least one
-- returns **joinedString** (string): a concatenated string of the elements. *null*
-  values are ignored. Array value arguments are expanded automatically, and their
-  individual members will be concatenated. Nested arrays will be expanded too, but
-  with their elements separated by commas if they have more than a single element.
+- **values** (any, *repeatable*): elements of arbitrary type (at least 1)
+- returns **str** (string): a concatenation of the elements. *null* values
+  are ignored.
 
 ```js
-CONCAT("foo", "bar", "baz")
-// "foobarbaz"
+CONCAT("foo", "bar", "baz") // "foobarbaz"
+CONCAT(1, 2, 3) // "123"
+CONCAT("foo", [5, 6], {bar: "baz"}) // "foo[5,6]{\"bar\":\"baz\"}"
+```
 
-CONCAT([ "foo", "bar", "baz" ])
-// "foobarbaz"
+`CONCAT(anyArray) → str`
 
-CONCAT([ "he", ["ll"] ], "o!")
-// "hello!"
+If a single array is passed to *CONCAT()*, its members are concatenated.
 
-CONCAT([ "he", ["l", "l"] ], "o!")
-// "hel,lo!"
+- **anyArray** (array): array with elements of arbitrary type
+- returns **str** (string): a concatenation of the array elements. *null* values
+  are ignored.
+
+```js
+CONCAT( [ "foo", "bar", "baz" ] ) // "foobarbaz"
+CONCAT( [1, 2, 3] ) // "123"
 ```
 
 !SUBSECTION CONCAT_SEPARATOR()
@@ -45,7 +47,7 @@ Concatenate the strings passed as arguments *value1* to *valueN* using the
 
 - **separator** (string): an arbitrary separator string
 - **values** (string|array, *repeatable*): strings or arrays of strings as multiple
-  arguments, at least one
+  arguments (at least 1)
 - returns **joinedString** (string): a concatenated string of the elements, using
   *separator* as separator string. *null* values are ignored. Array value arguments
   are expanded automatically, and their individual members will be concatenated.
@@ -62,8 +64,8 @@ CONCAT_SEPARATOR(", ", [ "foo", "bar", "baz" ])
 CONCAT_SEPARATOR(", ", [ "foo", [ "b", "a", "r" ], "baz" ])
 // [ "foo, b,a,r, baz" ]
 
-/* "1-2-3-4-5" */
 CONCAT_SEPARATOR("-", [1, 2, 3, null], [4, null, 5])
+// "1-2-3-4-5"
 ```
 
 !SUBSECTION CONTAINS()
@@ -89,6 +91,10 @@ CONTAINS("foobarbaz", "horse") // false
 CONTAINS("foobarbaz", "ba", true) // 3
 CONTAINS("foobarbaz", "horse", true) // -1
 ```
+
+!SUBSECTION COUNT()
+
+This is an alias for [LENGTH()](#length).
 
 !SUBSECTION FIND_FIRST()
 
@@ -129,9 +135,44 @@ string *text*. Positions start at 0.
   is not contained in *text*, -1 is returned.
 
 ```js
-FIND_LAST("foobarbaz", "ba"), // 6
-FIND_LAST("foobarbaz", "ba", 7), // -1
+FIND_LAST("foobarbaz", "ba") // 6
+FIND_LAST("foobarbaz", "ba", 7) // -1
 FIND_LAST("foobarbaz", "ba", 0, 4) // 3
+```
+
+!SUBSECTION JSON_PARSE()
+
+`JSON_PARSE(text) → value`
+
+Return an AQL value described by the JSON-encoded input string.
+
+- **text** (string): the string to parse as JSON
+- returns **value** (mixed): the value corresponding to the given JSON text. 
+  For input values that are no valid JSON strings, the function will return *null*.
+
+```js
+JSON_PARSE("123") // 123
+JSON_PARSE("[ true, false, 2 ]") // [ true, false, 2 ]
+JSON_PARSE("\\\"abc\\\"") // "abc"
+JSON_PARSE("{\\\"a\\\": 1}") // { a : 1 }
+JSON_PARSE("abc") // null
+```
+
+!SUBSECTION JSON_STRINGIFY()
+
+`JSON_STRINGIFY(value) → text`
+
+Return a JSON string representation of the input value.
+
+- **value** (mixed): the value to convert to a JSON string
+- returns **text** (string): the JSON string representing *value*.
+  For input values that cannot be converted to JSON, the function 
+  will return *null*.
+
+```js
+JSON_STRINGIFY("1") // "1"
+JSON_STRINGIFY("abc") // "\"abc\""
+JSON_STRINGIFY("[1, 2, 3]") // "[1,2,3]"
 ```
 
 !SUBSECTION LEFT()
@@ -154,10 +195,7 @@ LEFT("foobar", 10) // "foobar"
 
 `LENGTH(str) → length`
 
-Determine the [number of elements](Array.md#length) in an array,
-the [number of attribute keys](Document.md#length) of an object / document,
-the [amount of documents](Miscellaneous.md#length) in a collection,
-or the character length of a string.
+Determine the character length of a string.
 
 - **str** (string): a string. If a number is passed, it will be casted to string first.
 - returns **length** (number): the character length of *str* (not byte length)
@@ -167,6 +205,10 @@ LENGTH("foobar") // 6
 LENGTH("电脑坏了") // 4
 ```
 
+*LENGTH()* can also determine the [number of elements](Array.md#length) in an array,
+the [number of attribute keys](Document.md#length) of an object / document and
+the [amount of documents](Miscellaneous.md#length) in a collection.
+
 !SUBSECTION LIKE()
 
 `LIKE(text, search, caseInsensitive) → bool`
@@ -174,16 +216,30 @@ LENGTH("电脑坏了") // 4
 Check whether the pattern *search* is contained in the string *text*,
 using wildcard matching. 
 
-- **text** (string): a string
+- **text** (string): the string to search in
 - **search** (string): a search pattern that can contain the wildcard characters
-  *%* (meaning any sequence of characters, including none) and *_* (any single
-  character). Literal *%* and *:* must be escaped with two backslashes.
+  `%` (meaning any sequence of characters, including none) and `_` (any single
+  character). Literal *%* and *:* must be escaped with two backslashes (four
+  in arangosh).
   *search* cannot be a variable or a document attribute. The actual value must
   be present at query parse time already.
 - **caseInsensitive** (bool, *optional*): if set to *true*, the matching will be
   case-insensitive. The default is *false*.
 - returns **bool** (bool): *true* if the pattern is contained in *text*,
   and *false* otherwise
+
+```js
+LIKE("cart", "ca_t")   // true
+LIKE("carrot", "ca_t") // false
+LIKE("carrot", "ca%t") // true
+
+LIKE("foo bar baz", "bar")   // false
+LIKE("foo bar baz", "%bar%") // true
+LIKE("bar", "%bar%")         // true
+
+LIKE("FoO bAr BaZ", "fOo%bAz")       // false
+LIKE("FoO bAr BaZ", "fOo%bAz", true) // true
+```
 
 !SUBSECTION LOWER()
 
@@ -244,6 +300,72 @@ The algorithm for token generation should be treated as opaque.
 ```js
 RANDOM_TOKEN(8) // "zGl09z42"
 RANDOM_TOKEN(8) // "m9w50Ft9"
+```
+
+!SUBSECTION REGEX_TEST()
+
+`REGEX_TEST(text, search, caseInsensitive) → bool`
+
+Check whether the pattern *search* is contained in the string *text*,
+using regular expression matching.
+
+- **text** (string): the string to search in
+- **search** (string): a regular expression search pattern
+- returns **bool** (bool): *true* if the pattern is contained in *text*,
+  and *false* otherwise
+
+The regular expression may consist of literal characters and the following 
+characters and sequences:
+
+- `.` – the dot matches any single character except line terminators.
+  To include line terminators, use `[\s\S]` instead to simulate `.` with *DOTALL* flag.
+- `\d` – matches a single digit, equivalent to `[0-9]`
+- `\s` – matches a single whitespace character
+- `\S` – matches a single non-whitespace character
+- `\t` – matches a tab character
+- `\r` – matches a carriage return
+- `\n` – matches a line-feed character
+- `[xyz]` – set of characters. matches any of the enclosed characters (i.e.
+  *x*, *y* or *z* in this case
+- `[^xyz]` – negated set of characters. matches any other character than the
+  enclosed ones (i.e. anything but *x*, *y* or *z* in this case)
+- `[x-z]` – range of characters. Matches any of the characters in the 
+  specified range, e.g. `[0-9A-F]` to match any character in
+  *0123456789ABCDEF*
+- `[^x-z]` – negated range of characters. Matches any other character than the
+  ones specified in the range
+- `(xyz)` – defines and matches a pattern group
+- `(x|y)` – matches either *x* or *y*
+- `^` – matches the beginning of the string (e.g. `^xyz`)
+- <code>$</code> – matches the end of the string (e.g. <code>xyz$</code>)
+
+Note that the characters `.`, `*`, `?`, `[`, `]`, `(`, `)`, `{`, `}`, `^`, 
+and `$` have a special meaning in regular expressions and may need to be 
+escaped using a backslash, which requires escaping itself (`\\`). A literal
+backslash needs to be escaped using another escaped backslash, i.e. `\\\\`.
+In arangosh, the amount of backslashes needs to be doubled.
+
+Characters and sequences may optionally be repeated using the following
+quantifiers:
+
+- `x*` – matches zero or more occurrences of *x*
+- `x+` – matches one or more occurrences of *x*
+- `x?` – matches one or zero occurrences of *x*
+- `x{y}` – matches exactly *y* occurrences of *x*
+- `x{y,z}` – matches between *y* and *z* occurrences of *x*
+- `x{y,}` – matches at least *y* occurences of *x*
+
+Note that `xyz+` matches *xyzzz*, but if you want to match *xyzxyz* instead,
+you need to define a pattern group by wrapping the subexpression in parentheses
+and place the quantifier right behind it: `(xyz)+`.
+ 
+If the regular expression in *search* is invalid, a warning will be raised
+and the function will return *false*.
+
+```js
+REGEX_TEST("the quick brown fox", "the.*fox") // true
+REGEX_TEST("the quick brown fox", "^(a|the)\s+(quick|slow).*f.x$") // true
+REGEX_TEST("the\nquick\nbrown\nfox", "^the(\n[a-w]+)+\nfox$") // true
 ```
 
 !SUBSECTION REVERSE()

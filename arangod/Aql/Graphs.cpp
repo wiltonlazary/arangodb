@@ -57,30 +57,6 @@ void Graph::addVertexCollection(std::string const& name) {
   _vertexColls.insert(name);
 }
 
-arangodb::basics::Json Graph::toJson(TRI_memory_zone_t* z, bool verbose) const {
-  arangodb::basics::Json json(z, arangodb::basics::Json::Object);
-
-  if (!_vertexColls.empty()) {
-    arangodb::basics::Json vcn(z, arangodb::basics::Json::Array,
-                               _vertexColls.size());
-    for (auto const& cn : _vertexColls) {
-      vcn.add(arangodb::basics::Json(cn));
-    }
-    json("vertexCollectionNames", vcn);
-  }
-
-  if (!_edgeColls.empty()) {
-    arangodb::basics::Json ecn(z, arangodb::basics::Json::Array,
-                               _edgeColls.size());
-    for (auto const& cn : _edgeColls) {
-      ecn.add(arangodb::basics::Json(cn));
-    }
-    json("edgeCollectionNames", ecn);
-  }
-
-  return json;
-}
-
 void Graph::toVelocyPack(VPackBuilder& builder, bool verbose) const {
   VPackObjectBuilder guard(&builder);
 
@@ -101,25 +77,39 @@ void Graph::toVelocyPack(VPackBuilder& builder, bool verbose) const {
   }
 }
 
-Graph::Graph(VPackSlice const& info) : _vertexColls(), _edgeColls() {
-  VPackSlice const slice = info.resolveExternal();
+Graph::Graph(VPackSlice const& slice) : _vertexColls(), _edgeColls() {
   if (slice.hasKey(_attrEdgeDefs)) {
     auto edgeDefs = slice.get(_attrEdgeDefs);
 
     for (auto const& def : VPackArrayIterator(edgeDefs)) {
       TRI_ASSERT(def.isObject());
-      std::string eCol = arangodb::basics::VelocyPackHelper::getStringValue(
+      try {
+        std::string eCol = arangodb::basics::VelocyPackHelper::getStringValue(
           def, "collection", "");
-      addEdgeCollection(eCol);
+        addEdgeCollection(eCol);
+      } catch (...) {
+        THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_GRAPH_INVALID_GRAPH, "didn't find 'collection' in the graph definition");
+      }
       // TODO what if graph is not in a valid format any more
-      VPackSlice tmp = def.get("from");
-      insertVertexCollections(tmp);
-      tmp = def.get("to");
-      insertVertexCollections(tmp);
+      try {
+        VPackSlice tmp = def.get("from");
+        insertVertexCollections(tmp);
+      } catch (...) {
+        THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_GRAPH_INVALID_GRAPH, "didn't find from-collection in the graph definition");
+      }
+      try {
+        VPackSlice tmp = def.get("to");
+        insertVertexCollections(tmp);
+      } catch (...) {
+        THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_GRAPH_INVALID_GRAPH, "didn't find to-collection in the graph definition");
+      }
     }
   }
   if (slice.hasKey(_attrOrphans)) {
     auto orphans = slice.get(_attrOrphans);
     insertVertexCollections(orphans);
   }
+}
+
+void Graph::enhanceEngineInfo(VPackBuilder&) const {
 }

@@ -10,6 +10,13 @@
   #databases {
     height: 140px;
 
+    .no-database {
+      background: $c-white;
+      border-radius: 2px;
+      padding: 40px;
+      text-align: center;
+    }
+
     #logout {
       margin-top: 20px;
     }
@@ -48,11 +55,17 @@
     @extend %flat-select;
     margin-bottom: 30px;
     padding-left: 35px;
+    -moz-appearance: none;
   }
 
   .login-logo-round {
     margin-bottom: 25px;
     margin-top: 10px;
+
+    object {
+      margin-left: 15%;
+      width: 70%;
+    }
 
     img {
       display: block;
@@ -84,8 +97,11 @@
 
   .wrong-credentials {
     color: $c-negative;
-    margin-top: -30px;
+    margin-left: -20px;
+    margin-top: -24px;
+    position: absolute;
     text-align: center;
+    width: 100%;
   }
 
   .login-space {

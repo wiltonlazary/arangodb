@@ -44,7 +44,9 @@ enum class ServerState {
   IN_START,
   IN_WAIT,
   IN_STOP,
-  STOPPED
+  IN_UNPREPARE,
+  STOPPED,
+  ABORT
 };
 
 class ProgressHandler {
@@ -102,6 +104,11 @@ class ProgressHandler {
 // `stop`
 //
 // Stops the features. The `stop` methods are called in reversed `start` order.
+// This must stop all threads, but not destroy the features.
+//
+// `unprepare`
+//
+// This destroys the features.
 
 class ApplicationServer {
   ApplicationServer(ApplicationServer const&) = delete;
@@ -114,7 +121,8 @@ class ApplicationServer {
     VALIDATED,
     PREPARED,
     STARTED,
-    STOPPED
+    STOPPED,
+    UNPREPARED
   };
 
   static ApplicationServer* server;
@@ -154,9 +162,13 @@ class ApplicationServer {
   static void forceDisableFeatures(std::vector<std::string> const&);
 
  public:
-  explicit ApplicationServer(std::shared_ptr<options::ProgramOptions>);
+  explicit ApplicationServer(std::shared_ptr<options::ProgramOptions>,
+                             const char *binaryPath);
 
   ~ApplicationServer();
+
+  std::string helpSection() const { return _helpSection; }
+  bool helpShown() const { return !_helpSection.empty(); }
 
   // adds a feature to the application server. the application server
   // will take ownership of the feature object and destroy it in its
@@ -191,6 +203,9 @@ class ApplicationServer {
   // signal the server to shut down
   void beginShutdown();
 
+  // report that we are going down by fatal error
+  void shutdownFatalError();
+
   // return VPack options
   VPackBuilder options(std::unordered_set<std::string> const& excludes) const;
 
@@ -201,6 +216,7 @@ class ApplicationServer {
     _progressReports.emplace_back(reporter);
   }
 
+  const char* getBinaryPath() { return _binaryPath;}
  private:
   // look up a feature and return a pointer to it. may be nullptr
   static ApplicationFeature* lookupFeature(std::string const&);
@@ -248,6 +264,9 @@ class ApplicationServer {
   // stops features
   void stop();
 
+  // destroys features
+  void unprepare();
+
   // after start, the server will wait in this method until
   // beginShutdown is called
   void wait();
@@ -283,6 +302,12 @@ class ApplicationServer {
 
   // reporter for progress
   std::vector<ProgressHandler> _progressReports;
+
+  // help section displayed
+  std::string _helpSection;
+
+  // the install directory of this program:
+  const char* _binaryPath;
 };
 }
 }

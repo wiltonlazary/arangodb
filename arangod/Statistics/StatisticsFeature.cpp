@@ -39,6 +39,8 @@ StatisticsFeature::StatisticsFeature(application_features::ApplicationServer* se
 }
 
 void StatisticsFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
+  options->addOldOption("server.disable-statistics", "server.statistics");
+  
   options->addSection("server", "Server features");
 
   options->addHiddenOption(
@@ -50,9 +52,22 @@ void StatisticsFeature::collectOptions(std::shared_ptr<ProgramOptions> options) 
 void StatisticsFeature::start() {
   STATISTICS = this;
   TRI_InitializeStatistics();
+  
+  _statisticsThread.reset(new StatisticsThread);
+  if (!_statisticsThread->start()) {
+    LOG(FATAL) << "could not start statistics thread";
+    FATAL_ERROR_EXIT();
+  }
 }
 
-void StatisticsFeature::stop() {
-  TRI_ShutdownStatistics();
+void StatisticsFeature::unprepare() {
+  if (_statisticsThread != nullptr) {
+    _statisticsThread->beginShutdown();
+    while (_statisticsThread->isRunning()) {
+      usleep(10000);
+    }
+  }
+  _statisticsThread.reset();
+
   STATISTICS = nullptr;
 }

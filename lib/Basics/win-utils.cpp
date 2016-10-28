@@ -36,6 +36,7 @@
 #include "Basics/files.h"
 #include "Basics/StringUtils.h"
 #include "Basics/tri-strings.h"
+#include "Basics/directories.h"
 
 using namespace arangodb::basics;
 
@@ -73,8 +74,10 @@ int getpagesize(void) {
 void TRI_sleep(unsigned long waitTime) { Sleep(waitTime * 1000); }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Calls a timer which waits for a signal after the elapsed time.
-// The timer is accurate to 100nanoseconds
+// Calls a timer which waits for a signal after the elapsed time in 
+// microseconds. The timer is accurate to 100nanoseconds.
+// This is only a Windows workaround, use usleep, which is mapped to 
+// TRI_usleep on Windows!
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_usleep(unsigned long waitTime) {
@@ -311,20 +314,22 @@ int TRI_OPEN_WIN32(char const* filename, int openFlags) {
 /// @brief fixes the ICU_DATA environment path
 ////////////////////////////////////////////////////////////////////////////////
 
-void TRI_FixIcuDataEnv() {
+void TRI_FixIcuDataEnv(const char* binaryPath) {
   if (getenv("ICU_DATA") != nullptr) {
     return;
   }
 
-  std::string p = TRI_LocateInstallDirectory();
+  std::string p = TRI_LocateInstallDirectory(binaryPath);
 
   if (!p.empty()) {
-    std::string e = "ICU_DATA=" + p + "share\\arangodb\\";
+    std::string e = "ICU_DATA=" + p + ICU_DESTINATION_DIRECTORY;
     e = StringUtils::replace(e, "\\", "\\\\");
     putenv(e.c_str());
   } else {
 #ifdef _SYSCONFDIR_
-    std::string e = "ICU_DATA=" + std::string(_SYSCONFDIR_) + "..\\..\\bin";
+    std::string SCDIR(_SYSCONFDIR_);
+    SCDIR = StringUtils::replace(SCDIR, "/", "\\\\");
+    std::string e = "ICU_DATA=" + SCDIR + "..\\..\\bin";
     e = StringUtils::replace(e, "\\", "\\\\");
     putenv(e.c_str());
 #else
@@ -619,7 +624,16 @@ void ADB_WindowsEntryFunction() {
   TRI_Application_Exit_SetExit(ADB_WindowsExitFunction);
 }
 
+TRI_serviceAbort_t serviceAbort = nullptr;
+
+void TRI_SetWindowsServiceAbortFunction(TRI_serviceAbort_t f) {
+  serviceAbort = f;
+}
+
 void ADB_WindowsExitFunction(int exitCode, void* data) {
+  if (serviceAbort != nullptr) {
+    serviceAbort();
+  }
   int res = finalizeWindows(TRI_WIN_FINAL_WSASTARTUP_FUNCTION_CALL, 0);
 
   if (res != 0) {

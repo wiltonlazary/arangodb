@@ -28,19 +28,19 @@
 #include "Utils/CollectionNameResolver.h"
 #include "V8/v8-globals.h"
 #include "V8Server/v8-vocbase.h"
-#include "VocBase/server.h"
 
 namespace arangodb {
 class Index;
+class LogicalCollection;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief looks up a index identifier
 ////////////////////////////////////////////////////////////////////////////////
 
-arangodb::Index* TRI_LookupIndexByHandle(
+std::shared_ptr<arangodb::Index> TRI_LookupIndexByHandle(
     v8::Isolate* isolate, arangodb::CollectionNameResolver const* resolver,
-    TRI_vocbase_col_t const* collection, v8::Handle<v8::Value> const val,
+    arangodb::LogicalCollection const* collection, v8::Handle<v8::Value> const val,
     bool ignoreNotFound);
 
 void TRI_InitV8indexArangoDB(v8::Isolate* isolate,
@@ -48,5 +48,39 @@ void TRI_InitV8indexArangoDB(v8::Isolate* isolate,
 
 void TRI_InitV8indexCollection(v8::Isolate* isolate,
                                v8::Handle<v8::ObjectTemplate> rt);
+
+// This could be static but is used in enterprise version as well
+// Note that this returns a newly allocated object and ownership is transferred
+// to the caller, which is expressed by the returned unique_ptr.
+std::unique_ptr<arangodb::LogicalCollection> CreateCollectionCoordinator(
+    arangodb::LogicalCollection* parameters);
+
+#ifdef USE_ENTERPRISE
+std::unique_ptr<arangodb::LogicalCollection> CreateCollectionCoordinatorEnterprise(
+    TRI_col_type_e collectionType, TRI_vocbase_t* vocbase,
+    arangodb::velocypack::Slice parameters);
+#endif
+
+int EnsureIndexCoordinator(std::string const& dbName, std::string const& cid,
+                           arangodb::velocypack::Slice const slice, bool create,
+                           arangodb::velocypack::Builder& resultBuilder,
+                           std::string& errorMessage);
+
+#ifdef USE_ENTERPRISE
+int EnsureIndexCoordinatorEnterprise(
+    arangodb::LogicalCollection const* collection,
+    arangodb::velocypack::Slice const slice, bool create,
+    arangodb::velocypack::Builder& resultBuilder, std::string& errorMessage);
+#endif
+
+int DropIndexCoordinator(
+    std::string const& databaseName,
+    std::string const& cid,
+    TRI_idx_iid_t const iid);
+
+#ifdef USE_ENTERPRISE
+int DropIndexCoordinatorEnterprise(
+    arangodb::LogicalCollection const* collection, TRI_idx_iid_t const iid);
+#endif
 
 #endif

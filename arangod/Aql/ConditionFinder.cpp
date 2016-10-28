@@ -47,6 +47,7 @@ bool ConditionFinder::before(ExecutionNode* en) {
     case EN::UPSERT:
     case EN::RETURN:
     case EN::TRAVERSAL:
+    case EN::SHORTEST_PATH:
       // in these cases we simply ignore the intermediate nodes, note
       // that we have taken care of nodes that could throw exceptions
       // above.
@@ -111,7 +112,37 @@ bool ConditionFinder::before(ExecutionNode* en) {
       for (auto& it : _variableDefinitions) {
         if (_filters.find(it.first) != _filters.end()) {
           // a variable used in a FILTER
-          condition->andCombine(it.second);
+          AstNode* var = const_cast<AstNode*>(it.second);
+          if (!var->canThrow() && var->isDeterministic() && var->isSimple()) {
+            // replace all variables inside the FILTER condition with the
+            // expressions represented by the variables
+            var = it.second->clone(_plan->getAst());
+
+            auto func = [&](AstNode* node, void* data) -> AstNode* {
+              if (node->type == NODE_TYPE_REFERENCE) {
+                auto plan = static_cast<ExecutionPlan*>(data);
+                auto variable = static_cast<Variable*>(node->getData());
+
+                if (variable != nullptr) {
+                  auto setter = plan->getVarSetBy(variable->id);
+
+                  if (setter != nullptr && setter->getType() == EN::CALCULATION) {
+                    auto s = static_cast<CalculationNode*>(setter);
+                    auto filterExpression = s->expression();
+                    AstNode* inNode = filterExpression->nodeForModification();
+                    if (!inNode->canThrow() && inNode->isDeterministic() && inNode->isSimple()) {
+                      return inNode;
+                    }
+                  }
+                }
+
+              }
+              return node;
+            };
+
+            var = Ast::traverseAndModify(var, func, _plan);
+          }
+          condition->andCombine(var);
           foundCondition = true;
         }
       }

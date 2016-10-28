@@ -15,7 +15,6 @@ add_executable(${TEST_BASICS_SUITE}
   Basics/files-test.cpp
   Basics/fpconv-test.cpp
   Basics/json-test.cpp
-  Basics/json-utilities-test.cpp
   Basics/hashes-test.cpp
   Basics/associative-multi-pointer-test.cpp
   Basics/associative-multi-pointer-nohashcache-test.cpp
@@ -26,7 +25,6 @@ add_executable(${TEST_BASICS_SUITE}
   Basics/string-utf8-test.cpp
   Basics/string-test.cpp
   Basics/structure-size-test.cpp
-  Basics/vector-pointer-test.cpp
   Basics/vector-test.cpp
   Basics/EndpointTest.cpp
   Basics/StringBufferTest.cpp
@@ -41,6 +39,8 @@ include_directories(
 
 target_link_libraries(${TEST_BASICS_SUITE}
   ${LIB_ARANGO}
+  boost_system
+  boost_boost
   ${MSVC_LIBS}
   ${SYSTEM_LIBRARIES}
 )

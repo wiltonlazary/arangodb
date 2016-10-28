@@ -24,15 +24,12 @@
 #ifndef ARANGOD_CONSENSUS_CONSTITUENT_H
 #define ARANGOD_CONSENSUS_CONSTITUENT_H 1
 
-#include <random>
-
 #include "AgencyCommon.h"
-#include "AgentConfiguration.h"
-#include "NotifierThread.h"
 
+#include "AgentConfiguration.h"
 #include "Basics/Common.h"
-#include "Basics/Thread.h"
 #include "Basics/ConditionVariable.h"
+#include "Basics/Thread.h"
 
 struct TRI_vocbase_t;
 
@@ -45,108 +42,108 @@ namespace consensus {
 
 class Agent;
 
-/// @brief RAFT leader election
-class Constituent : public arangodb::Thread {
+// RAFT leader election
+class Constituent : public Thread {
  public:
-  /// @brief Distribution type
-  typedef std::uniform_real_distribution<double> dist_t;
-
-  /// @brief Default ctor
   Constituent();
 
-  /// @brief Clean up and exit election
+  // clean up and exit election
   virtual ~Constituent();
 
-  /// @brief Configure with agent's configuration
+  // Configure with agent's configuration
   void configure(Agent*);
 
-  /// @brief Current term
+  // Current term
   term_t term() const;
 
-  /// @brief Get current role
+  // Get current role
   role_t role() const;
 
-  /// @brief Are we leading?
+  // Are we leading?
   bool leading() const;
 
-  /// @brief Are we following?
+  // Are we following?
   bool following() const;
 
-  /// @brief Are we running for leadership?
+  // Are we running for leadership?
   bool running() const;
 
-  /// @brief Called by REST handler
-  bool vote(term_t, arangodb::consensus::id_t, index_t, term_t);
+  // Called by REST handler
+  bool vote(term_t, std::string, index_t, term_t);
 
-  /// @brief My daily business
+  // Check leader
+  bool checkLeader(term_t, std::string, index_t, term_t);
+
+  // My daily business
   void run() override final;
 
-  /// @brief Who is leading
-  arangodb::consensus::id_t leaderID() const;
+  // Who is leading
+  std::string leaderID() const;
 
-  /// @brief Configuration
+  // Configuration
   config_t const& config() const;
 
-  /// @brief Become follower
+  // Become follower
   void follow(term_t);
+  void followNoLock(term_t);
 
-  /// @brief Agency size
+  // Agency size
   size_t size() const;
 
-  /// @brief Orderly shutdown of thread
+  // Orderly shutdown of thread
   void beginShutdown() override;
 
   bool start(TRI_vocbase_t* vocbase, aql::QueryRegistry*);
 
- private:
-  /// @brief set term to new term
-  void term(term_t);
+  friend class Agent;
 
-  /// @brief Agency endpoints
+ private:
+  // update leaderId and term if inactive
+  void update(std::string const&, term_t);
+
+  // set term to new term
+  void term(term_t);
+  void termNoLock(term_t);
+
+  // Agency endpoints
   std::vector<std::string> const& endpoints() const;
 
-  /// @brief Endpoint of agent with id
-  std::string const& endpoint(arangodb::consensus::id_t) const;
+  // Endpoint of agent with id
+  std::string endpoint(std::string) const;
 
-  /// @brief Run for leadership
+  // Run for leadership
   void candidate();
 
-  /// @brief Become leader
-  void lead();
+  // Become leader
+  void lead(term_t,
+            std::map<std::string, bool> const& = std::map<std::string, bool>());
 
-  /// @brief Call for vote (by leader or candidates after timeout)
+  // Call for vote (by leader or candidates after timeout)
   void callElection();
 
-  /// @brief Count my votes
+  // Count my votes
   void countVotes();
 
-  /// @brief Wait for sync
+  // Wait for sync
   bool waitForSync() const;
 
-  /// @brief Notify everyone, that we are good to go.
-  ///        This is the task of the last process starting up.
-  ///        Will be taken care of by gossip
-  void notifyAll();
-
-  /// @brief Sleep for how long
+  // Sleep for how long
   duration_t sleepFor(double, double);
 
   TRI_vocbase_t* _vocbase;
   aql::QueryRegistry* _queryRegistry;
 
-  term_t _term;                /**< @brief term number */
-  std::atomic<bool> _cast;     /**< @brief cast a vote this term */
-  std::atomic<state_t> _state; /**< @brief State (follower, candidate, leader)*/
+  term_t _term;            // term number
+  bool _cast;              // cast a vote this term
 
-  arangodb::consensus::id_t _leaderID; /**< @brief Current leader */
-  arangodb::consensus::id_t _id;       /**< @brief My own id */
-  constituency_t _constituency;        /**< @brief List of consituents */
-  std::mt19937 _gen;                   /**< @brief Random number generator */
-  role_t _role;                        /**< @brief My role */
-  Agent* _agent;                       /**< @brief My boss */
-  arangodb::consensus::id_t _votedFor;
+  std::string _leaderID; // Current leader
+  std::string _id;       // My own id
 
-  std::unique_ptr<NotifierThread> _notifier;
+  double _lastHeartbeatSeen;
+
+  role_t _role;  // My role
+  Agent* _agent; // My boss
+  std::string _votedFor;
 
   arangodb::basics::ConditionVariable _cv;  // agency callbacks
   mutable arangodb::Mutex _castLock;

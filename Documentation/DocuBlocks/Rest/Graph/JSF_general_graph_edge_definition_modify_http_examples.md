@@ -1,7 +1,7 @@
 @startDocuBlock JSF_general_graph_edge_definition_modify_http_examples
 @brief Replace an existing edge definition
 
-@RESTHEADER{POST /_api/gharial/{graph-name}/edge/{definition-name}, Replace an edge definition}
+@RESTHEADER{PUT /_api/gharial/{graph-name}/edge/{definition-name}, Replace an edge definition}
 
 @RESTDESCRIPTION
 Change one specific edge definition.
@@ -42,6 +42,7 @@ Returned if no graph with this name could be found.
 
 @EXAMPLE_ARANGOSH_RUN{HttpGharialReplaceEdgeCol}
   var examples = require("@arangodb/graph-examples/example-graph.js");
+~ examples.dropGraph("social");
   examples.loadGraph("social");
   var url = "/_api/gharial/social/edge/relation";
   body = {

@@ -1,10 +1,10 @@
-/*jshint browser: true */
-/*jshint unused: false */
-/*global window, Backbone, arangoDocumentModel, _, arangoHelper, $*/
-(function() {
-  "use strict";
+/* jshint browser: true */
+/* jshint unused: false */
+/* global window, _, arangoHelper, $*/
+(function () {
+  'use strict';
 
-  window.arangoDocuments = window.PaginatedCollection.extend({
+  window.ArangoDocuments = window.PaginatedCollection.extend({
     collectionID: 1,
 
     filters: [],
@@ -13,50 +13,50 @@
     MAX_SORT: 12000,
 
     lastQuery: {},
-    sortAttribute: "",
+    sortAttribute: '',
 
     url: arangoHelper.databaseUrl('/_api/documents'),
     model: window.arangoDocumentModel,
 
-    loadTotal: function(callback) {
+    loadTotal: function (callback) {
       var self = this;
       $.ajax({
         cache: false,
-        type: "GET",
-        url: arangoHelper.databaseUrl("/_api/collection/" + this.collectionID + "/count"),
-        contentType: "application/json",
+        type: 'GET',
+        url: arangoHelper.databaseUrl('/_api/collection/' + this.collectionID + '/count'),
+        contentType: 'application/json',
         processData: false,
-        success: function(data) {
+        success: function (data) {
           self.setTotal(data.count);
           callback(false);
         },
-        error: function() {
+        error: function () {
           callback(true);
         }
       });
     },
 
-    setCollection: function(id) {
-      var callback = function(error) {
+    setCollection: function (id) {
+      var callback = function (error) {
         if (error) {
-          arangoHelper.arangoError("Documents","Could not fetch documents count");
+          arangoHelper.arangoError('Documents', 'Could not fetch documents count');
         }
-      }.bind(this);
+      };
       this.resetFilter();
       this.collectionID = id;
       this.setPage(1);
       this.loadTotal(callback);
     },
 
-    setSort: function(key) {
+    setSort: function (key) {
       this.sortAttribute = key;
     },
 
-    getSort: function() {
+    getSort: function () {
       return this.sortAttribute;
     },
 
-    addFilter: function(attr, op, val) {
+    addFilter: function (attr, op, val) {
       this.filters.push({
         attr: attr,
         op: op,
@@ -64,73 +64,68 @@
       });
     },
 
-    setFiltersForQuery: function(bindVars) {
+    setFiltersForQuery: function (bindVars) {
       if (this.filters.length === 0) {
-        return "";
+        return '';
       }
-      var query = " FILTER", res = '',
-      parts = _.map(this.filters, function(f, i) {
+      var query = ' FILTER ';
+      var parts = _.map(this.filters, function (f, i) {
+        var res = '';
+        res += 'x.@attr ';
+        res += f.op;
+        res += ' @param';
+        res += i;
+
         if (f.op === 'LIKE') {
-          res = " " + f.op + "(x.`" + f.attr + "`, @param";
-          res += i;
-          res += ")";
-        }
-        else {
-          if (f.op === 'IN' || f.op === 'NOT IN') {
-            res = ' ';
+          bindVars['param' + i] = '%' + f.val + '%';
+        } else if (f.op === 'IN' || f.op === 'NOT IN ') {
+          if (f.val.indexOf(',') !== -1) {
+            bindVars['param' + i] = f.val.split(',');
+          } else {
+            var arr = [];
+            bindVars['param' + i] = arr.push(f.val);
           }
-          else {
-            res = " x.`";
-          }
-
-          res += f.attr;
-
-          if (f.op === 'IN' || f.op === 'NOT IN') {
-            res += " ";
-          }
-          else {
-            res += "` ";
-          }
-
-          res += f.op;
-
-          if (f.op === 'IN' || f.op === 'NOT IN') {
-            res += " x.@param";
-          }
-          else {
-            res += " @param";
-          }
-          res += i;
+        } else {
+          bindVars['param' + i] = f.val;
         }
 
-        bindVars["param" + i] = f.val;
+        if (f.attr.indexOf('.') !== -1) {
+          bindVars['attr'] = f.attr.split('.');
+        } else {
+          bindVars['attr'] = f.attr;
+        }
+
         return res;
       });
-      return query + parts.join(" &&");
+      return query + parts.join(' && ');
     },
 
-    setPagesize: function(size) {
+    setPagesize: function (size) {
       this.setPageSize(size);
     },
 
-    resetFilter: function() {
+    resetFilter: function () {
       this.filters = [];
     },
 
     moveDocument: function (key, fromCollection, toCollection, callback) {
-      var querySave, queryRemove, bindVars = {
-        "@collection": fromCollection,
-        "filterid": key
-      }, queryObj1, queryObj2;
+      var querySave;
+      var queryRemove;
+      var bindVars = {
+        '@collection': fromCollection,
+        'filterid': key
+      };
+      var queryObj1;
+      var queryObj2;
 
-      querySave = "FOR x IN @@collection";
-      querySave += " FILTER x._key == @filterid";
-      querySave += " INSERT x IN ";
+      querySave = 'FOR x IN @@collection';
+      querySave += ' FILTER x._key == @filterid';
+      querySave += ' INSERT x IN ';
       querySave += toCollection;
 
-      queryRemove = "FOR x in @@collection";
-      queryRemove += " FILTER x._key == @filterid";
-      queryRemove += " REMOVE x IN @@collection";
+      queryRemove = 'FOR x in @@collection';
+      queryRemove += ' FILTER x._key == @filterid';
+      queryRemove += ' REMOVE x IN @@collection';
 
       queryObj1 = {
         query: querySave,
@@ -149,72 +144,70 @@
         type: 'POST',
         url: arangoHelper.databaseUrl('/_api/cursor'),
         data: JSON.stringify(queryObj1),
-        contentType: "application/json",
-        success: function() {
+        contentType: 'application/json',
+        success: function () {
           // if successful remove unwanted docs
           $.ajax({
             cache: false,
             type: 'POST',
             url: arangoHelper.databaseUrl('/_api/cursor'),
             data: JSON.stringify(queryObj2),
-            contentType: "application/json",
-            success: function() {
+            contentType: 'application/json',
+            success: function () {
               if (callback) {
                 callback();
               }
               window.progressView.hide();
             },
-            error: function() {
+            error: function () {
               window.progressView.hide();
               arangoHelper.arangoError(
-                "Document error", "Documents inserted, but could not be removed."
+                'Document error', 'Documents inserted, but could not be removed.'
               );
             }
           });
         },
-        error: function() {
+        error: function () {
           window.progressView.hide();
-          arangoHelper.arangoError("Document error", "Could not move selected documents.");
+          arangoHelper.arangoError('Document error', 'Could not move selected documents.');
         }
       });
     },
 
     getDocuments: function (callback) {
-      var self = this,
-          query,
-          bindVars,
-          tmp,
-          queryObj;
+      var self = this;
+      var query;
+      var bindVars;
+      var tmp;
+      var queryObj;
       bindVars = {
-        "@collection": this.collectionID,
-        "offset": this.getOffset(),
-        "count": this.getPageSize()
+        '@collection': this.collectionID,
+        'offset': this.getOffset(),
+        'count': this.getPageSize()
       };
 
       // fetch just the first 25 attributes of the document
       // this number is arbitrary, but may reduce HTTP traffic a bit
-      query = "FOR x IN @@collection LET att = SLICE(ATTRIBUTES(x), 0, 25)";
+      query = 'FOR x IN @@collection LET att = APPEND(SLICE(ATTRIBUTES(x), 0, 25), "_key", true)';
       query += this.setFiltersForQuery(bindVars);
       // Sort result, only useful for a small number of docs
       if (this.getTotal() < this.MAX_SORT) {
         if (this.getSort() === '_key') {
-          query += " SORT TO_NUMBER(x." + this.getSort() + ") == 0 ? x."
-                + this.getSort() + " : TO_NUMBER(x." + this.getSort() + ")";
-        }
-        else if (this.getSort() !== '') {
-          query += " SORT x." + this.getSort();
+          query += ' SORT TO_NUMBER(x.' + this.getSort() + ') == 0 ? x.' +
+            this.getSort() + ' : TO_NUMBER(x.' + this.getSort() + ')';
+        } else if (this.getSort() !== '') {
+          query += ' SORT x.' + this.getSort();
         }
       }
 
       if (bindVars.count !== 'all') {
-        query += " LIMIT @offset, @count RETURN KEEP(x, att)";
-      }
-      else {
+        query += ' LIMIT @offset, @count RETURN KEEP(x, att)';
+      } else {
         tmp = {
-          "@collection": this.collectionID
+          '@collection': this.collectionID
         };
         bindVars = tmp;
-        query += " RETURN KEEP(x, att)";
+        query += ' RETURN KEEP(x, att)';
       }
 
       queryObj = {
@@ -225,16 +218,16 @@
       if (this.getTotal() < 10000 || this.filters.length > 0) {
         queryObj.options = {
           fullCount: true,
-        };
+        }
       }*/
 
-      var checkCursorStatus = function(jobid) {
+      var checkCursorStatus = function (jobid) {
         $.ajax({
           cache: false,
           type: 'PUT',
           url: arangoHelper.databaseUrl('/_api/job/' + encodeURIComponent(jobid)),
           contentType: 'application/json',
-          success: function(data, textStatus, xhr) {
+          success: function (data, textStatus, xhr) {
             if (xhr.status === 201) {
               window.progressView.toShow = false;
               self.clearDocuments();
@@ -242,27 +235,25 @@
                 self.setTotal(data.extra.stats.fullCount);
               }
               if (self.getTotal() !== 0) {
-                _.each(data.result, function(v) {
+                _.each(data.result, function (v) {
                   self.add({
-                    "id": v._id,
-                    "rev": v._rev,
-                    "key": v._key,
-                    "content": v
+                    'id': v._id,
+                    'rev': v._rev,
+                    'key': v._key,
+                    'content': v
                   });
                 });
               }
               self.lastQuery = queryObj;
 
               callback(false, data);
-            }
-            else if (xhr.status === 204) {
-              self.checkCursorTimer = window.setTimeout(function() {
+            } else if (xhr.status === 204) {
+              self.checkCursorTimer = window.setTimeout(function () {
                 checkCursorStatus(jobid);
               }, 500);
             }
-
           },
-          error: function(data) {
+          error: function (data) {
             callback(false, data);
           }
         });
@@ -276,34 +267,32 @@
         headers: {
           'x-arango-async': 'store'
         },
-        contentType: "application/json",
+        contentType: 'application/json',
         success: function (data, textStatus, xhr) {
-
           if (xhr.getResponseHeader('x-arango-async-id')) {
             var jobid = xhr.getResponseHeader('x-arango-async-id');
 
-            var cancelRunningCursor = function() {
+            var cancelRunningCursor = function () {
               $.ajax({
-                url: arangoHelper.databaseUrl('/_api/job/'+ encodeURIComponent(jobid) + "/cancel"),
+                url: arangoHelper.databaseUrl('/_api/job/' + encodeURIComponent(jobid) + '/cancel'),
                 type: 'PUT',
-                success: function() {
+                success: function () {
                   window.clearTimeout(self.checkCursorTimer);
-                  arangoHelper.arangoNotification("Documents", "Canceled operation.");
+                  arangoHelper.arangoNotification('Documents', 'Canceled operation.');
                   $('.dataTables_empty').text('Canceled.');
                   window.progressView.hide();
                 }
               });
             };
 
-            window.progressView.showWithDelay(300, "Fetching documents...", cancelRunningCursor);
+            window.progressView.showWithDelay(1000, 'Fetching documents...', cancelRunningCursor);
 
             checkCursorStatus(jobid);
-          }
-          else {
+          } else {
             callback(true, data);
           }
         },
-        error: function(data) {
+        error: function (data) {
           callback(false, data);
         }
       });
@@ -313,21 +302,21 @@
       this.reset();
     },
 
-    buildDownloadDocumentQuery: function() {
+    buildDownloadDocumentQuery: function () {
       var query, queryObj, bindVars;
 
       bindVars = {
-        "@collection": this.collectionID
+        '@collection': this.collectionID
       };
 
-      query = "FOR x in @@collection";
+      query = 'FOR x in @@collection';
       query += this.setFiltersForQuery(bindVars);
       // Sort result, only useful for a small number of docs
       if (this.getTotal() < this.MAX_SORT && this.getSort().length > 0) {
-        query += " SORT x." + this.getSort();
+        query += ' SORT x.' + this.getSort();
       }
 
-      query += " RETURN x";
+      query += ' RETURN x';
 
       queryObj = {
         query: query,
@@ -337,32 +326,33 @@
       return queryObj;
     },
 
-    uploadDocuments : function (file, callback) {
+    uploadDocuments: function (file, callback) {
       $.ajax({
-        type: "POST",
-        url:
-        arangoHelper.databaseUrl('/_api/import?type=auto&collection='+
-        encodeURIComponent(this.collectionID)+
-        '&createCollection=false'),
+        type: 'POST',
+        url: arangoHelper.databaseUrl('/_api/import?type=auto&collection=' +
+          encodeURIComponent(this.collectionID) +
+          '&createCollection=false'),
         data: file,
         processData: false,
         contentType: 'json',
         dataType: 'json',
-        complete: function(xhr) {
+        complete: function (xhr) {
           if (xhr.readyState === 4 && xhr.status === 201) {
             callback(false);
           } else {
             try {
               var data = JSON.parse(xhr.responseText);
               if (data.errors > 0) {
-                var result = "At least one error occurred during upload";
+                var result = 'At least one error occurred during upload';
                 callback(false, result);
               }
-            }
-            catch (err) {
+            } catch (err) {
               console.log(err);
-            }               
+            }
           }
+        },
+        error: function (msg) {
+          callback(true, msg.responseJSON.errorMessage);
         }
       });
     }

@@ -24,14 +24,13 @@
 #ifndef ARANGOD_SCHEDULER_SCHEDULER_FEATURE_H
 #define ARANGOD_SCHEDULER_SCHEDULER_FEATURE_H 1
 
-#include "Basics/Common.h"
-
 #include "ApplicationFeatures/ApplicationFeature.h"
+
+#include "Basics/asio-helper.h"
 
 namespace arangodb {
 namespace rest {
 class Scheduler;
-class Task;
 }
 
 class SchedulerFeature final : public application_features::ApplicationFeature {
@@ -40,22 +39,28 @@ class SchedulerFeature final : public application_features::ApplicationFeature {
 
  public:
   explicit SchedulerFeature(application_features::ApplicationServer* server);
+  ~SchedulerFeature();
 
  public:
   void collectOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void validateOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void start() override final;
   void stop() override final;
-
- private:
-  uint64_t _nrSchedulerThreads;
-  uint64_t _backend;
-  bool _showBackends;
+  void unprepare() override final;
 
  public:
-  uint64_t backend() const { return _backend; }
-  size_t concurrency() const { return static_cast<size_t>(_nrSchedulerThreads); }
-  void setProcessorAffinity(std::vector<size_t> const& cores);
+  uint64_t queueSize() const { return _queueSize; }
+
+ private:
+  uint64_t _nrServerThreads = 0;
+  int64_t _nrMinimalThreads = 0;
+  int64_t _nrMaximalThreads = 0;
+  uint64_t _queueSize = 128;
+
+ public:
+  size_t concurrency() const {
+    return static_cast<size_t>(_nrServerThreads);
+  }
   void buildControlCHandler();
   void buildHangupHandler();
 
@@ -63,8 +68,16 @@ class SchedulerFeature final : public application_features::ApplicationFeature {
   void buildScheduler();
 
  private:
-  rest::Scheduler* _scheduler;
-  std::vector<rest::Task*> _tasks;
+  std::unique_ptr<rest::Scheduler> _scheduler;
+
+//#ifndef WIN32
+  std::function<void(const boost::system::error_code&, int)> _signalHandler;
+  std::function<void(const boost::system::error_code&, int)> _exitHandler;
+  std::shared_ptr<boost::asio::signal_set> _exitSignals;
+  
+  std::function<void(const boost::system::error_code&, int)> _hangupHandler;
+  std::shared_ptr<boost::asio::signal_set> _hangupSignals;
+//#endif
 };
 }
 

@@ -266,7 +266,7 @@
     }
 
     .aceAction {
-      background-color: rgb(133, 133, 133);
+      background-color: $c-bluegrey-dark;
       border-radius: 3px;
       color: $c-white;
       cursor: pointer;
@@ -328,7 +328,6 @@
   .ui-resizable-e {
     cursor: ew-resize;
   }
-
 }
 
 .queryContent {
@@ -354,17 +353,60 @@
   clear: both;
   height: 100px;
   padding-top: 20px;
+  position: relative;
   width: 100%;
 
+  .tableWrapper {
+    max-width: 100%;
+    overflow-x: scroll;
+
+    .arango-table {
+      border-left: 1px solid $c-content-border;
+      border-right: 1px solid $c-content-border;
+    }
+  }
+
+  .outputTable {
+    margin-right: -2px;
+  }
+
+  .fa-caret-down {
+    &:hover {
+      cursor: pointer;
+    }
+  }
+
+  .graphContent {
+    border-left: 1px solid $c-content-border;
+    border-right: 1px solid $c-content-border;
+    margin-right: -2px;
+    margin-top: 0;
+  }
+
   .switchAce {
-    background-color: rgba(0, 0, 0, .6);
+    background-color: $c-bluegrey-dark;
     border-radius: 3px;
     color: $c-white;
     cursor: pointer;
+    padding: 4px 3px;
     position: relative;
-    right: -24px;
-    top: 45px;
+    right: -6px;
+    top: 0;
     z-index: 10;
+
+    span {
+      margin-left: 0;
+      padding: 0 8px;
+      top: 0;
+
+      &.active {
+        color: $c-positive;
+      }
+
+      &.disabled {
+        cursor: not-allowed;
+      }
+    }
   }
 
   .ace_editor {
@@ -421,4 +463,79 @@
 
 #clearQuery {
   display: none;
+}
+
+.queryProfile {
+  background-color: $c-white;
+  border: 1px solid $c-content-border;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12), 0 1px 2px rgba(0, 0, 0, .24);
+  padding-top: 20px;
+  // transition: all .3s cubic-bezier(.25, .8, .25, 1);
+  z-index: 10;
+
+  .pure-table {
+    margin-top: 15px;
+
+    p {
+      border-radius: 50%;
+      color: $c-white;
+      height: 20px;
+      line-height: 20px;
+      margin-left: -2px;
+      margin-top: 10px;
+      text-align: center;
+      width: 20px;
+    }
+  }
+
+  .profileHeader {
+    color: $c-pure-title;
+    left: 10px;
+    position: absolute;
+    top: 10px;
+  }
+
+  .pure-table-row {
+    font-weight: 10pt;
+  }
+
+  .fa-close {
+    color: $c-content-border;
+    position: absolute;
+    right: 10px;
+    top: 10px;
+
+    &:hover {
+      color: $c-black;
+      cursor: pointer;
+    }
+  }
+
+  .prof-progress,
+  .prof-progress-label {
+    padding-left: 10px;
+    padding-right: 10px;
+
+    div {
+      border: 1px solid $c-white;
+      box-sizing: border-box;
+      float: left;
+      height: 40px;
+      min-width: 1%;
+    }
+  }
+
+  .prof-progress-label {
+    clear: both;
+
+    div {
+      height: 15px;
+      text-align: center;
+    }
+  }
+
+  .clear {
+    clear: both;
+    height: 10px;
+  }
 }

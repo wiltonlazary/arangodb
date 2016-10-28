@@ -25,31 +25,25 @@
 #define ARANGOD_VOC_BASE_TRANSACTION_H 1
 
 #include "Basics/Common.h"
-#include "Basics/vector.h"
+#include "Basics/SmallVector.h"
 #include "VocBase/voc-types.h"
 
-#ifdef ARANGODB_ENABLE_ROCKSDB
 namespace rocksdb {
 class Transaction;
 }
-#endif
 
 namespace arangodb {
 class DocumentDitch;
+class LogicalCollection;
+class Transaction;
 
 namespace wal {
 struct DocumentOperation;
 }
 }
 
+struct TRI_transaction_collection_t;
 struct TRI_vocbase_t;
-class TRI_vocbase_col_t;
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief top level of a transaction
-////////////////////////////////////////////////////////////////////////////////
-
-#define TRI_TRANSACTION_TOP_LEVEL 0
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief time (in µs) that is spent waiting for a lock
@@ -114,16 +108,23 @@ enum TRI_transaction_hint_e {
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TRI_transaction_t {
+  TRI_transaction_t(TRI_vocbase_t* vocbase, double timeout, bool waitForSync);
+  ~TRI_transaction_t();
+
+  bool hasFailedOperations() const {
+    return (_hasOperations && _status == TRI_TRANSACTION_ABORTED);
+  }
+  
   TRI_vocbase_t* _vocbase;            // vocbase
   TRI_voc_tid_t _id;                  // local trx id
   TRI_transaction_type_e _type;       // access type (read|write)
   TRI_transaction_status_e _status;   // current status
-  TRI_vector_pointer_t _collections;  // list of participating collections
-#ifdef ARANGODB_ENABLE_ROCKSDB
+  arangodb::SmallVector<TRI_transaction_collection_t*>::allocator_type::arena_type _arena; // memory for collections
+  arangodb::SmallVector<TRI_transaction_collection_t*> _collections; // list of participating collections
   rocksdb::Transaction* _rocksTransaction;
-#endif
   TRI_transaction_hint_t _hints;      // hints;
   int _nestingLevel;
+  bool _allowImplicit;
   bool _hasOperations;
   bool _waitForSync;   // whether or not the collection had a synchronous op
   bool _beginWritten;  // whether or not the begin marker was already written
@@ -135,11 +136,15 @@ struct TRI_transaction_t {
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TRI_transaction_collection_t {
+  TRI_transaction_collection_t(TRI_transaction_t* trx, TRI_voc_cid_t cid, TRI_transaction_type_e accessType, int nestingLevel)
+      : _transaction(trx), _cid(cid), _accessType(accessType), _nestingLevel(nestingLevel), _collection(nullptr), _operations(nullptr),
+        _originalRevision(0), _lockType(TRI_TRANSACTION_NONE), _compactionLocked(false), _waitForSync(false) {}
+
   TRI_transaction_t* _transaction;     // the transaction
-  TRI_voc_cid_t _cid;                  // collection id
+  TRI_voc_cid_t const _cid;                  // collection id
   TRI_transaction_type_e _accessType;  // access type (read|write)
   int _nestingLevel;  // the transaction level that added this collection
-  TRI_vocbase_col_t* _collection;  // vocbase collection pointer
+  arangodb::LogicalCollection* _collection;  // vocbase collection pointer
   std::vector<arangodb::wal::DocumentOperation*>* _operations;
   TRI_voc_rid_t _originalRevision;   // collection revision at trx start
   TRI_transaction_type_e _lockType;  // collection lock type
@@ -147,19 +152,6 @@ struct TRI_transaction_collection_t {
       _compactionLocked;  // was the compaction lock grabbed for the collection?
   bool _waitForSync;      // whether or not the collection has waitForSync
 };
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief create a new transaction
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_transaction_t* TRI_CreateTransaction(TRI_vocbase_t*, TRI_voc_tid_t, double,
-                                         bool);
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief free a transaction
-////////////////////////////////////////////////////////////////////////////////
-
-bool TRI_FreeTransaction(TRI_transaction_t*);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief return the type of the transaction as a string
@@ -260,13 +252,13 @@ int TRI_BeginTransaction(TRI_transaction_t*, TRI_transaction_hint_t, int);
 /// @brief commit a transaction
 ////////////////////////////////////////////////////////////////////////////////
 
-int TRI_CommitTransaction(TRI_transaction_t*, int);
+int TRI_CommitTransaction(arangodb::Transaction*, TRI_transaction_t*, int);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief abort a transaction
 ////////////////////////////////////////////////////////////////////////////////
 
-int TRI_AbortTransaction(TRI_transaction_t*, int);
+int TRI_AbortTransaction(arangodb::Transaction*, TRI_transaction_t*, int);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief whether or not a transaction consists of a single operation

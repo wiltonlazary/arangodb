@@ -26,18 +26,11 @@
 
 #include "AgencyCommon.h"
 
-#include "Basics/Mutex.h"
-#include "Basics/MutexLocker.h"
-#include "Basics/Thread.h"
-#include "Basics/ConditionVariable.h"
-
 #include <velocypack/Buffer.h>
 #include <velocypack/velocypack-aliases.h>
 
 #include <type_traits>
 #include <utility>
-#include <string>
-#include <vector>
 
 namespace arangodb {
 namespace consensus {
@@ -52,7 +45,9 @@ enum Operation {
   PREPEND,
   SHIFT,
   OBSERVE,
-  UNOBSERVE
+  UNOBSERVE,
+  ERASE,
+  REPLACE
 };
 
 using namespace arangodb::velocypack;
@@ -70,8 +65,6 @@ class StoreException : public std::exception {
 
 enum NODE_EXCEPTION { PATH_NOT_FOUND };
 
-class Node;
-
 typedef std::chrono::system_clock::time_point TimePoint;
 
 class Store;
@@ -79,7 +72,7 @@ class Store;
 /// @brief Simple tree implementation
 class Node {
  public:
-  // @brief Slash-segemented path
+  // @brief Slash-segmented path
   typedef std::vector<std::string> PathType;
 
   // @brief Child nodes
@@ -88,7 +81,10 @@ class Node {
   /// @brief Construct with name
   explicit Node(std::string const& name);
 
+  /// @brief Copy constructor
   Node(Node const& other);
+
+  /// @brief Move constructor
   Node(Node&& other);
 
   /// @brief Construct with name and introduce to tree under parent
@@ -106,8 +102,10 @@ class Node {
   /// @brief Get full path
   std::string uri() const;
 
-  /// @brief Apply rhs to this node (deep copy of rhs)
+  /// @brief Assignment operator
   Node& operator=(Node const& node);
+
+  /// @brief Move operator
   Node& operator=(Node&& node);
 
   /// @brief Apply value slice to this node
@@ -124,11 +122,13 @@ class Node {
 
   /// @brief Get node specified by path vector
   Node& operator()(std::vector<std::string> const& pv);
+
   /// @brief Get node specified by path vector
   Node const& operator()(std::vector<std::string> const& pv) const;
 
   /// @brief Get node specified by path string
   Node& operator()(std::string const& path);
+
   /// @brief Get node specified by path string
   Node const& operator()(std::string const& path) const;
 
@@ -161,7 +161,7 @@ class Node {
   bool handle(arangodb::velocypack::Slice const&);
 
   /// @brief Create Builder representing this store
-  void toBuilder(Builder&) const;
+  void toBuilder(Builder&, bool showHidden = false) const;
 
   /// @brief Access children
   Children& children();
@@ -184,12 +184,38 @@ class Node {
   /// @brief Is this node being observed by url
   bool observedBy(std::string const& url) const;
 
+  /// @brief Get our container
   Store& store();
+
+  /// @brief Get our container
   Store const& store() const;
 
+  /// @brief Create JSON representation of this node and below
   std::string toJson() const;
 
+  /// @brief Parent node
   Node const* parent() const;
+
+  /// @brief Part of relative path vector which exists
+  std::vector<std::string> exists(std::vector<std::string> const&) const;
+
+  /// @brief Part of relative path which exists
+  std::vector<std::string> exists(std::string const&) const;
+
+  /// @brief Get integer value (throws if type NODE or if conversion fails)
+  int getInt() const;
+
+  /// @brief Get insigned value (throws if type NODE or if conversion fails)
+  uint64_t getUInt() const;
+
+  /// @brief Get bool value (throws if type NODE or if conversion fails)
+  bool getBool() const;
+
+  /// @brief Get double value (throws if type NODE or if conversion fails)
+  double getDouble() const;
+
+  /// @brief Get string value (throws if type NODE or if conversion fails)
+  std::string getString() const;
 
  protected:
   /// @brief Add time to live entry
@@ -198,13 +224,18 @@ class Node {
   /// @brief Remove time to live entry
   virtual bool removeTimeToLive();
 
-  std::string _node_name; /**< @brief my name */
+  void rebuildVecBuf() const;
 
-  Node* _parent;          /**< @brief parent */
-  Store* _store;          /**< @brief Store */
-  Children _children;     /**< @brief child nodes */
-  TimePoint _ttl;         /**< @brief my expiry */
-  Buffer<uint8_t> _value; /**< @brief my value */
+  std::string _node_name;  ///< @brief my name
+  Node* _parent;           ///< @brief parent
+  Store* _store;           ///< @brief Store
+  Children _children;      ///< @brief child nodes
+  TimePoint _ttl;          ///< @brief my expiry
+  // Buffer<uint8_t> _value; ///< @brief my value
+  std::vector<Buffer<uint8_t>> _value;  ///< @brief my value
+  mutable Buffer<uint8_t> _vecBuf;
+  mutable bool _vecBufDirty;
+  bool _isArray;
 };
 
 inline std::ostream& operator<<(std::ostream& o, Node const& n) {

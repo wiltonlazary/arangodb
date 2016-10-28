@@ -1,5 +1,5 @@
 /*jshint globalstrict:false, strict:false, maxlen: 500 */
-/*global assertEqual, assertTrue, AQL_EXPLAIN, AQL_EXECUTE */
+/*global assertEqual, assertNotEqual, assertTrue, AQL_EXPLAIN, AQL_EXECUTE */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief tests for optimizer rules
@@ -55,7 +55,11 @@ function optimizerRuleTestSuite() {
   var skiplist2;
 
   var hasNoFilterNode = function (plan) {
-    assertEqual(findExecutionNodes(plan, "FilterNode").length, 0, "has no filter node");
+    assertEqual(findExecutionNodes(plan, "FilterNode").length, 0, "has a filter node");
+  };
+  
+  var hasFilterNode = function (plan) {
+    assertNotEqual(findExecutionNodes(plan, "FilterNode").length, 0, "has no filter node");
   };
   
   var hasIndexNodeWithRanges = function (plan) {
@@ -76,7 +80,7 @@ function optimizerRuleTestSuite() {
 ///  - join column 'joinme' to intersect both tables.
 ////////////////////////////////////////////////////////////////////////////////
 
-    setUp : function () {
+    setUpAll : function () {
       var loopto = 10;
 
       internal.db._drop(colName);
@@ -92,6 +96,7 @@ function optimizerRuleTestSuite() {
 
       skiplist.ensureSkiplist("a", "b");
       skiplist.ensureSkiplist("d");
+      skiplist.ensureSkiplist("z[*]");
       skiplist.ensureIndex({ type: "hash", fields: [ "c" ], unique: false });
 
       internal.db._drop(colNameOther);
@@ -106,13 +111,14 @@ function optimizerRuleTestSuite() {
       skiplist2.ensureSkiplist("f", "g");
       skiplist2.ensureSkiplist("i");
       skiplist2.ensureIndex({ type: "hash", fields: [ "h" ], unique: false });
+      skiplist2.ensureIndex({ type: "hash", fields: [ "x", "y" ], unique: false });
     },
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief tear down
 ////////////////////////////////////////////////////////////////////////////////
 
-    tearDown : function () {
+    tearDownAll : function () {
       internal.db._drop(colName);
       internal.db._drop(colNameOther);
       skiplist = null;
@@ -206,6 +212,49 @@ function optimizerRuleTestSuite() {
     },
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief test that rule has an effect for multiple conditions
+////////////////////////////////////////////////////////////////////////////////
+
+    testMultipleConditions : function () {
+      var query = "FOR v IN " + colName + " FILTER v.d == 'foo' || v.d == 'bar' RETURN v";
+      var result = AQL_EXPLAIN(query);
+      assertEqual([ "remove-filter-covered-by-index", "remove-unnecessary-calculations-2", "use-indexes", "replace-or-with-in" ].sort(),  
+        removeAlwaysOnClusterRules(result.plan.rules.sort()), query);
+      hasNoFilterNode(result);
+      hasIndexNodeWithRanges(result);
+      
+      query = "FOR v IN " + colName + " FILTER 'foo' IN v.z && 'bar' IN v.z RETURN v";
+      result = AQL_EXPLAIN(query);
+      // should optimize away one part of the filter
+      assertEqual([ "remove-filter-covered-by-index", "use-indexes" ].sort(),  
+        removeAlwaysOnClusterRules(result.plan.rules.sort()), query);
+      hasFilterNode(result);
+      hasIndexNodeWithRanges(result);
+      
+      query = "FOR v IN " + colName + " FILTER 'foo' IN v.z[*] && 'bar' IN v.z[*] RETURN v";
+      result = AQL_EXPLAIN(query);
+      // should optimize away one part of the filter
+      assertEqual([ "remove-filter-covered-by-index", "use-indexes" ].sort(),  
+        removeAlwaysOnClusterRules(result.plan.rules.sort()), query);
+      hasFilterNode(result);
+      hasIndexNodeWithRanges(result);
+      
+      query = "FOR v IN " + colName + " FILTER 'foo' IN v.z || 'bar' IN v.z RETURN v";
+      result = AQL_EXPLAIN(query);
+      assertEqual([ "use-indexes" ].sort(),  
+        removeAlwaysOnClusterRules(result.plan.rules.sort()), query);
+      hasFilterNode(result);
+      hasIndexNodeWithRanges(result);
+      
+      query = "FOR v IN " + colName + " FILTER 'foo' IN v.z[*] || 'bar' IN v.z[*] RETURN v";
+      result = AQL_EXPLAIN(query);
+      assertEqual([ "use-indexes" ].sort(),  
+        removeAlwaysOnClusterRules(result.plan.rules.sort()), query);
+      hasFilterNode(result);
+      hasIndexNodeWithRanges(result);
+    },
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief test that rule has an effect on the FILTER and the SORT
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -281,8 +330,9 @@ function optimizerRuleTestSuite() {
         hasIndexNodeWithRanges(result);
 
         result = AQL_EXPLAIN(query, { }, paramIndexRangeSortFilter);
-        assertEqual([ IndexesRule, FilterRemoveRule ], 
-          removeAlwaysOnClusterRules(result.plan.rules), query);
+        var rules = removeAlwaysOnClusterRules(result.plan.rules);
+        assertNotEqual(-1, rules.indexOf(IndexesRule)); 
+        assertNotEqual(-1, rules.indexOf(FilterRemoveRule)); 
         hasNoFilterNode(result);
         hasIndexNodeWithRanges(result);
 
@@ -305,6 +355,68 @@ function optimizerRuleTestSuite() {
                     );
         }
       });
+    },
+
+    testNoOptimizeAwayUsedVariables : function() {
+      var queries = [ 
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 FILTER cond1 RETURN v",
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 FILTER cond1 RETURN { v, cond1 }",
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 LET cond2 = v.b == 1 FILTER cond1 FILTER cond2 RETURN v",
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 LET cond2 = v.b == 1 FILTER cond1 FILTER cond2 RETURN { v, cond1, cond2 }"
+      ];
+      queries.forEach(function(query) {
+        var result;
+
+        result = AQL_EXPLAIN(query, { }, paramIndexRangeFilter);
+        assertEqual([ IndexesRule, FilterRemoveRule ], 
+          removeAlwaysOnClusterRules(result.plan.rules), query);
+        hasNoFilterNode(result);
+        hasIndexNodeWithRanges(result);
+
+        result = AQL_EXPLAIN(query, { }, paramIndexRangeSortFilter);
+        assertEqual([ IndexesRule, FilterRemoveRule ], 
+          removeAlwaysOnClusterRules(result.plan.rules), query);
+        hasNoFilterNode(result);
+        hasIndexNodeWithRanges(result);
+      });
+    },
+
+    testNoOptimizeAwayUsedVariablesOr : function() {
+      var queries = [ 
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 LET cond2 = v.d == 1 FILTER cond1 || cond2 RETURN v",
+        "FOR v IN " + colName + " LET cond1 = v.a == 1 LET cond2 = v.d == 1 FILTER cond1 || cond2 RETURN { v, cond1, cond2 }"
+      ];
+      queries.forEach(function(query) {
+        var result;
+
+        result = AQL_EXPLAIN(query, { }, paramIndexRangeFilter);
+        assertEqual([ IndexesRule ], 
+          removeAlwaysOnClusterRules(result.plan.rules), query);
+        hasIndexNodeWithRanges(result);
+
+        result = AQL_EXPLAIN(query, { }, paramIndexRangeSortFilter);
+        assertEqual([ IndexesRule ], 
+          removeAlwaysOnClusterRules(result.plan.rules), query);
+        hasIndexNodeWithRanges(result);
+      });
+    },
+
+    testOptimizeAwayFilter : function() {
+      var query = "FOR outer IN [ { id: 123 } ] LET id = outer.id RETURN (FOR inner IN "  + colNameOther + " FILTER inner.x == id && inner.y == null RETURN inner)";
+      
+      var result;
+
+      result = AQL_EXPLAIN(query, { }, paramIndexRangeFilter);
+      assertEqual([ FilterRemoveRule, IndexesRule ].sort(), 
+        removeAlwaysOnClusterRules(result.plan.rules).sort(), query);
+      hasIndexNodeWithRanges(result);
+      hasNoFilterNode(result);
+
+      result = AQL_EXPLAIN(query, { }, paramIndexRangeSortFilter);
+      assertEqual([ FilterRemoveRule, IndexesRule ].sort(), 
+        removeAlwaysOnClusterRules(result.plan.rules).sort(), query);
+      hasIndexNodeWithRanges(result);
+      hasNoFilterNode(result);
     }
 
   };

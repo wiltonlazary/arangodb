@@ -24,12 +24,14 @@
 
 #include "SimpleHttpClient.h"
 
-#include "Basics/JsonHelper.h"
 #include "Basics/StringUtils.h"
 #include "Logger/Logger.h"
 #include "Rest/HttpResponse.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "SimpleHttpClient/SimpleHttpResult.h"
+
+#include <velocypack/Parser.h>
+#include <velocypack/velocypack-aliases.h>
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -37,15 +39,11 @@ using namespace arangodb::basics;
 namespace arangodb {
 namespace httpclient {
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief empty map, used for headers
-////////////////////////////////////////////////////////////////////////////////
-
 std::unordered_map<std::string, std::string> const SimpleHttpClient::NO_HEADERS {};
 
-// -----------------------------------------------------------------------------
-// constructors and destructors
-// -----------------------------------------------------------------------------
+/// @brief default value for max packet size
+size_t SimpleHttpClient::MaxPacketSize = 128 * 1024 * 1024;
 
 SimpleHttpClient::SimpleHttpClient(GeneralClientConnection* connection,
                                    double requestTimeout, bool warn)
@@ -60,7 +58,8 @@ SimpleHttpClient::SimpleHttpClient(GeneralClientConnection* connection,
       _locationRewriter({nullptr, nullptr}),
       _nextChunkedSize(0),
       _result(nullptr),
-      _maxPacketSize(128 * 1024 * 1024),
+      _jwt(""),
+      _maxPacketSize(MaxPacketSize),
       _maxRetries(3),
       _retryWaitTime(1 * 1000 * 1000),
       _retryMessage(),
@@ -140,7 +139,7 @@ void SimpleHttpClient::close() {
 ////////////////////////////////////////////////////////////////////////////////
 
 SimpleHttpResult* SimpleHttpClient::retryRequest(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength) {
   return retryRequest(method, location, body, bodyLength, NO_HEADERS);
 }
@@ -154,7 +153,7 @@ SimpleHttpResult* SimpleHttpClient::retryRequest(
 ////////////////////////////////////////////////////////////////////////////////
 
 SimpleHttpResult* SimpleHttpClient::retryRequest(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
     std::unordered_map<std::string, std::string> const& headers) {
   SimpleHttpResult* result = nullptr;
@@ -197,7 +196,7 @@ SimpleHttpResult* SimpleHttpClient::retryRequest(
 ////////////////////////////////////////////////////////////////////////////////
 
 SimpleHttpResult* SimpleHttpClient::request(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength) {
   return doRequest(method, location, body, bodyLength, NO_HEADERS);
 }
@@ -208,7 +207,7 @@ SimpleHttpResult* SimpleHttpClient::request(
 ////////////////////////////////////////////////////////////////////////////////
 
 SimpleHttpResult* SimpleHttpClient::request(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
     std::unordered_map<std::string, std::string> const& headers) {
   return doRequest(method, location, body, bodyLength, headers);
@@ -219,7 +218,7 @@ SimpleHttpResult* SimpleHttpClient::request(
 ////////////////////////////////////////////////////////////////////////////////
 
 SimpleHttpResult* SimpleHttpClient::doRequest(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
     std::unordered_map<std::string, std::string> const& headers) {
   // ensure connection has not yet been invalidated
@@ -314,17 +313,22 @@ SimpleHttpResult* SimpleHttpClient::doRequest(
             return nullptr;
           }
           this->close();  // this sets the state to IN_CONNECT for a retry
-          usleep(5000);
+          _state = DEAD;
+          setErrorMessage("Request timeout reached");
           break;
         }
+
+        // no error
 
         if (connectionClosed) {
           // write might have succeeded even if the server has closed
           // the connection, this will then show up here with us being
           // in state IN_READ_HEADER but nothing read.
           if (_state == IN_READ_HEADER && 0 == _readBuffer.length()) {
-            this->close();  // sets _state to IN_CONNECT again for a retry
-            continue;
+            this->close();
+            _state = DEAD;
+            setErrorMessage("Connection closed by remote");
+            break;
           }
 
           else if (_state == IN_READ_BODY && !_result->hasContentLength()) {
@@ -338,7 +342,9 @@ SimpleHttpResult* SimpleHttpClient::doRequest(
 
             if (_state != FINISHED) {
               // If the body was not fully found we give up:
-              this->close();  // this sets the state IN_CONNECT to retry
+              this->close();
+              _state = DEAD;
+              setErrorMessage("Got unexpected response from remote");
             }
 
             break;
@@ -346,7 +352,9 @@ SimpleHttpResult* SimpleHttpClient::doRequest(
 
           else {
             // In all other cases of closed connection, we are doomed:
-            this->close();  // this sets the state to IN_CONNECT retry
+            this->close(); 
+            _state = DEAD;
+            setErrorMessage("Got unexpected response from remote");
             break;
           }
         }
@@ -436,13 +444,17 @@ void SimpleHttpClient::clearReadBuffer() {
 /// @brief sets username and password
 ////////////////////////////////////////////////////////////////////////////////
 
+void SimpleHttpClient::setJwt(std::string const& jwt) {
+  _jwt = jwt;
+}
+
 void SimpleHttpClient::setUserNamePassword(std::string const& prefix,
                                            std::string const& username,
                                            std::string const& password) {
   std::string value =
       arangodb::basics::StringUtils::encodeBase64(username + ":" + password);
-
-  _pathToBasicAuth.push_back(make_pair(prefix, value));
+  
+  _pathToBasicAuth.push_back(std::make_pair(prefix, value));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -476,7 +488,7 @@ SimpleHttpResult* SimpleHttpClient::getResult() {
     }
   }
 
-  if (haveErrorMessage() && (_result->getHttpReturnMessage().length() == 0)) {
+  if (haveErrorMessage() && _result->getHttpReturnMessage().empty()) {
     _result->setHttpReturnMessage(_errorMessage);
   }
 
@@ -488,7 +500,7 @@ SimpleHttpResult* SimpleHttpClient::getResult() {
 ////////////////////////////////////////////////////////////////////////////////
 
 void SimpleHttpClient::setRequest(
-    GeneralRequest::RequestType method, std::string const& location,
+    rest::RequestType method, std::string const& location,
     char const* body, size_t bodyLength,
     std::unordered_map<std::string, std::string> const& headers) {
   // clear read-buffer (no pipeling!)
@@ -505,12 +517,15 @@ void SimpleHttpClient::setRequest(
   HttpRequest::appendMethod(method, &_writeBuffer);
 
   // append location
-  std::string l(location);
+  std::string const* l = &location;
+
+  std::string appended;
   if (location.empty() || location[0] != '/') {
-    l = "/" + location;
+    appended = "/" + location;
+    l = &appended;
   }
 
-  _writeBuffer.appendText(l);
+  _writeBuffer.appendText(*l);
 
   // append protocol
   _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR(" HTTP/1.1\r\n"));
@@ -542,13 +557,12 @@ void SimpleHttpClient::setRequest(
   if (!_pathToBasicAuth.empty()) {
     std::string foundPrefix;
     std::string foundValue;
-    std::vector<std::pair<std::string, std::string>>::iterator i =
-        _pathToBasicAuth.begin();
+    auto i = _pathToBasicAuth.begin();
 
     for (; i != _pathToBasicAuth.end(); ++i) {
       std::string& f = i->first;
 
-      if (l.find(f) == 0) {
+      if (l->compare(0, f.size(), f) == 0) {
         // f is prefix of l
         if (f.length() > foundPrefix.length()) {
           foundPrefix = f;
@@ -563,6 +577,11 @@ void SimpleHttpClient::setRequest(
       _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("\r\n"));
     }
   }
+  if (!_jwt.empty()) {
+    _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("Authorization: bearer "));
+    _writeBuffer.appendText(_jwt);
+    _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("\r\n"));
+  }
 
   for (auto const& header : headers) {
     _writeBuffer.appendText(header.first);
@@ -571,7 +590,7 @@ void SimpleHttpClient::setRequest(
     _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("\r\n"));
   }
 
-  if (method != GeneralRequest::RequestType::GET) {
+  if (method != rest::RequestType::GET) {
     _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("Content-Length: "));
     _writeBuffer.appendInteger(bodyLength);
     _writeBuffer.appendText(TRI_CHAR_LENGTH_PAIR("\r\n\r\n"));
@@ -727,7 +746,7 @@ void SimpleHttpClient::processHeader() {
 
 void SimpleHttpClient::processBody() {
   // HEAD requests may be responded to without a body...
-  if (_method == GeneralRequest::RequestType::HEAD) {
+  if (_method == rest::RequestType::HEAD) {
     _result->setResultType(SimpleHttpResult::COMPLETE);
     _state = FINISHED;
 
@@ -840,7 +859,7 @@ void SimpleHttpClient::processChunkedHeader() {
 
 void SimpleHttpClient::processChunkedBody() {
   // HEAD requests may be responded to without a body...
-  if (_method == GeneralRequest::RequestType::HEAD) {
+  if (_method == rest::RequestType::HEAD) {
     _result->setResultType(SimpleHttpResult::COMPLETE);
     _state = FINISHED;
 
@@ -926,13 +945,13 @@ std::string SimpleHttpClient::getServerVersion(int* errorCode) {
   }
 
   std::unique_ptr<SimpleHttpResult> response(
-      request(GeneralRequest::RequestType::GET, "/_api/version", nullptr, 0));
+      request(rest::RequestType::GET, "/_api/version", nullptr, 0));
 
   if (response == nullptr || !response->isComplete()) {
     return "";
   }
 
-  if (response->getHttpReturnCode() == static_cast<int>(GeneralResponse::ResponseCode::OK)) {
+  if (response->getHttpReturnCode() == static_cast<int>(rest::ResponseCode::OK)) {
     // default value
     std::string version = "arango";
 

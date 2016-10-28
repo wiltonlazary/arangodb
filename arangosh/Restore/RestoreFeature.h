@@ -25,8 +25,8 @@
 
 #include "ApplicationFeatures/ApplicationFeature.h"
 
-#include "ApplicationFeatures/ClientFeature.h"
 #include "Basics/VelocyPackHelper.h"
+#include "Shell/ClientFeature.h"
 #include "V8Client/ArangoClientHelper.h"
 
 namespace arangodb {
@@ -62,6 +62,7 @@ class RestoreFeature final
   bool _force;
   bool _clusterMode;
   uint64_t _defaultNumberOfShards;
+  uint64_t _defaultReplicationFactor;
 
  private:
   int tryCreateDatabase(ClientFeature*, std::string const& name);

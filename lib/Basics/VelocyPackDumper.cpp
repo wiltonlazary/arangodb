@@ -34,7 +34,9 @@
 #include <velocypack/velocypack-aliases.h>
 
 using namespace arangodb::basics;
-  
+
+static size_t const MinReserveValue = 32;
+
 void VelocyPackDumper::handleUnsupportedType(VPackSlice const* slice) {
   TRI_string_buffer_t* buffer = _buffer->stringBuffer(); 
 
@@ -42,6 +44,9 @@ void VelocyPackDumper::handleUnsupportedType(VPackSlice const* slice) {
     TRI_AppendStringUnsafeStringBuffer(buffer, "null", 4);
     return;
   } else if (options->unsupportedTypeBehavior == VPackOptions::ConvertUnsupportedType) {
+#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+    TRI_ASSERT(strlen("\"(non-representable type)\"") + 1 < MinReserveValue);
+#endif
     TRI_AppendStringUnsafeStringBuffer(buffer, "\"(non-representable type)\"");
     return;
   }
@@ -52,7 +57,8 @@ void VelocyPackDumper::handleUnsupportedType(VPackSlice const* slice) {
 void VelocyPackDumper::appendUInt(uint64_t v) {
   TRI_string_buffer_t* buffer = _buffer->stringBuffer(); 
     
-  int res = TRI_ReserveStringBuffer(buffer, 21);
+  TRI_ASSERT(MinReserveValue > 20); 
+  int res = TRI_ReserveStringBuffer(buffer, MinReserveValue);
      
   if (res != TRI_ERROR_NO_ERROR) {
     THROW_ARANGO_EXCEPTION(res);
@@ -141,8 +147,9 @@ void VelocyPackDumper::dumpInteger(VPackSlice const* slice) {
     appendUInt(v);
   } else if (slice->isType(VPackValueType::Int)) {
     TRI_string_buffer_t* buffer = _buffer->stringBuffer(); 
-    
-    int res = TRI_ReserveStringBuffer(buffer, 21);
+   
+    TRI_ASSERT(MinReserveValue > 20); 
+    int res = TRI_ReserveStringBuffer(buffer, MinReserveValue);
      
     if (res != TRI_ERROR_NO_ERROR) {
       THROW_ARANGO_EXCEPTION(res);
@@ -218,7 +225,8 @@ void VelocyPackDumper::dumpInteger(VPackSlice const* slice) {
   } else if (slice->isType(VPackValueType::SmallInt)) {
     TRI_string_buffer_t* buffer = _buffer->stringBuffer(); 
     
-    int res = TRI_ReserveStringBuffer(buffer, 21);
+    TRI_ASSERT(MinReserveValue > 20); 
+    int res = TRI_ReserveStringBuffer(buffer, MinReserveValue);
      
     if (res != TRI_ERROR_NO_ERROR) {
       THROW_ARANGO_EXCEPTION(res);
@@ -231,6 +239,26 @@ void VelocyPackDumper::dumpInteger(VPackSlice const* slice) {
     }
     TRI_AppendCharUnsafeStringBuffer(buffer, '0' + static_cast<char>(v));
   }
+}
+  
+void VelocyPackDumper::appendUnicodeCharacter(uint16_t value) {
+  TRI_string_buffer_t* buffer = _buffer->stringBuffer();
+
+  TRI_AppendCharUnsafeStringBuffer(buffer, '\\');
+  TRI_AppendCharUnsafeStringBuffer(buffer, 'u');
+
+  uint16_t p;
+  p = (value & 0xf000U) >> 12;
+  TRI_AppendCharUnsafeStringBuffer(buffer, (p < 10) ? ('0' + p) : ('A' + p - 10));
+
+  p = (value & 0x0f00U) >> 8;
+  TRI_AppendCharUnsafeStringBuffer(buffer, (p < 10) ? ('0' + p) : ('A' + p - 10));
+
+  p = (value & 0x00f0U) >> 4;
+  TRI_AppendCharUnsafeStringBuffer(buffer, (p < 10) ? ('0' + p) : ('A' + p - 10));
+  
+  p = (value & 0x000fU);
+  TRI_AppendCharUnsafeStringBuffer(buffer, (p < 10) ? ('0' + p) : ('A' + p - 10));
 }
 
 void VelocyPackDumper::appendString(char const* src, VPackValueLength len) {
@@ -269,6 +297,8 @@ void VelocyPackDumper::appendString(char const* src, VPackValueLength len) {
 
   TRI_string_buffer_t* buffer = _buffer->stringBuffer();
   // reserve enough room for the whole string at once 
+  // each character is at most 6 bytes (if we ignore surrogate pairs here)
+  // plus we need two bytes for the enclosing double quotes
   int res = TRI_ReserveStringBuffer(buffer, 6 * len + 2);
 
   if (res != TRI_ERROR_NO_ERROR) {
@@ -276,13 +306,13 @@ void VelocyPackDumper::appendString(char const* src, VPackValueLength len) {
   }
         
   TRI_AppendCharUnsafeStringBuffer(buffer, '"');
-
+        
   uint8_t const* p = reinterpret_cast<uint8_t const*>(src);
   uint8_t const* e = p + len;
   while (p < e) {
     uint8_t c = *p;
 
-    if ((c & 0x80) == 0) {
+    if ((c & 0x80U) == 0) {
       // check for control characters
       char esc = EscapeTable[c];
 
@@ -294,39 +324,65 @@ void VelocyPackDumper::appendString(char const* src, VPackValueLength len) {
         TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>(esc));
 
         if (esc == 'u') {
-          uint16_t i1 = (((uint16_t)c) & 0xf0) >> 4;
-          uint16_t i2 = (((uint16_t)c) & 0x0f);
+          // control character
+          TRI_AppendCharUnsafeStringBuffer(buffer, '0');
+          TRI_AppendCharUnsafeStringBuffer(buffer, '0');
 
-          TRI_AppendStringUnsafeStringBuffer(buffer, "00", 2);
-          TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>((i1 < 10) ? ('0' + i1) : ('A' + i1 - 10)));
-          TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>((i2 < 10) ? ('0' + i2) : ('A' + i2 - 10)));
+          uint16_t value;
+          value = (((uint16_t)c) & 0xf0U) >> 4;
+          TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>((value < 10) ? ('0' + value) : ('A' + value - 10)));
+          value = (((uint16_t)c) & 0x0fU);
+          TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>((value < 10) ? ('0' + value) : ('A' + value - 10)));
         }
       } else {
         TRI_AppendCharUnsafeStringBuffer(buffer, static_cast<char>(c));
       }
-    } else if ((c & 0xe0) == 0xc0) {
+    } else if ((c & 0xe0U) == 0xc0U) {
       // two-byte sequence
       if (p + 1 >= e) {
         throw velocypack::Exception(velocypack::Exception::InvalidUtf8Sequence);
       }
-
-      TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 2);
+      if (options->escapeUnicode) {
+        uint16_t value = ((((uint16_t) *p & 0x1fU) << 6) | ((uint16_t) *(p + 1) & 0x3fU));
+        appendUnicodeCharacter(value);
+      } else {
+        TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 2);
+      }
       ++p;
-    } else if ((c & 0xf0) == 0xe0) {
+    } else if ((c & 0xf0U) == 0xe0U) {
       // three-byte sequence
       if (p + 2 >= e) {
         throw velocypack::Exception(velocypack::Exception::InvalidUtf8Sequence);
       }
-
-      TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 3);
+      if (options->escapeUnicode) {
+        uint16_t value = ((((uint16_t) *p & 0x0fU) << 12) | (((uint16_t) *(p + 1) & 0x3fU) << 6) | ((uint16_t) *(p + 2) & 0x3fU));
+        appendUnicodeCharacter(value);
+      } else {
+        TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 3);
+      }
       p += 2;
-    } else if ((c & 0xf8) == 0xf0) {
+    } else if ((c & 0xf8U) == 0xf0U) {
       // four-byte sequence
       if (p + 3 >= e) {
         throw velocypack::Exception(velocypack::Exception::InvalidUtf8Sequence);
       }
+      if (options->escapeUnicode) {
+        // must now reserve more memory
+        if (TRI_ReserveStringBuffer(buffer, 6 * (p - reinterpret_cast<uint8_t const*>(src) + 2)) != TRI_ERROR_NO_ERROR) {
+          THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+        }
 
-      TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 4);
+        uint32_t value = ((((uint32_t) *p & 0x0fU) << 18) | (((uint32_t) *(p + 1) & 0x3fU) << 12) | (((uint32_t) *(p + 2) & 0x3fU) << 6) | ((uint32_t) *(p + 3) & 0x3fU));
+
+        // construct the surrogate pairs
+        value -= 0x10000U;
+        uint16_t high = (uint16_t) (((value & 0xffc00U) >> 10) + 0xd800);
+        appendUnicodeCharacter(high);
+        uint16_t low = (value & 0x3ffU) + 0xdc00U;
+        appendUnicodeCharacter(low);
+      } else {
+        TRI_AppendStringUnsafeStringBuffer(buffer, reinterpret_cast<char const*>(p), 4);
+      }
       p += 3;
     }
 
@@ -342,9 +398,9 @@ void VelocyPackDumper::dumpValue(VPackSlice const* slice, VPackSlice const* base
   }
   
   TRI_string_buffer_t* buffer = _buffer->stringBuffer(); 
-    
-  // alloc at least 16 bytes  
-  int res = TRI_ReserveStringBuffer(buffer, 16);
+  
+  // alloc at least 32 bytes  
+  int res = TRI_ReserveStringBuffer(buffer, 32);
      
   if (res != TRI_ERROR_NO_ERROR) {
     THROW_ARANGO_EXCEPTION(res);
@@ -366,7 +422,7 @@ void VelocyPackDumper::dumpValue(VPackSlice const* slice, VPackSlice const* base
     }
 
     case VPackValueType::Array: {
-      VPackArrayIterator it(*slice, true);
+      VPackArrayIterator it(*slice);
       TRI_AppendCharUnsafeStringBuffer(buffer, '[');
       while (it.valid()) {
         if (!it.isFirst()) {

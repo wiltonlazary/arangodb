@@ -31,6 +31,9 @@
 #include "Basics/tri-strings.h"
 #include "Basics/StringBuffer.h"
 
+#include "zlib.h"
+#include "zconf.h"  
+
 // -----------------------------------------------------------------------------
 // helper functions
 // -----------------------------------------------------------------------------
@@ -920,6 +923,14 @@ std::string rTrim(std::string const& sourceStr, std::string const& trimStr) {
   return std::string(sourceStr, 0, e + 1);
 }
 
+void rTrimInPlace(std::string& str, std::string const& trimStr) {
+  size_t e = str.find_last_not_of(trimStr);
+
+  if (e + 1 < str.length()) {
+    str.erase(e + 1);
+  }
+}
+
 std::string lFill(std::string const& sourceStr, size_t size, char fill) {
   size_t l = sourceStr.size();
 
@@ -941,7 +952,7 @@ std::string rFill(std::string const& sourceStr, size_t size, char fill) {
 }
 
 std::vector<std::string> wrap(std::string const& sourceStr, size_t size,
-                              std::string breaks) {
+                              std::string const& breaks) {
   std::vector<std::string> result;
   std::string next = sourceStr;
 
@@ -1586,10 +1597,39 @@ uint64_t uint64_check(std::string const& str) {
   int64_t value = std::stoull(str, &n, 10);
 
   if (n < str.size()) {
-    throw std::invalid_argument("cannot convert '" + str + "' to int64");
+    throw std::invalid_argument("cannot convert '" + str + "' to uint64");
   }
 
   return value;
+}
+
+uint64_t uint64_trusted(char const* value, size_t length) {
+  uint64_t result = 0;
+    
+  switch (length) { 
+    case 20:    result += (value[length - 20] - '0') * 10000000000000000000ULL;
+    case 19:    result += (value[length - 19] - '0') * 1000000000000000000ULL;
+    case 18:    result += (value[length - 18] - '0') * 100000000000000000ULL;
+    case 17:    result += (value[length - 17] - '0') * 10000000000000000ULL;
+    case 16:    result += (value[length - 16] - '0') * 1000000000000000ULL;
+    case 15:    result += (value[length - 15] - '0') * 100000000000000ULL;
+    case 14:    result += (value[length - 14] - '0') * 10000000000000ULL;
+    case 13:    result += (value[length - 13] - '0') * 1000000000000ULL;
+    case 12:    result += (value[length - 12] - '0') * 100000000000ULL;
+    case 11:    result += (value[length - 11] - '0') * 10000000000ULL;
+    case 10:    result += (value[length - 10] - '0') * 1000000000ULL;
+    case  9:    result += (value[length -  9] - '0') * 100000000ULL;
+    case  8:    result += (value[length -  8] - '0') * 10000000ULL;
+    case  7:    result += (value[length -  7] - '0') * 1000000ULL;
+    case  6:    result += (value[length -  6] - '0') * 100000ULL;
+    case  5:    result += (value[length -  5] - '0') * 10000ULL;
+    case  4:    result += (value[length -  4] - '0') * 1000ULL;
+    case  3:    result += (value[length -  3] - '0') * 100ULL;
+    case  2:    result += (value[length -  2] - '0') * 10ULL;
+    case  1:    result += (value[length -  1] - '0');
+  }
+
+  return result;
 }
 
 int32_t int32(std::string const& str) {
@@ -2205,6 +2245,82 @@ std::string decodeHex(std::string const& str) {
 
   return result;
 }
+
+bool gzipUncompress(char const* compressed, size_t compressedLength, std::string& uncompressed) {
+  uncompressed.clear();
+
+  if (compressedLength == 0) {
+    /* empty input */
+    return true;
+  }  
+
+  z_stream strm;  
+  memset(&strm, 0, sizeof(strm));
+  strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(compressed));
+  strm.avail_in = compressedLength; 
+
+  if (inflateInit2(&strm, (16 + MAX_WBITS)) != Z_OK) {  
+    return false;  
+  }  
+  
+  int ret;
+  char outbuffer[32768];
+
+  do {
+    strm.next_out = reinterpret_cast<Bytef*>(outbuffer);
+    strm.avail_out = sizeof(outbuffer);
+
+    ret = inflate(&strm, 0);
+
+    if (uncompressed.size() < strm.total_out) {
+      uncompressed.append(outbuffer, strm.total_out - uncompressed.size());
+    }
+  } while (ret == Z_OK);
+  
+  inflateEnd(&strm);
+
+  return (ret == Z_STREAM_END);
+}  
+
+bool gzipUncompress(std::string const& compressed, std::string& uncompressed) {
+  return gzipUncompress(compressed.c_str(), compressed.size(), uncompressed);
+}
+
+bool gzipDeflate(char const* compressed, size_t compressedLength, std::string& uncompressed) {
+  uncompressed.clear();
+
+  z_stream strm;
+  memset(&strm, 0, sizeof(strm));
+  strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(compressed));
+  strm.avail_in = compressedLength;
+  
+  if (inflateInit(&strm) != Z_OK) {
+    return false;
+  }
+
+  int ret;
+  char outbuffer[32768];
+
+  do {
+    strm.next_out = reinterpret_cast<Bytef*>(outbuffer);
+    strm.avail_out = sizeof(outbuffer);
+
+    ret = inflate(&strm, 0);
+
+    if (uncompressed.size() < strm.total_out) {
+      uncompressed.append(outbuffer, strm.total_out - uncompressed.size());
+    }
+  } while (ret == Z_OK);
+
+  inflateEnd(&strm);
+
+  return (ret == Z_STREAM_END);
+}
+
+bool gzipDeflate(std::string const& compressed, std::string& uncompressed) {
+  return gzipDeflate(compressed.c_str(), compressed.size(), uncompressed);
+}
+
 }
 }
 }

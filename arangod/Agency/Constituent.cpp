@@ -24,10 +24,7 @@
 #include "Constituent.h"
 
 #include <chrono>
-#include <chrono>
 #include <iomanip>
-#include <iomanip>
-#include <thread>
 #include <thread>
 
 #include <velocypack/Iterator.h>
@@ -44,27 +41,30 @@
 #include "Utils/OperationResult.h"
 #include "Utils/SingleCollectionTransaction.h"
 #include "Utils/StandaloneTransactionContext.h"
-#include "VocBase/collection.h"
 #include "VocBase/vocbase.h"
-#include "Agency/NotifierThread.h"
 
 using namespace arangodb::consensus;
 using namespace arangodb::rest;
 using namespace arangodb::velocypack;
 using namespace arangodb;
 
-// Configure with agent's configuration
+//  (std::numeric_limits<std::string>::max)();
+
+/// Raft role names for display purposes
+const std::vector<std::string> roleStr({"Follower", "Candidate", "Leader"});
+
+/// Configure with agent's configuration
 void Constituent::configure(Agent* agent) {
+  MUTEX_LOCKER(guard, _castLock);
+
   _agent = agent;
   TRI_ASSERT(_agent != nullptr);
+
   if (size() == 1) {
     _role = LEADER;
-  } else {
-    _id = _agent->config().id;
-    if (_agent->config().notify) {  // (notify everyone)
-      notifyAll();
-    }
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _role to LEADER in term " << _term;
   }
+  
 }
 
 // Default ctor
@@ -73,58 +73,56 @@ Constituent::Constituent()
       _vocbase(nullptr),
       _queryRegistry(nullptr),
       _term(0),
-      _leaderID((std::numeric_limits<uint32_t>::max)()),
-      _id(0),
-      // XXX #warning KAVEH use RandomGenerator
-      _gen(std::random_device()()),
+      _cast(false),
+      _leaderID(NO_LEADER),
+      _lastHeartbeatSeen(0.0),
       _role(FOLLOWER),
       _agent(nullptr),
-      _votedFor((std::numeric_limits<uint32_t>::max)()),
-      _notifier(nullptr) {
-  _gen.seed(RandomGenerator::interval(UINT32_MAX));
-}
+      _votedFor(NO_LEADER) {}
 
-// Shutdown if not already
+/// Shutdown if not already
 Constituent::~Constituent() { shutdown(); }
 
-// Configuration
-config_t const& Constituent::config() const { return _agent->config(); }
+/// Wait for sync
+bool Constituent::waitForSync() const { return _agent->config().waitForSync(); }
 
-// Wait for sync
-bool Constituent::waitForSync() const { return _agent->config().waitForSync; }
-
-// Random sleep times in election process
+/// Random sleep times in election process
 duration_t Constituent::sleepFor(double min_t, double max_t) {
-  dist_t dis(min_t, max_t);
-  return duration_t((long)std::round(dis(_gen) * 1000.0));
+  int32_t left = static_cast<int32_t>(1000.0 * min_t),
+    right = static_cast<int32_t>(1000.0 * max_t);
+  return duration_t(static_cast<long>(RandomGenerator::interval(left, right)));
 }
 
-// Get my term
+/// Get my term
 term_t Constituent::term() const {
   MUTEX_LOCKER(guard, _castLock);
   return _term;
 }
 
-// Update my term
+/// Update my term
 void Constituent::term(term_t t) {
-  term_t tmp;
+  MUTEX_LOCKER(guard, _castLock);
+  termNoLock(t);
+}
 
-  {
-    MUTEX_LOCKER(guard, _castLock);
-    tmp = _term;
-    _term = t;
-  }
+void Constituent::termNoLock(term_t t) {
+  // Only call this when you have the _castLock
+  term_t tmp = _term;
+  _term = t;
 
   if (tmp != t) {
-    LOG_TOPIC(INFO, Logger::AGENCY) << "Updating term to " << t;
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << _id << ": " << roleStr[_role]
+                                     << " term " << t;
 
+    _cast = false;
+    _votedFor = "";
     Builder body;
     body.add(VPackValue(VPackValueType::Object));
     std::ostringstream i_str;
     i_str << std::setw(20) << std::setfill('0') << t;
     body.add("_key", Value(i_str.str()));
     body.add("term", Value(t));
-    body.add("voted_for", Value((uint32_t)_votedFor));
+    body.add("voted_for", Value(_votedFor));
     body.close();
 
     TRI_ASSERT(_vocbase != nullptr);
@@ -140,187 +138,287 @@ void Constituent::term(term_t t) {
     }
 
     OperationOptions options;
-    options.waitForSync = waitForSync();
+    options.waitForSync = false;
     options.silent = true;
 
     OperationResult result = trx.insert("election", body.slice(), options);
-    /*res = */ trx.finish(result.code);  // OMG
+    trx.finish(result.code);
   }
 }
 
-/// @brief My role
+/// My role
 role_t Constituent::role() const {
   MUTEX_LOCKER(guard, _castLock);
   return _role;
 }
 
-/// @brief Become follower in term
+/// Become follower in term
 void Constituent::follow(term_t t) {
   MUTEX_LOCKER(guard, _castLock);
-  if (_role != FOLLOWER) {
-    LOG_TOPIC(INFO, Logger::AGENCY)
-        << "Role change: Converting to follower in term " << t;
-  }
+  followNoLock(t);
+}
+
+void Constituent::followNoLock(term_t t) {
   _term = t;
   _role = FOLLOWER;
-}
 
-/// @brief Become leader
-void Constituent::lead() {
-  MUTEX_LOCKER(guard, _castLock);
-  if (_role != LEADER) {
-    LOG_TOPIC(INFO, Logger::AGENCY)
-        << "Role change: Converted to leader in term " << _term;
-    _agent->lead();  // We need to rebuild spear_head and read_db;
+  LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _role to FOLLOWER in term " << _term;
+
+  if (_leaderID == _id) {
+    _leaderID = NO_LEADER;
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Setting _leaderID to NO_LEADER.";
   }
-  _role = LEADER;
-  _leaderID = _id;
+
+  CONDITION_LOCKER(guard, _cv);
+  _cv.signal();
 }
 
-/// @brief Become follower
+/// Become leader
+void Constituent::lead(term_t term,
+                       std::map<std::string, bool> const& votes) {
+  {
+    MUTEX_LOCKER(guard, _castLock);
+
+    // if we already have a higher term, ignore this request
+    if (term < _term) {
+      followNoLock(_term);
+      return;
+    }
+
+    // if we already lead, ignore this request
+    if (_role == LEADER) {
+      TRI_ASSERT(_leaderID == _id);
+      return;
+    }
+
+    // I'm the leader
+    _role = LEADER;
+
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _role to LEADER in term " << _term
+      << ", setting _leaderID to " << _id;
+    _leaderID = _id;
+  }
+
+  // give some debug output _id never is changed after
+  if (!votes.empty()) {
+    std::stringstream ss;
+    ss << _id << ": Converted to leader in term " << _term << " with votes: ";
+
+    for (auto const& vote : votes) {
+      ss << vote.second << " ";
+    }
+
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << ss.str();
+  }
+
+  // we need to rebuild spear_head and read_db;
+  _agent->lead();
+}
+
+/// Become candidate
 void Constituent::candidate() {
   MUTEX_LOCKER(guard, _castLock);
-  if (_role != CANDIDATE)
-    LOG_TOPIC(INFO, Logger::AGENCY)
-        << "Role change: Converted to candidate in term " << _term;
-  _role = CANDIDATE;
+
+  if (_leaderID != NO_LEADER) {
+    _leaderID = NO_LEADER;
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _leaderID to NO_LEADER";
+  }
+
+  if (_role != CANDIDATE) {
+    _role = CANDIDATE;
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _role to CANDIDATE in term "
+      << _term;
+  }
 }
 
-/// @brief Leading?
+/// Leading?
 bool Constituent::leading() const {
   MUTEX_LOCKER(guard, _castLock);
   return _role == LEADER;
 }
 
-/// @brief Following?
+/// Following?
 bool Constituent::following() const {
   MUTEX_LOCKER(guard, _castLock);
   return _role == FOLLOWER;
 }
 
-/// @brief Runnig as candidate?
+/// Running as candidate?
 bool Constituent::running() const {
   MUTEX_LOCKER(guard, _castLock);
   return _role == CANDIDATE;
 }
 
-/// @brief Get current leader's id
-arangodb::consensus::id_t Constituent::leaderID() const { return _leaderID; }
-
-/// @brief Agency size
-size_t Constituent::size() const { return config().size(); }
-
-/// @brief Get endpoint to an id
-std::string const& Constituent::endpoint(arangodb::consensus::id_t id) const {
-  return config().endpoints[id];
+/// Get current leader's id
+std::string Constituent::leaderID() const {
+  MUTEX_LOCKER(guard, _castLock);
+  return _leaderID;
 }
 
-/// @brief Get all endpoints
-std::vector<std::string> const& Constituent::endpoints() const {
-  return config().endpoints;
+/// Agency size
+size_t Constituent::size() const { return _agent->config().size(); }
+
+/// Get endpoint to an id
+std::string Constituent::endpoint(std::string id) const {
+  return _agent->config().poolAt(id);
 }
 
-/// @brief Notify peers of updated endpoints
-void Constituent::notifyAll() {
-  std::vector<std::string> toNotify;
-  // Send request to all but myself
-  for (arangodb::consensus::id_t i = 0; i < size(); ++i) {
-    if (i != _id) {
-      toNotify.push_back(endpoint(i));
+/// @brief Check leader
+bool Constituent::checkLeader(term_t term, std::string id, index_t prevLogIndex,
+                              term_t prevLogTerm) {
+
+  TRI_ASSERT(_vocbase != nullptr);
+
+  MUTEX_LOCKER(guard, _castLock);
+
+  LOG_TOPIC(TRACE, Logger::AGENCY)
+    << "checkLeader(term: " << term << ", leaderId: "<< id
+    << ", prev-log-index: " << prevLogIndex << ", prev-log-term: "
+    << prevLogTerm << ") in term " << _term;
+
+  if (term >= _term) {
+    _lastHeartbeatSeen = TRI_microtime();
+    LOG_TOPIC(TRACE, Logger::AGENCY)
+      << "setting last heartbeat: " << _lastHeartbeatSeen;
+    
+    if (term > _term) {
+      termNoLock(term);
     }
+    if (_leaderID != id) {
+      LOG_TOPIC(DEBUG, Logger::AGENCY)
+        << "Set _leaderID to " << id << " in term " << _term;
+      _leaderID = id;
+      TRI_ASSERT(_leaderID != _id);
+      if (_role != FOLLOWER) {
+        followNoLock(term);
+      }
+    }
+    
+    return true;
   }
-
-  // Body contains endpoints list
-  auto body = std::make_shared<VPackBuilder>();
-  body->openObject();
-  body->add("endpoints", VPackValue(VPackValueType::Array));
-  for (auto const& i : endpoints()) {
-    body->add(Value(i));
-  }
-  body->close();
-  body->close();
-
-  // Last process notifies everyone
-  std::stringstream path;
-
-  path << "/_api/agency_priv/notifyAll?term=" << _term << "&agencyId=" << _id;
-
-  _notifier = std::make_unique<NotifierThread>(path.str(), body, toNotify);
-  _notifier->start();
+  
+  return false;
 }
 
 /// @brief Vote
-bool Constituent::vote(term_t term, arangodb::consensus::id_t id,
-                       index_t prevLogIndex, term_t prevLogTerm) {
-  term_t t = 0;
-  arangodb::consensus::id_t lid = 0;
-  {
-    MUTEX_LOCKER(guard, _castLock);
-    t = _term;
-    lid = _leaderID;
-  }
-  if (term > t || (t == term && lid == id)) {
-    this->term(term);
-    {
-      MUTEX_LOCKER(guard, _castLock);
-      _cast = true;    // Note that I voted this time around.
-      _votedFor = id;  // The guy I voted for I assume leader.
-      _leaderID = id;
+bool Constituent::vote(term_t termOfPeer, std::string id, index_t prevLogIndex,
+                       term_t prevLogTerm) {
+  TRI_ASSERT(_vocbase != nullptr);
+  
+  LOG_TOPIC(TRACE, Logger::AGENCY)
+    << "vote(termOfPeer: " << termOfPeer << ", leaderId: " << id
+    << ", prev-log-index: " << prevLogIndex << ", prev-log-term: " << prevLogTerm
+    << ") in (my) term " << _term;
+
+  MUTEX_LOCKER(guard, _castLock);
+
+  if (termOfPeer > _term) {
+    termNoLock(termOfPeer);
+
+    if (_role != FOLLOWER) {
+      followNoLock(_term);
     }
-    if (_role > FOLLOWER) {
-      follow(_term);
+
+    _cast = false;
+    _votedFor = "";
+  } else if (termOfPeer == _term) {
+    if (_role != FOLLOWER) {
+      followNoLock(_term);
     }
-    _agent->persist(term, id);
-    _cv.signal();
-    return true;
-  } else {  // Myself running or leading
+  } else {  // termOfPeer < _term, simply ignore and do not vote:
+    LOG_TOPIC(DEBUG, Logger::AGENCY)
+      << "ignoring RequestVoteRPC with old term " << termOfPeer
+      << ", we are already at term " << _term;
     return false;
   }
+
+  if (_cast) {   // already voted in this term
+    if (_votedFor == id) {
+      LOG_TOPIC(DEBUG, Logger::AGENCY) << "repeating vote for " << id;
+      return true;
+    }
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "not voting for " << id
+      << " since we have already voted for " << _votedFor
+      << " in this term";
+    return false;
+  }
+
+  // Now decide whether or not we vote for this server, we have to
+  // take into account paragraph 5.4.1 in the Raft paper, so we need
+  // to check that his log is at least as up to date as ours:
+  log_t myLastLogEntry = _agent->state().lastLog();
+  if (prevLogTerm > myLastLogEntry.term ||
+      (prevLogTerm == myLastLogEntry.term &&
+       prevLogIndex >= myLastLogEntry.index)) {
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "voting for " << id;
+    _cast = true;
+    _votedFor = id;
+    return true;
+  }
+  LOG_TOPIC(DEBUG, Logger::AGENCY) << "not voting for " << id
+    << " since his log is not up to date: "
+    << "my last log entry: (" << myLastLogEntry.term << ", "
+    << myLastLogEntry.index << "), his last log entry: ("
+    << prevLogTerm << ", " << prevLogIndex << ")";
+  return false;   // do not vote for this uninformed guy!
 }
 
 /// @brief Call to election
 void Constituent::callElection() {
-  std::vector<bool> votes(size(), false);
+  std::map<std::string, bool> votes;
+  std::vector<std::string> active =
+      _agent->config().active();  // Get copy of active
 
-  votes.at(_id) = true;  // vote for myself
-  _cast = true;
-  if (_role == CANDIDATE) {
-    this->term(_term + 1);  // raise my term
+  votes[_id] = true;  // vote for myself
+
+  term_t savedTerm;
+  {
+    MUTEX_LOCKER(locker, _castLock);
+    this->termNoLock(_term + 1);  // raise my term
+    _cast = true;
+    _votedFor = _id;
+    savedTerm = _term;
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _leaderID to NO_LEADER"
+      << " in term " << _term;
+    _leaderID = NO_LEADER;
   }
 
   std::string body;
-  std::vector<ClusterCommResult> results(config().endpoints.size());
+  std::map<std::string, OperationID> operationIDs;
   std::stringstream path;
 
-  path << "/_api/agency_priv/requestVote?term=" << _term
+  path << "/_api/agency_priv/requestVote?term=" << savedTerm
        << "&candidateId=" << _id << "&prevLogIndex=" << _agent->lastLog().index
        << "&prevLogTerm=" << _agent->lastLog().term;
 
+  double minPing = _agent->config().minPing();
+
+  double respTimeout = 0.9 * minPing;
+  double initTimeout = 0.5 * minPing;
+
   // Ask everyone for their vote
-  for (arangodb::consensus::id_t i = 0; i < config().endpoints.size(); ++i) {
-    if (i != _id && endpoint(i) != "") {
+  for (auto const& i : active) {
+    if (i != _id) {
       auto headerFields =
           std::make_unique<std::unordered_map<std::string, std::string>>();
-      results[i] = arangodb::ClusterComm::instance()->asyncRequest(
-          "1", 1, config().endpoints[i], GeneralRequest::RequestType::GET,
-          path.str(), std::make_shared<std::string>(body), headerFields,
-          nullptr, config().minPing, true);
+      operationIDs[i] = ClusterComm::instance()->asyncRequest(
+        "1", 1, _agent->config().poolAt(i),
+        rest::RequestType::GET, path.str(),
+        std::make_shared<std::string>(body), headerFields,
+        nullptr, respTimeout, true, initTimeout);
     }
   }
 
   // Wait randomized timeout
-  std::this_thread::sleep_for(
-      sleepFor(.5 * config().minPing, .8 * config().minPing));
+  std::this_thread::sleep_for(sleepFor(initTimeout, respTimeout));
 
   // Collect votes
-  for (arangodb::consensus::id_t i = 0; i < config().endpoints.size(); ++i) {
-    if (i != _id && endpoint(i) != "") {
+  for (const auto& i : active) {
+    if (i != _id) {
       ClusterCommResult res =
-          arangodb::ClusterComm::instance()->enquire(results[i].operationID);
-
+          arangodb::ClusterComm::instance()->enquire(operationIDs[i]);
       if (res.status == CL_COMM_SENT) {  // Request successfully sent
-        res = arangodb::ClusterComm::instance()->wait(
-            "1", 1, results[i].operationID, "1");
+        res = ClusterComm::instance()->wait("1", 1, operationIDs[i], "1");
         std::shared_ptr<Builder> body = res.result->getBodyVelocyPack();
         if (body->isEmpty()) {  // body empty
           continue;
@@ -345,39 +443,69 @@ void Constituent::callElection() {
 
   // Count votes
   size_t yea = 0;
-  for (size_t i = 0; i < size(); ++i) {
-    if (votes[i]) {
-      yea++;
+  for (auto const& i : votes) {
+    if (i.second) {
+      ++yea;
+    }
+  }
+
+  {
+    MUTEX_LOCKER(locker, _castLock);
+    if (savedTerm != _term) {
+      followNoLock(_term);
+      return;
     }
   }
 
   // Evaluate election results
   if (yea > size() / 2) {
-    lead();
+    lead(savedTerm, votes);
   } else {
     follow(_term);
   }
 }
 
-void Constituent::beginShutdown() {
-  _notifier.reset();
-  Thread::beginShutdown();
+void Constituent::update(std::string const& leaderID, term_t t) {
+  MUTEX_LOCKER(guard, _castLock);
+  _term = t;
+  if (_leaderID != leaderID) {
+    LOG_TOPIC(DEBUG, Logger::AGENCY)
+      << "Constituent::update: setting _leaderID to " << leaderID
+      << " in term " << _term;
+    _leaderID = leaderID;
+  }
 }
 
+/// Start clean shutdown
+void Constituent::beginShutdown() {
+  Thread::beginShutdown();
+
+  CONDITION_LOCKER(guard, _cv);
+  guard.broadcast();
+}
+
+/// Start operation
 bool Constituent::start(TRI_vocbase_t* vocbase,
                         aql::QueryRegistry* queryRegistry) {
+  TRI_ASSERT(vocbase != nullptr);
   _vocbase = vocbase;
   _queryRegistry = queryRegistry;
+
   return Thread::start();
 }
 
+/// Get persisted information and run election process
 void Constituent::run() {
+
+  // single instance
+  _id = _agent->config().id();
+
   TRI_ASSERT(_vocbase != nullptr);
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
   bindVars->close();
 
-  // Query
+  // Most recent vote
   std::string const aql("FOR l IN election SORT l._key DESC LIMIT 1 RETURN l");
   arangodb::aql::Query query(false, _vocbase, aql.c_str(), aql.size(), bindVars,
                              nullptr, arangodb::aql::PART_MAIN);
@@ -392,9 +520,9 @@ void Constituent::run() {
   if (result.isArray()) {
     for (auto const& i : VPackArrayIterator(result)) {
       try {
+        MUTEX_LOCKER(locker, _castLock);
         _term = i.get("term").getUInt();
-        _votedFor =
-            static_cast<decltype(_votedFor)>(i.get("voted_for").getUInt());
+        _votedFor = i.get("voted_for").copyString();
       } catch (std::exception const&) {
         LOG_TOPIC(ERR, Logger::AGENCY)
             << "Persisted election entries corrupt! Defaulting term,vote (0,0)";
@@ -402,30 +530,78 @@ void Constituent::run() {
     }
   }
 
-  // Always start off as follower
-  while (!this->isStopping() && size() > 1) {
-    if (_role == FOLLOWER) {
-      bool cast = false;
+  std::vector<std::string> act = _agent->config().active();
+  while (
+    !this->isStopping() // Obvious
+    && (!_agent->ready()
+        || find(act.begin(), act.end(), _id) == act.end())) { // Active agent 
+    CONDITION_LOCKER(guardv, _cv);
+    _cv.wait(50000);
+    act = _agent->config().active();
+  }
 
-      {
-        MUTEX_LOCKER(guard, _castLock);
-        _cast = false;  // New round set not cast vote
+  if (size() == 1) {
+    _leaderID = _agent->config().id();
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Set _leaderID to " << _leaderID
+      << " in term " << _term;
+  } else {
+    while (!this->isStopping()) {
+      if (_role == FOLLOWER) {
+        static double const M = 1.0e6;
+        int64_t a = static_cast<int64_t>(M * _agent->config().minPing());
+        int64_t b = static_cast<int64_t>(M * _agent->config().maxPing());
+        int64_t randTimeout = RandomGenerator::interval(a, b);
+        int64_t randWait = randTimeout;
+
+        {
+          MUTEX_LOCKER(guard, _castLock);
+
+          // in the beginning, pure random
+          if (_lastHeartbeatSeen > 0.0) {
+            double now = TRI_microtime();
+            randWait -= static_cast<int64_t>(M * (now - _lastHeartbeatSeen));
+          }
+        }
+       
+        LOG_TOPIC(DEBUG, Logger::AGENCY) << "Random timeout: " << randTimeout
+                                         << ", wait: " << randWait;
+
+        if (randWait > 0.0) {
+          CONDITION_LOCKER(guardv, _cv);
+          _cv.wait(randWait);
+        }
+
+        bool isTimeout = false;
+
+        {
+          MUTEX_LOCKER(guard, _castLock);
+
+          if (_lastHeartbeatSeen <= 0.0) {
+            LOG_TOPIC(TRACE, Logger::AGENCY) << "no heartbeat seen";
+            isTimeout = true;
+          } else { 
+            double diff = TRI_microtime() - _lastHeartbeatSeen;
+            LOG_TOPIC(TRACE, Logger::AGENCY) << "last heartbeat: " << diff << "sec ago";
+        
+            isTimeout = (static_cast<int32_t>(M * diff) > randTimeout);
+          }
+        }
+
+        if (isTimeout) {
+          LOG_TOPIC(TRACE, Logger::AGENCY) << "timeout, calling an election";
+          candidate();
+        }
+      } else if (_role == CANDIDATE) {
+        callElection();  // Run for office
+      } else {
+        int32_t left =
+          static_cast<int32_t>(100000.0 * _agent->config().minPing());
+        long randTimeout = static_cast<long>(left);
+        {
+          CONDITION_LOCKER(guardv, _cv);
+          _cv.wait(randTimeout);
+        }
       }
-
-      dist_t dis(config().minPing, config().maxPing);
-      long rand_wait = static_cast<long>(dis(_gen) * 1000000.0);
-      /*bool timedout =*/_cv.wait(rand_wait);
-
-      {
-        MUTEX_LOCKER(guard, _castLock);
-        cast = _cast;
-      }
-
-      if (!cast) {
-        candidate();  // Next round, we are running
-      }
-    } else {
-      callElection();  // Run for office
     }
   }
 }

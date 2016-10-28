@@ -102,7 +102,8 @@ class ApplicationFeature {
 
   // load options from somewhere. this method will only be called for enabled
   // features
-  virtual void loadOptions(std::shared_ptr<options::ProgramOptions>);
+  virtual void loadOptions(std::shared_ptr<options::ProgramOptions>,
+                           const char* binaryPath);
 
   // validate the feature's options. this method will only be called for active
   // features, after the ApplicationServer has determined which features should
@@ -126,8 +127,11 @@ class ApplicationFeature {
   // notify the feature about a shutdown request
   virtual void beginShutdown();
 
-  // stop and shut down the feature
+  // stop the feature
   virtual void stop();
+
+  // shut down the feature
+  virtual void unprepare();
 
  protected:
   // return the ApplicationServer instance

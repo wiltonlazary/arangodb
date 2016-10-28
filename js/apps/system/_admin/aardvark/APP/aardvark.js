@@ -1,96 +1,69 @@
+/* global AQL_EXECUTE */
+
 'use strict';
 
-////////////////////////////////////////////////////////////////////////////////
-/// DISCLAIMER
-///
-/// Copyright 2010-2013 triAGENS GmbH, Cologne, Germany
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
-///
-/// Licensed under the Apache License, Version 2.0 (the "License");
-/// you may not use this file except in compliance with the License.
-/// You may obtain a copy of the License at
-///
-///     http://www.apache.org/licenses/LICENSE-2.0
-///
-/// Unless required by applicable law or agreed to in writing, software
-/// distributed under the License is distributed on an "AS IS" BASIS,
-/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-/// See the License for the specific language governing permissions and
-/// limitations under the License.
-///
-/// Copyright holder is ArangoDB GmbH, Cologne, Germany
-///
-/// @author Michael Hackstein
-/// @author Alan Plum
-////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////
+// DISCLAIMER
+//
+// Copyright 2010-2013 triAGENS GmbH, Cologne, Germany
+// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Copyright holder is ArangoDB GmbH, Cologne, Germany
+//
+// @author Michael Hackstein
+// @author Heiko Kernbach
+// @author Alan Plum
+// //////////////////////////////////////////////////////////////////////////////
 
 const joi = require('joi');
-const Netmask = require('netmask').Netmask;
 const dd = require('dedent');
 const internal = require('internal');
 const db = require('@arangodb').db;
 const errors = require('@arangodb').errors;
-const joinPath = require('path').posix.join;
 const notifications = require('@arangodb/configuration').notifications;
 const examples = require('@arangodb/graph-examples/example-graph');
-const systemStorage = require('@arangodb/foxx/sessions/storages/_system');
 const createRouter = require('@arangodb/foxx/router');
 const users = require('@arangodb/users');
 const cluster = require('@arangodb/cluster');
+const isEnterprise = require('internal').isEnterprise();
 
 const ERROR_USER_NOT_FOUND = errors.ERROR_USER_NOT_FOUND.code;
 const API_DOCS = require(module.context.fileName('api-docs.json'));
 API_DOCS.basePath = `/_db/${encodeURIComponent(db._name())}`;
 
-const sessions = systemStorage();
 const router = createRouter();
 module.exports = router;
 
-let trustedProxies = TRUSTED_PROXIES();
+router.get('/config.js', function (req, res) {
+  const scriptName = req.get('x-script-name');
+  const basePath = req.trustProxy && scriptName || '';
+  const isEnterprise = internal.isEnterprise();
+  res.send(
+    `var frontendConfig = ${JSON.stringify({
+      basePath: basePath,
+      db: req.database,
+      isEnterprise: isEnterprise,
+      authenticationEnabled: internal.authenticationEnabled(),
+      isCluster: cluster.isCluster()
+    })}`
+  );
+})
+.response(['text/javascript']);
 
-let trustedProxyBlocks;
-if (Array.isArray(trustedProxies)) {
-  trustedProxyBlocks = [];
-  trustedProxies.forEach(trustedProxy => {
-    try {
-      trustedProxyBlocks.push(new Netmask(trustedProxy));
-    } catch (e) {
-      console.warn("Error parsing trusted proxy " + trustedProxy, e);
-    }
-  });
-} else {
-  trustedProxyBlocks = null;
-}
-
-let isTrustedProxy = function(proxyAddress) {
-  if (trustedProxies === null) {
-    return true;
-  }
-
-  return trustedProxyBlocks.some(block => {
-    return block.contains(proxyAddress);
-  });
-}
-
-router.get('/config.js', function(req, res) {
-  let basePath = '';
-  if (req.headers.hasOwnProperty('x-forwarded-for')
-      && req.headers.hasOwnProperty('x-script-name')
-      && isTrustedProxy(req.remoteAddress)) {
-    basePath = req.headers['x-script-name'];
-  }
-  console.log(Object.keys(global));
-  res.set('content-type', 'text/javascript');
-  res.send("var frontendConfig = " + JSON.stringify({
-    "basePath": basePath, 
-    "db": req.database, 
-    "authenticationEnabled": global.AUTHENTICATION_ENABLED(),
-    "isCluster": cluster.isCluster()
-  }));
-});
-
-router.get('/whoAmI', function(req, res) {
-  res.json({user: req.session.uid || null});
+router.get('/whoAmI', function (req, res) {
+  res.json({user: req.arangoUser || null});
 })
 .summary('Return the current user')
 .description(dd`
@@ -98,73 +71,20 @@ router.get('/whoAmI', function(req, res) {
   Returns "false" if authentication is disabled.
 `);
 
-
-router.post('/logout', function (req, res) {
-  sessions.clear(req.session);
-  delete req.session;
-  res.json({success: true});
-})
-.summary('Log out')
-.description(dd`
-  Destroys the current session and revokes any authentication.
-`);
-
-
-router.post('/login', function (req, res) {
-  const currentDb = db._name();
-  /*
-  const actualDb = req.body.database;
-  if (actualDb !== currentDb) {
-    res.redirect(307, joinPath(
-      '/_db',
-      encodeURIComponent(actualDb),
-      module.context.mount,
-      '/login'
-    ));
-    return;
-  }
-  */
-  const user = req.body.username;
-  const valid = users.isValid(user, req.body.password);
-
-  if (!valid) {
-    res.throw('unauthorized', 'Bad username or password');
-  }
-
-  sessions.setUser(req.session, user);
-  sessions.save(req.session);
-
-  res.json({user});
-})
-.body({
-  username: joi.string().required(),
-  password: joi.string().required().allow('')
-  //database: joi.string().default(db._name())
-}, 'Login credentials.')
-.error('unauthorized', 'Invalid credentials.')
-.summary('Log in')
-.description(dd`
-  Authenticates the user for the active session with a username and password.
-  Creates a new session if none exists.
-`);
-
-
 const authRouter = createRouter();
 router.use(authRouter);
 
-
 authRouter.use((req, res, next) => {
-  if (global.AUTHENTICATION_ENABLED()) {
-    if (!req.session.uid) {
+  if (internal.authenticationEnabled()) {
+    if (!req.arangoUser) {
       res.throw('unauthorized');
     }
   }
   next();
 });
 
-
-authRouter.get('/api/*', module.context.apiDocumentation({
-  swaggerJson(req, res) {
+router.get('/api/*', module.context.apiDocumentation({
+  swaggerJson (req, res) {
     res.json(API_DOCS);
   }
 }))
@@ -173,8 +93,7 @@ authRouter.get('/api/*', module.context.apiDocumentation({
   Mounts the system API documentation.
 `);
 
-
-authRouter.get('shouldCheckVersion', function(req, res) {
+authRouter.get('shouldCheckVersion', function (req, res) {
   const versions = notifications.versions();
   res.json(Boolean(versions && versions.enableVersionNotification));
 })
@@ -183,8 +102,7 @@ authRouter.get('shouldCheckVersion', function(req, res) {
   Check if version check is allowed.
 `);
 
-
-authRouter.post('disableVersionCheck', function(req, res) {
+authRouter.post('disableVersionCheck', function (req, res) {
   notifications.setVersions({enableVersionNotification: false});
   res.json('ok');
 })
@@ -193,8 +111,7 @@ authRouter.post('disableVersionCheck', function(req, res) {
   Disable the version check in web interface
 `);
 
-
-authRouter.post('/query/explain', function(req, res) {
+authRouter.post('/query/explain', function (req, res) {
   const bindVars = req.body.bindVars;
   const query = req.body.query;
   const id = req.body.id;
@@ -229,17 +146,15 @@ authRouter.post('/query/explain', function(req, res) {
   Explains a query in a more user-friendly way than the query_api/explain
 `);
 
-
-authRouter.post('/query/upload/:user', function(req, res) {
-  let user;
+authRouter.post('/query/upload/:user', function (req, res) {
+  let user = req.pathParams.user;
 
   try {
-    user = users.document(req.session.uid);
+    user = users.document(user);
   } catch (e) {
     if (!e.isArangoError || e.errorNum !== ERROR_USER_NOT_FOUND) {
       throw e;
     }
-    sessions.setUser(req.session);
     res.throw('not found');
   }
 
@@ -251,7 +166,7 @@ authRouter.post('/query/upload/:user', function(req, res) {
   .map(query => query.name);
 
   for (const query of req.body) {
-    if (existingQueries.indexOf(query.name) !== -1) {
+    if (existingQueries.indexOf(query.name) === -1) {
       existingQueries.push(query.name);
       user.extra.queries.push(query);
     }
@@ -272,17 +187,15 @@ authRouter.post('/query/upload/:user', function(req, res) {
   This function uploads all given user queries.
 `);
 
-
-authRouter.get('/query/download/:user', function(req, res) {
-  let user;
+authRouter.get('/query/download/:user', function (req, res) {
+  let user = req.pathParams.user;
 
   try {
-    user = users.document(req.session.uid);
+    user = users.document(user);
   } catch (e) {
     if (!e.isArangoError || e.errorNum !== ERROR_USER_NOT_FOUND) {
       throw e;
     }
-    sessions.setUser(req.session);
     res.throw('not found');
   }
 
@@ -296,14 +209,12 @@ authRouter.get('/query/download/:user', function(req, res) {
   Download and export all queries from the given username.
 `);
 
-
-authRouter.get('/query/result/download/:query', function(req, res) {
+authRouter.get('/query/result/download/:query', function (req, res) {
   let query;
   try {
     query = internal.base64Decode(req.pathParams.query);
     query = JSON.parse(query);
-  }
-  catch (e) {
+  } catch (e) {
     res.throw('bad request', e.message, {cause: e});
   }
 
@@ -318,8 +229,7 @@ authRouter.get('/query/result/download/:query', function(req, res) {
   This function downloads the result of a user query.
 `);
 
-
-authRouter.post('/graph-examples/create/:name', function(req, res) {
+authRouter.post('/graph-examples/create/:name', function (req, res) {
   const name = req.pathParams.name;
 
   if (['knows_graph', 'social', 'routeplanner'].indexOf(name) === -1) {
@@ -335,8 +245,7 @@ authRouter.post('/graph-examples/create/:name', function(req, res) {
   Create one of the given example graphs.
 `);
 
-
-authRouter.post('/job', function(req, res) {
+authRouter.post('/job', function (req, res) {
   db._frontend.save(Object.assign(req.body, {model: 'job'}));
   res.json(true);
 })
@@ -351,8 +260,7 @@ authRouter.post('/job', function(req, res) {
   Create a new job id entry in a specific system database with a given id.
 `);
 
-
-authRouter.delete('/job', function(req, res) {
+authRouter.delete('/job', function (req, res) {
   db._frontend.removeByExample({model: 'job'}, false);
   res.json(true);
 })
@@ -361,8 +269,7 @@ authRouter.delete('/job', function(req, res) {
   Delete all jobs in a specific system database with a given id.
 `);
 
-
-authRouter.delete('/job/:id', function(req, res) {
+authRouter.delete('/job/:id', function (req, res) {
   db._frontend.removeByExample({id: req.pathParams.id}, false);
   res.json(true);
 })
@@ -371,8 +278,7 @@ authRouter.delete('/job/:id', function(req, res) {
   Delete an existing job id entry in a specific system database with a given id.
 `);
 
-
-authRouter.get('/job', function(req, res) {
+authRouter.get('/job', function (req, res) {
   const result = db._frontend.all().toArray();
   res.json(result);
 })
@@ -380,3 +286,333 @@ authRouter.get('/job', function(req, res) {
 .description(dd`
   This function returns the job ids of all currently running jobs.
 `);
+
+authRouter.get('/graph/:name', function (req, res) {
+  var _ = require('lodash');
+  var name = req.pathParams.name;
+  var gm;
+  if (isEnterprise) {
+    gm = require('@arangodb/smart-graph');
+  } else {
+    gm = require('@arangodb/general-graph');
+  }
+  var colors = {
+    default: [
+      '#68BDF6',
+      '#6DCE9E',
+      '#FF756E',
+      '#DE9BF9',
+      '#FB95AF',
+      '#FFD86E',
+      '#A5ABB6'
+    ],
+    jans: ['rgba(166, 109, 161, 1)', 'rgba(64, 74, 83, 1)', 'rgba(90, 147, 189, 1)', 'rgba(153,63,0,1)', 'rgba(76,0,92,1)', 'rgba(25,25,25,1)', 'rgba(0,92,49,1)', 'rgba(43,206,72,1)', 'rgba(255,204,153,1)', 'rgba(128,128,128,1)', 'rgba(148,255,181,1)', 'rgba(143,124,0,1)', 'rgba(157,204,0,1)', 'rgba(194,0,136,1)', 'rgba(0,51,128,1)', 'rgba(255,164,5,1)', 'rgba(255,168,187,1)', 'rgba(66,102,0,1)', 'rgba(255,0,16,1)', 'rgba(94,241,242,1)', 'rgba(0,153,143,1)', 'rgba(224,255,102,1)', 'rgba(116,10,255,1)', 'rgba(153,0,0,1)', 'rgba(255,255,128,1)', 'rgba(255,255,0,1)', 'rgba(255,80,5,1)'],
+    highContrast: [
+      '#EACD3F',
+      '#6F308A',
+      '#DA6927',
+      '#98CDE5',
+      '#B81F34',
+      '#C0BC82',
+      '#7F7E80',
+      '#61A547',
+      '#60A446',
+      '#D285B0',
+      '#4477B3',
+      '#DD8465',
+      '#473896',
+      '#E0A02F',
+      '#8F2689',
+      '#E7E655',
+      '#7C1514',
+      '#93AD3C',
+      '#6D3312',
+      '#D02C26',
+      '#2A3415'
+    ]
+  };
+
+  // var traversal = require("@arangodb/graph/traversal");
+
+  var graph = gm._graph(name);
+
+  var verticesCollections = graph._vertexCollections();
+  var vertexName = verticesCollections[Math.floor(Math.random() * verticesCollections.length)].name();
+
+  var vertexCollections = [];
+  _.each(graph._vertexCollections(), function (vertex) {
+    vertexCollections.push({
+      name: vertex.name(),
+      id: vertex._id
+    });
+  });
+
+  var startVertex;
+  var config;
+
+  try {
+    config = req.queryParams;
+  } catch (e) {
+    res.throw('bad request', e.message, {cause: e});
+  }
+
+  if (config.nodeStart) {
+    try {
+      startVertex = db._document(config.nodeStart);
+    } catch (e) {
+      res.throw('bad request', e.message, {cause: e});
+    }
+
+    if (!startVertex) {
+      startVertex = db[vertexName].any();
+    }
+  } else {
+    startVertex = db[vertexName].any();
+  }
+
+  var toReturn;
+  if (startVertex === null) {
+    toReturn = {
+      empty: true,
+      msg: 'Your graph is empty',
+      settings: {
+        vertexCollections: vertexCollections
+      }
+    };
+  } else {
+    var aqlQuery;
+    if (config.query) {
+      aqlQuery = config.query;
+    } else {
+      var limit = 0;
+      if (config.limit !== undefined) {
+        if (config.limit.length > 0 && config.limit !== '0') {
+          limit = config.limit;
+        }
+      }
+
+      aqlQuery =
+        'FOR v, e, p IN 1..' + (config.depth || '2') + ' ANY "' + startVertex._id + '" GRAPH "' + name + '"';
+
+      if (limit !== 0) {
+        aqlQuery += ' LIMIT ' + limit;
+      }
+      aqlQuery += ' RETURN p';
+    }
+
+    var getAttributeByKey = function (o, s) {
+      s = s.replace(/\[(\w+)\]/g, '.$1');
+      s = s.replace(/^\./, '');
+      var a = s.split('.');
+      for (var i = 0, n = a.length; i < n; ++i) {
+        var k = a[i];
+        if (k in o) {
+          o = o[k];
+        } else {
+          return;
+        }
+      }
+      return o;
+    };
+
+    var cursor = AQL_EXECUTE(aqlQuery);
+
+    var nodesObj = {};
+    var nodesArr = [];
+    var nodeNames = {};
+    var edgesObj = {};
+    var edgesArr = [];
+    var nodeEdgesCount = {};
+    var handledEdges = {};
+
+    var tmpObjEdges = {};
+    var tmpObjNodes = {};
+
+    _.each(cursor.json, function (obj) {
+      var edgeLabel = '';
+      var edgeObj;
+
+      _.each(obj.edges, function (edge) {
+        if (edge._to && edge._from) {
+          if (config.edgeLabel && config.edgeLabel.length > 0) {
+            // configure edge labels
+
+            if (config.edgeLabel.indexOf('.') > -1) {
+              edgeLabel = getAttributeByKey(edge, config.edgeLabel);
+              if (nodeLabel === undefined || nodeLabel === '') {
+                edgeLabel = edgeLabel._id;
+              }
+            } else {
+              edgeLabel = edge[config.edgeLabel];
+            }
+
+            if (typeof edgeLabel !== 'string') {
+              edgeLabel = JSON.stringify(edgeLabel);
+            }
+            if (config.edgeLabelByCollection === 'true') {
+              edgeLabel += ' - ' + edge._id.split('/')[0];
+            }
+          } else {
+            if (config.edgeLabelByCollection === 'true') {
+              edgeLabel = edge._id.split('/')[0];
+            }
+          }
+
+          if (config.nodeSizeByEdges === 'true') {
+            if (handledEdges[edge._id] === undefined) {
+              handledEdges[edge._id] = true;
+
+              if (nodeEdgesCount[edge._from] === undefined) {
+                nodeEdgesCount[edge._from] = 1;
+              } else {
+                nodeEdgesCount[edge._from] += 1;
+              }
+
+              if (nodeEdgesCount[edge._to] === undefined) {
+                nodeEdgesCount[edge._to] = 1;
+              } else {
+                nodeEdgesCount[edge._to] += 1;
+              }
+            }
+          }
+
+          edgeObj = {
+            id: edge._id,
+            source: edge._from,
+            label: edgeLabel,
+            color: config.edgeColor || '#cccccc',
+            target: edge._to
+          };
+
+          if (config.edgeEditable === 'true') {
+            edgeObj.size = 1;
+          } else {
+            edgeObj.size = 1;
+          }
+
+          if (config.edgeColorByCollection === 'true') {
+            var coll = edge._id.split('/')[0];
+            if (tmpObjEdges.hasOwnProperty(coll)) {
+              edgeObj.color = tmpObjEdges[coll];
+            } else {
+              tmpObjEdges[coll] = colors.jans[Object.keys(tmpObjEdges).length];
+              edgeObj.color = tmpObjEdges[coll];
+            }
+          } else if (config.edgeColorAttribute !== '') {
+            var attr = edge[config.edgeColorAttribute];
+            if (attr) {
+              if (tmpObjEdges.hasOwnProperty(attr)) {
+                edgeObj.color = tmpObjEdges[attr];
+              } else {
+                tmpObjEdges[attr] = colors.jans[Object.keys(tmpObjEdges).length];
+                edgeObj.color = tmpObjEdges[attr];
+              }
+            }
+          }
+        }
+        edgeObj.sortColor = edgeObj.color;
+        edgesObj[edge._id] = edgeObj;
+      });
+
+      var nodeLabel;
+      var nodeSize;
+      var nodeObj;
+      _.each(obj.vertices, function (node) {
+        if (node !== null) {
+          nodeNames[node._id] = true;
+
+          if (config.nodeLabel) {
+            if (config.nodeLabel.indexOf('.') > -1) {
+              nodeLabel = getAttributeByKey(node, config.nodeLabel);
+              if (nodeLabel === undefined || nodeLabel === '') {
+                nodeLabel = node._id;
+              }
+            } else {
+              nodeLabel = node[config.nodeLabel];
+            }
+          } else {
+            nodeLabel = node._key;
+          }
+
+          if (config.nodeLabelByCollection === 'true') {
+            nodeLabel += ' - ' + node._id.split('/')[0];
+          }
+          if (typeof nodeLabel === 'number') {
+            nodeLabel = JSON.stringify(nodeLabel);
+          }
+          if (config.nodeSize && config.nodeSizeByEdges === 'false') {
+            nodeSize = node[config.nodeSize];
+          }
+
+          nodeObj = {
+            id: node._id,
+            label: nodeLabel,
+            size: nodeSize || 3,
+            color: config.nodeColor || '#2ecc71',
+            sortColor: undefined,
+            x: Math.random(),
+            y: Math.random()
+          };
+
+          if (config.nodeColorByCollection === 'true') {
+            var coll = node._id.split('/')[0];
+            if (tmpObjNodes.hasOwnProperty(coll)) {
+              nodeObj.color = tmpObjNodes[coll];
+            } else {
+              tmpObjNodes[coll] = colors.jans[Object.keys(tmpObjNodes).length];
+              nodeObj.color = tmpObjNodes[coll];
+            }
+          } else if (config.nodeColorAttribute !== '') {
+            var attr = node[config.nodeColorAttribute];
+            if (attr) {
+              if (tmpObjNodes.hasOwnProperty(attr)) {
+                nodeObj.color = tmpObjNodes[attr];
+              } else {
+                tmpObjNodes[attr] = colors.jans[Object.keys(tmpObjNodes).length];
+                nodeObj.color = tmpObjNodes[attr];
+              }
+            }
+          }
+
+          nodeObj.sortColor = nodeObj.color;
+          nodesObj[node._id] = nodeObj;
+        }
+      });
+    });
+
+    _.each(nodesObj, function (node) {
+      if (config.nodeSizeByEdges === 'true') {
+        // + 10 visual adjustment sigma
+        node.size = nodeEdgesCount[node.id] + 10;
+      }
+      nodesArr.push(node);
+    });
+
+    var nodeNamesArr = [];
+    _.each(nodeNames, function (found, key) {
+      nodeNamesArr.push(key);
+    });
+
+    // array format for sigma.js
+    _.each(edgesObj, function (edge) {
+      if (nodeNamesArr.indexOf(edge.source) > -1 && nodeNamesArr.indexOf(edge.target) > -1) {
+        edgesArr.push(edge);
+      }
+    });
+    toReturn = {
+      nodes: nodesArr,
+      edges: edgesArr,
+      settings: {
+        vertexCollections: vertexCollections,
+        startVertex: startVertex
+      }
+    };
+  }
+
+  res.json(toReturn);
+})
+.summary('Return vertices and edges of a graph.')
+.description(dd`
+  This function returns vertices and edges for a specific graph.
+`);
+

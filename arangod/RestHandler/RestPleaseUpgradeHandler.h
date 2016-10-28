@@ -24,18 +24,17 @@
 #ifndef ARANGOD_REST_HANDLER_REST_PLEASE_UPGRADE_HANDLER_H
 #define ARANGOD_REST_HANDLER_REST_PLEASE_UPGRADE_HANDLER_H 1
 
-#include "HttpServer/HttpHandler.h"
+#include "GeneralServer/RestHandler.h"
 
 namespace arangodb {
-class RestPleaseUpgradeHandler : public rest::HttpHandler {
+class RestPleaseUpgradeHandler : public rest::RestHandler {
  public:
-  explicit RestPleaseUpgradeHandler(HttpRequest*);
+  explicit RestPleaseUpgradeHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestPleaseUpgradeHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
-
+  RestStatus execute() override;
   void handleError(const basics::Exception&) override;
 };
 }

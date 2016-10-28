@@ -29,9 +29,10 @@
 #include "Aql/ExecutionNode.h"
 #include "Aql/types.h"
 #include "Aql/Variable.h"
-#include "Basics/JsonHelper.h"
 #include "VocBase/voc-types.h"
 #include "VocBase/vocbase.h"
+
+#include <velocypack/Slice.h>
 
 namespace arangodb {
 namespace basics {
@@ -54,7 +55,7 @@ class SortNode : public ExecutionNode {
            bool stable)
       : ExecutionNode(plan, id), _elements(elements), _stable(stable) {}
 
-  SortNode(ExecutionPlan* plan, arangodb::basics::Json const& base,
+  SortNode(ExecutionPlan* plan, arangodb::velocypack::Slice const& base,
            SortElementVector const& elements, bool stable);
 
   /// @brief return the type of the node
@@ -113,6 +114,11 @@ class SortNode : public ExecutionNode {
   /// the method will return true if all sort expressions were removed after
   /// simplification, and false otherwise
   bool simplify(ExecutionPlan*);
+
+  /// @brief removes the first count conditions from the sort condition
+  /// this can be used if the first conditions of the condition are constant
+  /// values (e.g. when a FILTER condition exists that guarantees this)
+  void removeConditions(size_t count);
 
  private:
   /// @brief pairs, consisting of variable and sort direction

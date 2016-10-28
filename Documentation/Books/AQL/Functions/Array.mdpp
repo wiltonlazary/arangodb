@@ -2,16 +2,20 @@
 
 AQL provides functions for higher-level array manipulation. Also see the
 [numeric functions](Numeric.md) for functions that work on number arrays.
+If you want to concatenate the elements of an array equivalent to `join()`
+in JavaScript, see [CONCAT()](String.md#concat) and
+[CONCAT_SEPARATOR()](String.md#concatseparator) in the string functions chapter.
+
 Apart from that, AQL also offers several language constructs:
 
-- simple [array access](../Fundamentals/DataTypes.md#arrays) of individual elements,
+- simple [array access](../Fundamentals/DataTypes.md#arrays--lists) of individual elements,
 - [array operators](../Advanced/ArrayOperators.md) for array expansion and contraction,
   optionally with inline filter, limit and projection,
 - [array comparison operators](../Operators.md#array-comparison-operators) to compare
   each element in an array to a value or the elements of another array,
-- loop-based operations like [FOR](../Operations/For.md),
+- loop-based operations using [FOR](../Operations/For.md),
   [SORT](../Operations/Sort.md), [LIMIT](../Operations/Limit.md),
-  as well as grouping with [COLLECT](../Operations/Collect.md),
+  as well as [COLLECT](../Operations/Collect.md) for grouping,
   which also offers efficient aggregation.
 
 !SUBSECTION APPEND()
@@ -34,6 +38,10 @@ APPEND([ 1, 2, 3 ], [ 5, 6, 9 ])
 APPEND([ 1, 2, 3 ], [ 3, 4, 5, 2, 9 ], true)
 // [ 1, 2, 3, 4, 5, 9 ]
 ```
+
+!SUBSECTION COUNT()
+
+This is an alias for [LENGTH()](#length).
 
 !SUBSECTION FIRST()
 
@@ -95,13 +103,14 @@ Get the last element of an array. It is the same as `anyArray[-1]`.
 
 `LENGTH(anyArray) → length`
 
-Determine the number of elements in an array,
-the [number of attribute keys](Document.md#length) of an object / document,
-the [amount of documents](Miscellaneous.md#length) in a collection,
-or the [character length](String.md#length) of a string.
+Determine the number of elements in an array.
 
 - **anyArray** (array): array with elements of arbitrary type
 - returns **length** (number): the number of array elements in *anyArray*.
+
+*LENGTH()* can also determine the [number of attribute keys](Document.md#length)
+of an object / document, the [amount of documents](Miscellaneous.md#length) in a
+collection and the [character length](String.md#length) of a string.
 
 !SUBSECTION MINUS()
 
@@ -109,8 +118,8 @@ or the [character length](String.md#length) of a string.
 
 Return the difference of all arrays specified.
 
-- **arrays** (array, *repeatable*): an arbitrary of arrays as multiple arguments,
-  at least two
+- **arrays** (array, *repeatable*): an arbitrary number of arrays as multiple
+  arguments (at least 2)
 - returns **newArray** (array): an array of values that occur in the first array,
   but not in any of the subsequent arrays. The order of the result array is undefined
   and should not be relied on. Duplicates will be removed.
@@ -127,6 +136,28 @@ for positive positions, but does not support negative positions.
 - returns **nthElement** (any|null): the array element at the given *position*.
   If *position* is negative or beyond the upper bound of the array,
   then *null* will be returned.
+
+```js
+NTH( [ "foo", "bar", "baz" ], 2 )  // "baz"
+NTH( [ "foo", "bar", "baz" ], 3 )  // null
+NTH( [ "foo", "bar", "baz" ], -1 ) // null
+```
+
+!SUBSECTION OUTERSECTION()
+
+`OUTERSECTION(array1, array2, ... arrayN) → newArray`
+
+Return the values that occur only once across all arrays specified.
+
+- **arrays** (array, *repeatable*): an arbitrary number of arrays as multiple arguments
+  (at least 2)
+- returns **newArray** (array): a single array with only the elements that exist only once
+  across all provided arrays. The element order is random.
+
+```js
+OUTERSECTION( [ 1, 2, 3 ], [ 2, 3, 4 ], [ 3, 4, 5 ] )
+// [ 1, 5 ]
+```
 
 !SUBSECTION POP()
 
@@ -293,7 +324,7 @@ SLICE( [ 1, 2, 3, 4, 5 ], -3, 2 ) // [ 3, 4 ]
 Return the union of all arrays specified.
 
 - **arrays** (array, *repeatable*): an arbitrary number of arrays as multiple
-  arguments, at least 2
+  arguments (at least 2)
 - returns **newArray** (array): all array elements combined in a single array,
   in any order
 
@@ -326,7 +357,7 @@ UNIQUE(
 Return the union of distinct values of all arrays specified.
 
 - **arrays** (array, *repeatable*): an arbitrary number of arrays as multiple
-  arguments, at least 2
+  arguments (at least 2)
 - returns **newArray** (array): the elements of all given arrays in a single
   array, without duplicates, in any order
 

@@ -25,8 +25,6 @@
 #define ARANGOD_CONSENSUS_STATE_H 1
 
 #include "AgencyCommon.h"
-
-#include "Basics/Thread.h"
 #include "Cluster/ClusterComm.h"
 
 #include <velocypack/vpack.h>
@@ -38,6 +36,11 @@
 struct TRI_vocbase_t;
 
 namespace arangodb {
+
+namespace aql {
+class QueryRegistry;
+}
+
 namespace consensus {
 
 class Agent;
@@ -58,13 +61,10 @@ class State {
 
   /// @brief Log entries (leader)
   std::vector<index_t> log(query_t const& query,
-                           std::vector<bool> const& indices, term_t term,
-                           arangodb::consensus::id_t lid);
+                           std::vector<bool> const& indices, term_t term);
 
   /// @brief Log entries (followers)
-  bool log(query_t const& queries, term_t term,
-           arangodb::consensus::id_t leaderId, index_t prevLogIndex,
-           term_t prevLogTerm);
+  arangodb::consensus::index_t log(query_t const& queries, size_t ndups = 0);
 
   /// @brief Find entry at index with term
   bool find(index_t index, term_t term);
@@ -80,40 +80,52 @@ class State {
       index_t = 0, index_t = (std::numeric_limits<uint64_t>::max)()) const;
 
   /// @brief log entry at index i
-  log_t const& operator[](index_t) const;
+  log_t operator[](index_t) const;
 
-  /// @brief last log entry
-  log_t const& lastLog() const;
+  /// @brief last log entry, copy entry because we do no longer have the lock
+  /// after the return
+  log_t lastLog() const;
 
   /// @brief Set endpoint
   bool configure(Agent* agent);
 
   /// @brief Load persisted data from above or start with empty log
-  bool loadCollections(TRI_vocbase_t*, bool);
+  bool loadCollections(TRI_vocbase_t*, aql::QueryRegistry*, bool);
 
   /// @brief Pipe to ostream
   friend std::ostream& operator<<(std::ostream& os, State const& s) {
     for (auto const& i : s._log)
       LOG_TOPIC(INFO, Logger::AGENCY)
-          << "index(" << i.index << ") term(" << i.term << ") leader: ("
-          << i.leaderId << ") query(" << VPackSlice(i.entry->data()).toJson()
-          << ")";
+          << "index(" << i.index << ") term(" << i.term << ") query("
+          << VPackSlice(i.entry->data()).toJson() << ")";
     return os;
   }
 
+  /// @brief compact state machine
   bool compact(arangodb::consensus::index_t cind);
 
- private:
-  bool snapshot();
+  /// @brief Remove RAFT conflicts. i.e. All indices, where higher term version
+  ///        exists are overwritten
+  size_t removeConflicts(query_t const&);
 
+  /// @brief Persist active agency in pool
+  bool persistActiveAgents(query_t const& active, query_t const& pool);
+
+  /// @brief Get everything from the state machine
+  query_t allLogs() const;
+
+ private:
   /// @brief Save currentTerm, votedFor, log entries
-  bool persist(index_t index, term_t term, arangodb::consensus::id_t lid,
-               arangodb::velocypack::Slice const& entry);
+  bool persist(index_t index, term_t term,
+               arangodb::velocypack::Slice const& entry) const;
+
+  bool saveCompacted();
 
   /// @brief Load collection from persistent store
   bool loadPersisted();
   bool loadCompacted();
   bool loadRemaining();
+  bool loadOrPersistConfiguration();
 
   /// @brief Check collections
   bool checkCollections();
@@ -127,24 +139,40 @@ class State {
   /// @brief Create collection
   bool createCollection(std::string const& name);
 
+  /// @brief Compact persisted logs
   bool compactPersisted(arangodb::consensus::index_t cind);
+
+  /// @brief Compact RAM logs
   bool compactVolatile(arangodb::consensus::index_t cind);
+
+  /// @brief Remove obsolete logs
   bool removeObsolete(arangodb::consensus::index_t cind);
+
+  /// @brief Persist read database
   bool persistReadDB(arangodb::consensus::index_t cind);
 
+  /// @brief Our agent
   Agent* _agent;
 
+  /// @brief Our vocbase
   TRI_vocbase_t* _vocbase;
 
-  mutable arangodb::Mutex _logLock; /**< @brief Mutex for modifying _log */
+  /**< @brief Mutex for modifying
+     _log & _cur
+  */
+  mutable arangodb::Mutex _logLock; 
   std::deque<log_t> _log;           /**< @brief  State entries */
   std::string _endpoint;            /**< @brief persistence end point */
   bool _collectionsChecked;         /**< @brief Collections checked */
   bool _collectionsLoaded;
 
-  size_t _compaction_step;
+  /// @brief Our query registry
+  aql::QueryRegistry* _queryRegistry;
+
+  /// @brief Current log offset
   size_t _cur;
 
+  /// @brief Operation options
   OperationOptions _options;
 };
 }

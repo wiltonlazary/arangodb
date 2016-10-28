@@ -24,8 +24,8 @@
 #ifndef ARANGOD_REST_HANDLER_REST_AGENCY_PRIV_HANDLER_H
 #define ARANGOD_REST_HANDLER_REST_AGENCY_PRIV_HANDLER_H 1
 
-#include "RestHandler/RestBaseHandler.h"
 #include "Agency/Agent.h"
+#include "RestHandler/RestBaseHandler.h"
 
 namespace arangodb {
 
@@ -36,11 +36,12 @@ namespace arangodb {
 
 class RestAgencyPrivHandler : public arangodb::RestBaseHandler {
  public:
-  explicit RestAgencyPrivHandler(HttpRequest*, consensus::Agent*);
+  RestAgencyPrivHandler(GeneralRequest*, GeneralResponse*, consensus::Agent*);
 
+ public:
+  char const* name() const override final { return "RestAgencyPrivHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
+  RestStatus execute() override;
 
  private:
   template <class T>
@@ -49,27 +50,43 @@ class RestAgencyPrivHandler : public arangodb::RestBaseHandler {
     std::string const& val_str = _request->value(name, found);
 
     if (!found) {
-      LOG(WARN) << "Mandatory query string " << name << " missing.";
+      LOG_TOPIC(WARN, Logger::AGENCY) << "Mandatory query string " << name
+                                      << " missing.";
       return false;
     } else {
       try {
         val = std::stoul(val_str);
       } catch (std::invalid_argument const&) {
-        LOG(WARN) << "Value for query string " << name
-                  << " cannot be converted to integral type";
+        LOG_TOPIC(WARN, Logger::AGENCY)
+            << "Value for query string " << name
+            << " cannot be converted to integral type";
         return false;
       }
     }
     return true;
   }
 
-  status_t reportErrorEmptyRequest();
-  status_t reportTooManySuffices();
-  status_t reportBadQuery();
-  status_t reportMethodNotAllowed();
+  RestStatus reportErrorEmptyRequest();
+  RestStatus reportTooManySuffices();
+  RestStatus reportBadQuery(std::string const& message = "bad parameter");
+  RestStatus reportMethodNotAllowed();
+  RestStatus reportGone();
 
   consensus::Agent* _agent;
 };
+
+template <>
+inline bool RestAgencyPrivHandler::readValue(char const* name,
+                                             std::string& val) const {
+  bool found = true;
+  val = _request->value(name, found);
+  if (!found) {
+    LOG_TOPIC(WARN, Logger::AGENCY) << "Mandatory query string " << name
+                                    << " missing.";
+    return false;
+  }
+  return true;
+}
 }
 
 #endif

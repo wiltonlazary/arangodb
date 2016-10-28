@@ -21,11 +21,12 @@
 /// @author Max Neunhoeffer
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "Aql/QueryRegistry.h"
+#include "QueryRegistry.h"
 #include "Logger/Logger.h"
 #include "Basics/ReadLocker.h"
 #include "Basics/WriteLocker.h"
 #include "Aql/ExecutionEngine.h"
+#include "Aql/Query.h"
 
 using namespace arangodb::aql;
 
@@ -69,12 +70,12 @@ void QueryRegistry::insert(QueryId id, Query* query, double ttl) {
 
   WRITE_LOCKER(writeLocker, _lock);
 
-  auto m = _queries.find(vocbase->_name);
+  auto m = _queries.find(vocbase->name());
   if (m == _queries.end()) {
-    m = _queries.emplace(vocbase->_name,
+    m = _queries.emplace(vocbase->name(),
                          std::unordered_map<QueryId, QueryInfo*>()).first;
 
-    TRI_ASSERT(_queries.find(vocbase->_name) != _queries.end());
+    TRI_ASSERT(_queries.find(vocbase->name()) != _queries.end());
   }
   auto q = m->second.find(id);
   if (q == m->second.end()) {
@@ -88,8 +89,8 @@ void QueryRegistry::insert(QueryId id, Query* query, double ttl) {
     m->second.emplace(id, p.get());
     p.release();
 
-    TRI_ASSERT(_queries.find(vocbase->_name)->second.find(id) !=
-                         _queries.find(vocbase->_name)->second.end());
+    TRI_ASSERT(_queries.find(vocbase->name())->second.find(id) !=
+                         _queries.find(vocbase->name())->second.end());
 
     // If we have set _makeNolockHeaders, we need to unset it:
     if (Transaction::_makeNolockHeaders != nullptr) {
@@ -112,9 +113,9 @@ Query* QueryRegistry::open(TRI_vocbase_t* vocbase, QueryId id) {
   // std::cout << "Taking out query with ID " << id << std::endl;
   WRITE_LOCKER(writeLocker, _lock);
 
-  auto m = _queries.find(vocbase->_name);
+  auto m = _queries.find(vocbase->name());
   if (m == _queries.end()) {
-    m = _queries.emplace(vocbase->_name,
+    m = _queries.emplace(vocbase->name(),
                          std::unordered_map<QueryId, QueryInfo*>()).first;
   }
   auto q = m->second.find(id);
@@ -146,9 +147,9 @@ void QueryRegistry::close(TRI_vocbase_t* vocbase, QueryId id, double ttl) {
   // std::cout << "Returning query with ID " << id << std::endl;
   WRITE_LOCKER(writeLocker, _lock);
 
-  auto m = _queries.find(vocbase->_name);
+  auto m = _queries.find(vocbase->name());
   if (m == _queries.end()) {
-    m = _queries.emplace(vocbase->_name,
+    m = _queries.emplace(vocbase->name(),
                          std::unordered_map<QueryId, QueryInfo*>()).first;
   }
   auto q = m->second.find(id);
@@ -232,7 +233,7 @@ void QueryRegistry::destroy(std::string const& vocbase, QueryId id,
 
 /// @brief destroy
 void QueryRegistry::destroy(TRI_vocbase_t* vocbase, QueryId id, int errorCode) {
-  destroy(vocbase->_name, id, errorCode);
+  destroy(vocbase->name(), id, errorCode);
 }
 
 /// @brief expireQueries

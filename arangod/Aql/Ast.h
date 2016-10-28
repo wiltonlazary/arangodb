@@ -39,6 +39,8 @@ namespace velocypack {
 class Slice;
 }
 
+class Transaction;
+
 namespace aql {
 
 class Query;
@@ -290,10 +292,10 @@ class Ast {
   AstNode* createNodeArray(size_t members);
 
   /// @brief create an AST unique array node, AND-merged from two other arrays
-  AstNode* createNodeIntersectedArray(AstNode const*, AstNode const*);
+  AstNode* createNodeIntersectedArray(arangodb::Transaction* trx, AstNode const*, AstNode const*);
 
   /// @brief create an AST unique array node, OR-merged from two other arrays
-  AstNode* createNodeUnionizedArray(AstNode const*, AstNode const*);
+  AstNode* createNodeUnionizedArray(arangodb::Transaction* trx, AstNode const*, AstNode const*);
 
   /// @brief create an AST object node
   AstNode* createNodeObject();
@@ -324,16 +326,27 @@ class Ast {
 
   /// @brief create an AST traversal node with only vertex variable
   AstNode* createNodeTraversal(char const*, size_t, AstNode const*,
-                               AstNode const*, AstNode const*);
+                               AstNode const*, AstNode const*, AstNode const*);
 
   /// @brief create an AST traversal node with vertex and edge variable
   AstNode* createNodeTraversal(char const*, size_t, char const*, size_t,
-                               AstNode const*, AstNode const*, AstNode const*);
+                               AstNode const*, AstNode const*, AstNode const*,
+                               AstNode const*);
 
   /// @brief create an AST traversal node with vertex, edge and path variable
   AstNode* createNodeTraversal(char const*, size_t, char const*, size_t,
                                char const*, size_t, AstNode const*,
-                               AstNode const*, AstNode const*);
+                               AstNode const*, AstNode const*, AstNode const*);
+
+  /// @brief create an AST shortest path node with only vertex variable
+  AstNode* createNodeShortestPath(char const*, size_t, uint64_t, AstNode const*,
+                                  AstNode const*, AstNode const*,
+                                  AstNode const*);
+
+  /// @brief create an AST shortest path node with vertex and edge variable
+  AstNode* createNodeShortestPath(char const*, size_t, char const*, size_t,
+                                  uint64_t, AstNode const*, AstNode const*,
+                                  AstNode const*, AstNode const*);
 
   /// @brief create an AST function call node
   AstNode* createNodeFunctionCall(char const*, AstNode const*);

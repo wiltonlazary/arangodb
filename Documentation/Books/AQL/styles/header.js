@@ -1,3 +1,14 @@
+// Try to set the version number early, jQuery not available yet
+document.addEventListener("DOMContentLoaded", function(event) {
+  var bookVersion = gitbook.state.root.match(/\/(\d\.\d(\.\d)?|devel)\//);
+  var switcher = document.getElementsByClassName("arangodb-version-switcher")[0];
+  if (bookVersion) {
+    switcher.value = bookVersion[1];
+  } else {
+    switcher.style.display = "none";
+  }
+});
+
 window.onload = function(){
 window.localStorage.removeItem(":keyword");
 
@@ -24,7 +35,7 @@ function appendHeader() {
   //render header
   //rerenderNavbar();
   function addGoogleSrc() {
-    var cx = '002866056653122356950:ju52xx-w-w8';
+    var cx = '010085642145132923492:krpp9_aiy-8';
     var gcse = document.createElement('script');
     gcse.type = 'text/javascript';
     gcse.async = true;
@@ -34,6 +45,35 @@ function appendHeader() {
     s.parentNode.insertBefore(gcse, s);
   };
   addGoogleSrc();
+
+  $(".arangodb-navmenu a:lt(4)").on("click", function(e) {
+    e.preventDefault();
+    var urlSplit = gitbook.state.root.split("/");
+    urlSplit.pop(); // ""
+    urlSplit.pop(); // e.g. "Manual"
+    window.location.href = urlSplit.join("/") + "/" + e.target.getAttribute("data-book") + "/index.html";
+  });
+
+  // set again using jQuery to accommodate non-standard browsers (*cough* IE *cough*)
+  var bookVersion = gitbook.state.root.match(/\/(\d\.\d(\.\d)?|devel)\//);
+  var switcher = $(".arangodb-version-switcher");
+  if (bookVersion) {
+    switcher.val(bookVersion[1]);
+  } else {
+    switcher.hide();
+  }
+  
+  $(".arangodb-version-switcher").on("change", function(e) {
+    var urlSplit = gitbook.state.root.split("/");
+    if (urlSplit.length == 6) {
+      urlSplit.pop(); // ""
+      var currentBook = urlSplit.pop(); // e.g. "Manual"
+      urlSplit.pop() // e.g. "3.0"
+      window.location.href = urlSplit.join("/") + "/" + e.target.value + "/" + currentBook + "/";
+    } else {
+      window.location.href = "https://docs.arangodb.com/" + e.target.value;
+    }
+  });
 
 });
 

@@ -31,10 +31,8 @@
 #include "Aql/ExecutionStats.h"
 #include "Rest/GeneralRequest.h"
 
-struct TRI_json_t;
-
 namespace arangodb {
-class AqlTransaction;
+class Transaction;
 struct ClusterCommResult;
 
 namespace aql {
@@ -103,7 +101,7 @@ class GatherBlock : public ExecutionBlock {
   /// @brief OurLessThan: comparison method for elements of _gatherBlockPos
   class OurLessThan {
    public:
-    OurLessThan(arangodb::AqlTransaction* trx,
+    OurLessThan(arangodb::Transaction* trx,
                 std::vector<std::deque<AqlItemBlock*>>& gatherBlockBuffer,
                 std::vector<std::pair<RegisterId, bool>>& sortRegisters) 
         : _trx(trx),
@@ -114,7 +112,7 @@ class GatherBlock : public ExecutionBlock {
                     std::pair<size_t, size_t> const& b);
 
    private:
-    arangodb::AqlTransaction* _trx;
+    arangodb::Transaction* _trx;
     std::vector<std::deque<AqlItemBlock*>>& _gatherBlockBuffer;
     std::vector<std::pair<RegisterId, bool>>& _sortRegisters;
   };
@@ -264,7 +262,7 @@ class DistributeBlock : public BlockWithClients {
   size_t sendToClient(AqlItemBlock*);
 
   /// @brief create a new document key
-  std::string createKey() const;
+  std::string createKey(arangodb::velocypack::Slice) const;
 
   /// @brief _distBuffer.at(i) is a deque containing pairs (j,k) such that
   //  _buffer.at(j) row k should be sent to the client with id = i.
@@ -285,6 +283,9 @@ class DistributeBlock : public BlockWithClients {
 
   /// @brief whether or not the collection uses the default sharding
   bool _usesDefaultSharding;
+
+  /// @brief allow specified keys even in non-default sharding case
+  bool _allowSpecifiedKeys;
 };
 
 class RemoteBlock : public ExecutionBlock {
@@ -326,7 +327,7 @@ class RemoteBlock : public ExecutionBlock {
   /// @brief internal method to send a request
  private:
   std::unique_ptr<arangodb::ClusterCommResult> sendRequest(
-      GeneralRequest::RequestType type, std::string const& urlPart,
+      rest::RequestType type, std::string const& urlPart,
       std::string const& body) const;
 
   /// @brief our server, can be like "shard:S1000" or like "server:Claus"
@@ -342,9 +343,9 @@ class RemoteBlock : public ExecutionBlock {
   /// @brief the ID of the query on the server as a string
   ExecutionStats _deltaStats;
 
-  /// @brief whether or not this block will forward initializeCursor or shutDown
-  /// requests
-  bool const _isResponsibleForInitCursor;
+  /// @brief whether or not this block will forward initialize, 
+  /// initializeCursor or shutDown requests
+  bool const _isResponsibleForInitializeCursor;
 };
 
 }  // namespace arangodb::aql

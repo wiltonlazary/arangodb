@@ -1,37 +1,49 @@
-/*jshint evil: true */
+/* jshint evil: true */
 'use strict';
 
-////////////////////////////////////////////////////////////////////////////////
-/// DISCLAIMER
-///
-/// Copyright 2014 triAGENS GmbH, Cologne, Germany
-/// Copyright 2015 ArangoDB GmbH, Cologne, Germany
-///
-/// Licensed under the Apache License, Version 2.0 (the "License");
-/// you may not use this file except in compliance with the License.
-/// You may obtain a copy of the License at
-///
-///     http://www.apache.org/licenses/LICENSE-2.0
-///
-/// Unless required by applicable law or agreed to in writing, software
-/// distributed under the License is distributed on an "AS IS" BASIS,
-/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-/// See the License for the specific language governing permissions and
-/// limitations under the License.
-///
-/// Copyright holder is ArangoDB GmbH, Cologne, Germany
-///
-/// @author Alan Plum
-////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////
+// / DISCLAIMER
+// /
+// / Copyright 2014 triAGENS GmbH, Cologne, Germany
+// / Copyright 2015 ArangoDB GmbH, Cologne, Germany
+// /
+// / Licensed under the Apache License, Version 2.0 (the "License")
+// / you may not use this file except in compliance with the License.
+// / You may obtain a copy of the License at
+// /
+// /     http://www.apache.org/licenses/LICENSE-2.0
+// /
+// / Unless required by applicable law or agreed to in writing, software
+// / distributed under the License is distributed on an "AS IS" BASIS,
+// / WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// / See the License for the specific language governing permissions and
+// / limitations under the License.
+// /
+// / Copyright holder is ArangoDB GmbH, Cologne, Germany
+// /
+// / @author Alan Plum
+// //////////////////////////////////////////////////////////////////////////////
 
 var db = require('@arangodb').db;
 var flatten = require('internal').flatten;
-var exponentialBackOff = require('internal').exponentialBackOff;
 var console = require('console');
 var queues = require('@arangodb/foxx/queues');
 var fm = require('@arangodb/foxx/manager');
 var util = require('util');
 var internal = require('internal');
+
+function exponentialBackOff(n, i) {
+  if (i === 0) {
+    return 0;
+  }
+  if (n === 0) {
+    return 0;
+  }
+  if (n === 1) {
+    return Math.random() < 0.5 ? 0 : i;
+  }
+  return Math.floor(Math.random() * (n + 1)) * i;
+}
 
 function getBackOffDelay(job) {
   var n = job.runFailures - 1;
@@ -77,10 +89,10 @@ function getBackOffDelay(job) {
 
 exports.work = function (job) {
   var maxFailures = (
-    typeof job.maxFailures === 'number' || job.maxFailures === false
+  typeof job.maxFailures === 'number' || job.maxFailures === false
     ? job.maxFailures
     : (
-      typeof job.type.maxFailures === 'number' || job.type.maxFailures === false
+    typeof job.type.maxFailures === 'number' || job.type.maxFailures === false
       ? job.type.maxFailures
       : false
     )

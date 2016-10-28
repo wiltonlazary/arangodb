@@ -51,12 +51,16 @@ class Cursor;
 
 class RestCursorHandler : public RestVocbaseBaseHandler {
  public:
-  RestCursorHandler(
-      HttpRequest*,
-      arangodb::aql::QueryRegistry*);
+  RestCursorHandler(GeneralRequest*, GeneralResponse*,
+                    arangodb::aql::QueryRegistry*);
 
  public:
-  virtual status_t execute() override;
+  virtual RestStatus execute() override;
+  char const* name() const override final { return "RestCursorHandler"; }
+
+#ifdef USE_ENTERPRISE
+  void finalizeExecute() override;
+#endif
 
   bool cancel() override;
 
@@ -151,6 +155,12 @@ class RestCursorHandler : public RestVocbaseBaseHandler {
   //////////////////////////////////////////////////////////////////////////////
 
   arangodb::aql::Query* _query;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief whether or not the query has already started executing
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool _hasStarted;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief whether or not the query was killed

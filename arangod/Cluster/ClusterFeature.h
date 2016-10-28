@@ -42,7 +42,7 @@ class ClusterFeature : public application_features::ApplicationFeature {
   void validateOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void prepare() override final;
   void start() override final;
-  void stop() override final;
+  void unprepare() override final;
 
  private:
   std::vector<std::string> _agencyEndpoints;
@@ -58,6 +58,7 @@ class ClusterFeature : public application_features::ApplicationFeature {
   std::string _arangodPath;
   std::string _dbserverConfig;
   std::string _coordinatorConfig;
+  uint32_t _systemReplicationFactor = 2;
 
  public:
   AgencyCallbackRegistry* agencyCallbackRegistry() const {
@@ -68,9 +69,12 @@ class ClusterFeature : public application_features::ApplicationFeature {
     return "/_api/agency/agency-callbacks";
   };
 
+  void setUnregisterOnShutdown(bool);
+
  private:
+  bool _unregisterOnShutdown;
   bool _enableCluster;
-  HeartbeatThread* _heartbeatThread;
+  std::shared_ptr<HeartbeatThread> _heartbeatThread;
   uint64_t _heartbeatInterval;
   bool _disableHeartbeat;
   std::unique_ptr<AgencyCallbackRegistry> _agencyCallbackRegistry;

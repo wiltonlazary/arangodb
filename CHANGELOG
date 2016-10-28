@@ -1,5 +1,508 @@
-v3.0.0 (XXXX-XX-XX)
+devel
+-----
+
+* ui: added new graph viewer
+
+* ui: aql-editor added tabular & graph display
+
+* ui: aql-editor improved usability
+
+* ui: aql-editor: query profiling support
+
+* fixed issue #2109
+
+* fixed issue #2111
+
+* fixed issue #2075
+
+* added AQL function `DISTANCE` to calculate the distance between two arbitrary
+  coordinates (haversine formula)
+
+* rewrote scheduler and dispatcher based on boost::asio
+
+  parameters changed:
+    `--scheduler.threads` and `--server.threads` are now merged into a single one: `--server.threads`
+
+    hidden `--server.extra-threads` has been removed
+
+    hidden `--server.aql-threads` has been removed
+
+    hidden `--server.backend` has been removed
+
+    hidden `--server.show-backends` has been removed
+
+    hidden `--server.thread-affinity` has been removed
+
+* fixed issue #2086
+
+* fixed issue #2079
+
+* fixed issue #2071
+
+  make the AQL query optimizer inject filter condition expressions referred to
+  by variables during filter condition aggregation.
+  For example, in the following query
+
+      FOR doc IN collection
+        LET cond1 = (doc.value == 1)
+        LET cond2 = (doc.value == 2)
+        FILTER cond1 || cond2
+        RETURN { doc, cond1, cond2 }
+
+  the optimizer will now inject the conditions for `cond1` and `cond2` into the filter
+  condition `cond1 || cond2`, expanding it to `(doc.value == 1) || (doc.value == 2)`
+  and making these conditions available for index searching.
+
+  Note that the optimizer previously already injected some conditions into other
+  conditions, but only if the variable that defined the condition was not used
+  elsewhere. For example, the filter condition in the query
+
+      FOR doc IN collection
+        LET cond = (doc.value == 1)
+        FILTER cond
+        RETURN { doc }
+
+  already got optimized before because `cond` was only used once in the query and
+  the optimizer decided to inject it into the place where it was used.
+
+  This only worked for variables that were referred to once in the query.
+  When a variable was used multiple times, the condition was not injected as
+  in the following query:
+
+      FOR doc IN collection
+        LET cond = (doc.value == 1)
+        FILTER cond
+        RETURN { doc, cond }
+
+  The fix for #2070 now will enable this optimization so that the query can
+  use an index on `doc.value` if available.
+  
+* changed behavior of AQL array comparison operators for empty arrays:
+  * `ALL` and `ANY` now always return `false` when the left-hand operand is an
+    empty array. The behavior for non-empty arrays does not change:
+    * `[] ALL == 1` will return `false`
+    * `[1] ALL == 1` will return `true`
+    * `[1, 2] ALL == 1` will return `false`
+    * `[2, 2] ALL == 1` will return `false`
+    * `[] ANY == 1` will return `false`
+    * `[1] ANY == 1` will return `true`
+    * `[1, 2] ANY == 1` will return `true`
+    * `[2, 2] ANY == 1` will return `false`
+  * `NONE` now always returns `true` when the left-hand operand is an empty array.
+    The behavior for non-empty arrays does not change:
+    * `[] NONE == 1` will return `true`
+    * `[1] NONE == 1` will return `false`
+    * `[1, 2] NONE == 1` will return `false`
+    * `[2, 2] NONE == 1` will return `true`
+
+* added experimental AQL functions `JSON_STRINGIFY` and `JSON_PARSE`
+
+* added experimental support for incoming gzip-compressed requests
+
+* added HTTP REST APIs for online loglevel adjustments:
+
+  - GET `/_admin/log/level` returns the current loglevel settings
+  - PUT `/_admin/log/level` modifies the current loglevel settings
+
+* PATCH /_api/gharial/{graph-name}/vertex/{collection-name}/{vertex-key}
+  - changed default value for keepNull to true
+  
+* PATCH /_api/gharial/{graph-name}/edge/{collection-name}/{edge-key}
+  - changed default value for keepNull to true
+
+* renamed `maximalSize` attribute in parameter.json files to `journalSize`
+
+  The `maximalSize` attribute will still be picked up from collections that
+  have not been adjusted. Responses from the replication API will now also use
+  `journalSize` instead of `maximalSize`.
+
+* added `--cluster.system-replication-factor` in order to adjust the
+  replication factor for new system collections
+
+* fixed issue #2012
+
+* added a memory expection in case V8 memory gets too low
+
+* added Optimizer Rule for other indexes in Traversals
+  this allows AQL traversals to use other indexes than the edge index.
+  So traversals with filters on edges can now make use of more specific
+  indexes, e.g.
+
+      FOR v, e, p IN 2 OUTBOUND @start @@edge FILTER p.edges[0].foo == "bar"
+
+  will prefer a Hash Index on [_from, foo] above the EdgeIndex.
+
+* fixed epoch computation in hybrid logical clock
+
+* fixed thread affinity
+
+* replaced require("internal").db by require("@arangodb").db
+
+* added option `--skip-lines` for arangoimp
+  this allows skipping the first few lines from the import file in case the
+  CSV or TSV import are used
+
+* fixed periodic jobs: there should be only one instance running - even if it
+  runs longer than the period
+
+* improved performance of primary index and edge index lookups
+
+* optimizations for AQL `[*]` operator in case no filter, no projection and
+  no offset/limit are used
+
+* added AQL function `OUTERSECTION` to return the symmetric difference of its
+  input arguments
+
+* Foxx manifests of installed services are now saved to disk with indentation
+
+* Foxx tests and scripts in development mode should now always respect updated
+  files instead of loading stale modules
+
+* When disabling Foxx development mode the setup script is now re-run
+
+* Foxx now provides an easy way to directly serve GraphQL requests using the
+  `@arangodb/foxx/graphql` module and the bundled `graphql-sync` dependency
+
+* Foxx OAuth2 module now correctly passes the `access_token` to the OAuth2 server
+
+* added iconv-lite and timezone modules
+
+* web interface now allows installing GitHub and zip services in legacy mode
+
+* added module.context.createDocumentationRouter to replace module.context.apiDocumentation
+
+* bug in RAFT implementation of reads. dethroned leader still answered
+  requests in isolation
+
+* all lambdas in ClusterInfo might have been left with dangling references.
+
+* Agency bug fix for handling of empty json objects as values.
+
+* Foxx tests no longer support the Mocha QUnit interface as this resulted in weird
+  inconsistencies in the BDD and TDD interfaces. This fixes the TDD interface
+  as well as out-of-sequence problems when using the BDD before/after functions.
+
+
+v3.0.11 (2016-XX-XX)
+--------------------
+
+* fixed issue #2110
+
+* fixed issue #2081
+
+* fixed issue #2038
+
+
+v3.0.10 (XXXX-XX-XX)
+--------------------
+
+* fixed issue #2072
+
+* fixed issue #2070
+
+
+v3.0.9 (2016-09-21)
 -------------------
+
+* fixed issue #2064
+
+* fixed issue #2060
+
+* speed up `collection.any()` and skiplist index creation
+
+* fixed multiple issues where ClusterInfo bug hung agency in limbo
+  timeouting on multiple collection and database callbacks
+
+
+v3.0.8 (2016-09-14)
+-------------------
+
+* fixed issue #2052
+
+* fixed issue #2005
+
+* fixed issue #2039
+
+* fixed multiple issues where ClusterInfo bug hung agency in limbo
+  timeouting on multiple collection and database callbacks
+
+
+v3.0.7 (2016-09-05)
+-------------------
+
+* new supervision job handles db server failure during collection creation.
+
+
+v3.0.6 (2016-09-02)
+-------------------
+
+* fixed issue #2026
+
+* slightly better error diagnostics for AQL query compilation and replication
+
+* fixed issue #2018
+
+* fixed issue #2015
+
+* fixed issue #2012
+
+* fixed wrong default value for arangoimp's `--on-duplicate` value
+
+* fix execution of AQL traversal expressions when there are multiple
+  conditions that refer to variables set outside the traversal
+
+* properly return HTTP 503 in JS actions when backend is gone
+
+
+v3.0.5 (2016-08-18)
+-------------------
+
+* execute AQL ternary operator via C++ if possible
+
+* fixed issue #1977
+
+* fixed extraction of _id attribute in AQL traversal conditions
+
+* fix SSL agency endpoint
+
+* Minimum RAFT timeout was one order of magnitude to short.
+
+* Optimized RAFT RPCs from leader to followers for efficiency.
+
+* Optimized RAFT RPC handling on followers with respect to compaction.
+
+* Fixed bug in handling of duplicates and overlapping logs
+
+* Fixed bug in supervision take over after leadership change.
+
+v3.0.4 (2016-08-01)
+-------------------
+
+* added missing lock for periodic jobs access
+
+* fix multiple foxx related cluster issues
+
+* fix handling of empty AQL query strings
+
+* fixed issue in `INTERSECTION` AQL function with duplicate elements
+  in the source arrays
+
+* fixed issue #1970
+
+* fixed issue #1968
+
+* fixed issue #1967
+
+* fixed issue #1962
+
+* fixed issue #1959
+
+* replaced require("internal").db by require("@arangodb").db
+
+* fixed issue #1954
+
+* fixed issue #1953
+
+* fixed issue #1950
+
+* fixed issue #1949
+
+* fixed segfault in V8, by backporting https://bugs.chromium.org/p/v8/issues/detail?id=5033
+
+* Foxx OAuth2 module now correctly passes the `access_token` to the OAuth2 server
+
+
+v3.0.3 (2016-07-17)
+-------------------
+
+* fixed issue #1942
+
+* fixed issue #1941
+
+* fixed array index batch insertion issues for hash indexes that caused problems when 
+  no elements remained for insertion
+
+* fixed AQL MERGE() function with External objects originating from traversals
+
+* fixed some logfile recovery errors with error message "document not found"
+
+* fixed issue #1937
+
+* fixed issue #1936
+
+* improved performance of arangorestore in clusters with synchronous
+  replication
+
+
+v3.0.2 (2016-07-09)
+-------------------
+
+* fixed assertion failure in case multiple remove operations were used in the same query
+
+* fixed upsert behavior in case upsert was used in a loop with the same document example 
+
+* fixed issue #1930
+
+* don't expose local file paths in Foxx error messages.
+
+* fixed issue #1929
+
+* make arangodump dump the attribute `isSystem` when dumping the structure
+  of a collection, additionally make arangorestore not fail when the attribute
+  is missing
+
+* fixed "Could not extract custom attribute" issue when using COLLECT with
+  MIN/MAX functions in some contexts
+
+* honor presence of persistent index for sorting
+
+* make AQL query optimizer not skip "use-indexes-rule", even if enough 
+  plans have been created already
+
+* make AQL optimizer not skip "use-indexes-rule", even if enough execution plans 
+  have been created already
+
+* fix double precision value loss in VelocyPack JSON parser
+
+* added missing SSL support for arangorestore
+
+* improved cluster import performance
+
+* fix Foxx thumbnails on DC/OS
+
+* fix Foxx configuration not being saved
+
+* fix Foxx app access from within the frontend on DC/OS
+
+* add option --default-replication-factor to arangorestore and simplify
+  the control over the number of shards when restoring
+
+* fix a bug in the VPack -> V8 conversion if special attributes _key,
+  _id, _rev, _from and _to had non-string values, which is allowed
+  below the top level
+
+* fix malloc_usable_size for darwin
+
+
+v3.0.1 (XXXX-XX-XX)
+-------------------
+
+* increase max. number of collections in AQL queries from 32 to 256
+
+* fixed issue #1916: header "authorization" is required" when opening
+  services page
+
+* fixed issue #1915: Explain: member out of range
+
+* fixed issue #1914: fix unterminated buffer
+
+* don't remove lockfile if we are the same (now stale) pid    
+  fixes docker setups (our pid will always be 1)
+
+* do not use revision id comparisons in compaction for determining whether a 
+  revision is obsolete, but marker memory addresses
+  this ensures revision ids don't matter when compacting documents
+
+* escape Unicode characters in JSON HTTP responses
+  this converts UTF-8 characters in HTTP responses of arangod into `\uXXXX`
+  escape sequences. This makes the HTTP responses fit into the 7 bit ASCII
+  character range, which speeds up HTTP response parsing for some clients,
+  namely node.js/v8
+
+* add write before read collections when starting a user transaction
+  this allows specifying the same collection in both read and write mode without
+  unintended side effects
+
+* fixed buffer overrun that occurred when building very large result sets
+
+* index lookup optimizations for primary index and edge index
+
+* fixed "collection is a nullptr" issue when starting a traversal from a transaction
+
+* enable /_api/import on coordinator servers
+
+
+v3.0.0 (2016-06-22)
+-------------------
+
+* minor GUI fixxes
+
+* fix for replication and nonces
+
+
+v3.0.0-rc3 (2016-06-19)
+-----------------------
+
+* renamed various Foxx errors to no longer refer to Foxx services as apps
+
+* adjusted various error messages in Foxx to be more informative
+
+* specifying "files" in a Foxx manifest to be mounted at the service root
+  no longer results in 404s when trying to access non-file routes
+
+* undeclared path parameters in Foxx no longer break the service
+
+* trusted reverse proxy support is now handled more consistently
+
+* ArangoDB request compatibility and user are now exposed in Foxx
+
+* all bundled NPM modules have been upgraded to their latest versions
+
+
+v3.0.0-rc2 (2015-06-12)
+-----------------------
+
+* added option `--server.max-packet-size` for client tools
+
+* renamed option `--server.ssl-protocol` to `--ssl.protocol` in client tools
+  (was already done for arangod, but overlooked for client tools)
+
+* fix handling of `--ssl.protocol` value 5 (TLS v1.2) in client tools, which
+  claimed to support it but didn't
+
+
+v3.0.0-rc1 (2015-06-10)
+-----------------------
+
+* forward ported V8 Comparator bugfix for inline heuristics from 
+  https://github.com/v8/v8/commit/5ff7901e24c2c6029114567de5a08ed0f1494c81
+
+* changed to-string conversion for AQL objects and arrays, used by the AQL 
+  function `TO_STRING()` and implicit to-string casts in AQL
+
+  - arrays are now converted into their JSON-stringify equivalents, e.g.
+
+    - `[ ]` is now converted to `[]`
+    - `[ 1, 2, 3 ]` is now converted to `[1,2,3]`
+    - `[ "test", 1, 2 ] is now converted to `["test",1,2]`
+
+    Previous versions of ArangoDB converted arrays with no members into the
+    empty string, and non-empty arrays into a comma-separated list of member
+    values, without the surrounding angular brackets. Additionally, string
+    array members were not enclosed in quotes in the result string:
+
+    - `[ ]` was converted to ``
+    - `[ 1, 2, 3 ]` was converted to `1,2,3`
+    - `[ "test", 1, 2 ] was converted to `test,1,2`
+
+  - objects are now converted to their JSON-stringify equivalents, e.g.
+
+    - `{ }` is converted to `{}`
+    - `{ a: 1, b: 2 }` is converted to `{"a":1,"b":2}`
+    - `{ "test" : "foobar" }` is converted to `{"test":"foobar"}`
+
+    Previous versions of ArangoDB always converted objects into the string
+    `[object Object]`  
+
+  This change affects also the AQL functions `CONCAT()` and `CONCAT_SEPARATOR()`
+  which treated array values differently in previous versions. Previous versions
+  of ArangoDB automatically flattened array values on the first level of the array, 
+  e.g. `CONCAT([1, 2, 3, [ 4, 5, 6 ]])` produced `1,2,3,4,5,6`. Now this will produce
+  `[1,2,3,[4,5,6]]`. To flatten array members on the top level, you can now use
+  the more explicit `CONCAT(FLATTEN([1, 2, 3, [4, 5, 6]], 1))`.
+
+* added C++ implementations for AQL functions `SLICE()`, `CONTAINS()` and
+  `RANDOM_TOKEN()`
 
 * as a consequence of the upgrade to V8 version 5, the implementation of the
   JavaScript `Buffer` object had to be changed. JavaScript `Buffer` objects in
@@ -92,19 +595,19 @@ v3.0.0 (XXXX-XX-XX)
   loop one level higher, eliminating the subquery completely. For example, the query
 
       FOR i IN (FOR j IN [1,2,3] RETURN j) RETURN i
-      
+
   will be transformed by the rule to:
-   
+
       FOR i IN [1,2,3] RETURN i
-      
+
   The query
 
       FOR name IN (FOR doc IN _users FILTER doc.status == 1 RETURN doc.name) LIMIT 2 RETURN name
-      
+
   will be transformed into
-  
+
       FOR tmp IN _users FILTER tmp.status == 1 LIMIT 2 RETURN tmp.name
-       
+
   The rule will only fire when the subquery is used as an operand to a `FOR` loop, and
   if the subquery does not contain a `COLLECT` with an `INTO` variable.
 
@@ -243,8 +746,50 @@ v3.0.0 (XXXX-XX-XX)
   using a backwards-compatible "legacy mode"
 
 
-v2.8.10 (XXXX-XX-XX)
+v2.8.12 (XXXX-XX-XX)
 --------------------
+
+* issue #2091: decrease connect timeout to 5 seconds on startup
+
+* fixed issue #2072
+
+* slightly better error diagnostics for some replication errors
+
+* fixed issue #1977
+
+* fixed issue in `INTERSECTION` AQL function with duplicate elements
+  in the source arrays
+
+* fixed issue #1962
+
+* fixed issue #1959
+
+* export aqlQuery template handler as require('org/arangodb').aql for forwards-compatibility
+
+
+v2.8.11 (2016-07-13)
+--------------------
+
+* fixed array index batch insertion issues for hash indexes that caused problems when 
+  no elements remained for insertion
+
+* fixed issue #1937
+
+
+v2.8.10 (2016-07-01)
+--------------------
+
+* make sure next local _rev value used for a document is at least as high as the
+  _rev value supplied by external sources such as replication
+
+* make adding a collection in both read- and write-mode to a transaction behave as
+  expected (write includes read). This prevents the `unregister collection used in
+  transaction` error
+
+* fixed sometimes invalid result for `byExample(...).count()` when an index plus
+  post-filtering was used
+
+* fixed "collection is a nullptr" issue when starting a traversal from a transaction
 
 * honor the value of startup option `--database.wait-for-sync` (that is used to control
   whether new collections are created with `waitForSync` set to `true` by default) also
@@ -283,7 +828,7 @@ v2.8.8 (2016-04-19)
   To avoid specifying complete document ids (consisting of collection names and document
   keys) for *_from* and *_to* values when importing edges with arangoimp, there are now
   the options *--from-collection-prefix* and *--to-collection-prefix*. 
-  
+
   If specified, these values will be automatically prepended to each value in *_from* 
   (or *_to* resp.). This allows specifying only document keys inside *_from* and/or *_to*.
 
@@ -345,15 +890,15 @@ v2.8.6 (2016-03-23)
       > chmod a+x /path/to/script.js
 
   it can be invoked on the shell directly and use arangosh for its execution:
-      
+
       > /path/to/script.js
       hello from script.js
-  
+
   This did not work in previous versions of ArangoDB, as the whole script contents
   (including the shebang) were treated as JavaScript code. 
   Now shebangs in script files will now be ignored for all files passed to arangosh's 
   `--javascript.execute` parameter.
-  
+
   The alternative way of executing a JavaScript file with arangosh still works:
 
       > arangosh --javascript.execute /path/to/script.js

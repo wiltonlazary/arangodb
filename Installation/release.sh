@@ -3,23 +3,68 @@ set -e
 
 TAG=1
 BOOK=1
+BUILD=1
+SWAGGER=1
+EXAMPLES=1
+LINT=1
 
-if [ "$1" == "--no-commit" ];  then
-  TAG=0
-  shift
-fi
+while [ "$#" -gt 1 ];  do
+    case "$1" in
+        --no-lint)
+            LINT=0
+            shift
+            ;;
 
-if [ "$1" == "--no-book" ];  then
-  BOOK=0
-  shift
-fi
+        --no-build)
+            BUILD=0
+            shift
+            ;;
+
+        --recycle-build)
+            BUILD=2
+            shift
+            ;;
+
+        --no-swagger)
+            SWAGGER=0
+            shift
+            ;;
+
+        --no-examples)
+            EXAMPLES=0
+            shift
+            ;;
+
+        --no-commit)
+            TAG=0
+            shift
+            ;;
+
+        --no-book)
+            BOOK=0
+            shift
+            ;;
+        *)
+            if test -n "${VERSION}"; then
+                echo "we already have a version ${VERSION} aborting because of $1"
+                exit 1
+            fi
+            VERSION="$1"
+            shift
+            ;;
+    esac
+done
 
 if [ "$#" -ne 1 ];  then
   echo "usage: $0 <major>.<minor>.<revision>"
   exit 1
 fi
 
-VERSION="$1"
+
+if echo ${VERSION} | grep -q -- '-'; then
+    echo "${VERSION} mustn't contain minuses! "
+    exit 1
+fi
 
 if git tag | grep -q "^v$VERSION$";  then
   echo "$0: version $VERSION already defined"
@@ -51,40 +96,71 @@ if [ `uname` == "Darwin" ];  then
   CMAKE_CONFIGURE="${CMAKE_CONFIGURE} -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DCMAKE_OSX_DEPLOYMENT_TARGET=10.11"
 fi
 
-echo "COMPILING"
-rm -rf build && mkdir build
+ENTERPRISE=0
 
-(
-  cd build
-  cmake .. ${CMAKE_CONFIGURE}
-  make -j 8
-)
+if [ -d enterprise ];  then
+  ENTERPRISE=1
+fi
 
-echo "LINTING"
-./utils/jslint.sh
+if [ "$BUILD" != "0" ];  then
+  echo "COMPILING COMMUNITY"
+
+  if [ "$BUILD" == "1" ];  then
+    rm -rf build && mkdir build
+  fi
+
+  (
+    cd build
+    cmake .. ${CMAKE_CONFIGURE}
+    make -j 8
+  )
+
+  if [ "$ENTERPRISE" == "1" ];  then
+    echo "COMPILING ENTERPRISE"
+
+    if [ "$BUILD" == "1" ];  then
+      rm -rf build-enterprise && mkdir build-enterprise
+    fi
+
+    (
+      cd build-enterprise
+      cmake .. ${CMAKE_CONFIGURE} -DUSE_ENTERPRISE=ON
+      make -j 8
+    )
+  fi
+fi
+
+if [ "$LINT" == "1" ]; then
+  echo "LINTING"
+  ./utils/jslint.sh
+fi
 
 git add -f \
   README \
   arangod/Aql/tokens.cpp \
   arangod/Aql/grammar.cpp \
   arangod/Aql/grammar.h \
-  lib/JsonParser/json-parser.cpp \
   lib/V8/v8-json.cpp \
   lib/Basics/voc-errors.h \
   lib/Basics/voc-errors.cpp \
   js/common/bootstrap/errors.js \
   CMakeLists.txt
 
-echo "SWAGGER"
-./utils/generateSwagger.sh
+if [ "$EXAMPLES" == "1" ];  then
+  echo "EXAMPLES"
+  ./utils/generateExamples.sh
+fi
 
-echo "EXAMPLES"
-./utils/generateExamples.sh
+if [ "$SWAGGER" == "1" ];  then
+  echo "SWAGGER"
+  ./utils/generateSwagger.sh
+fi
 
 echo "GRUNT"
 (
   cd js/apps/system/_admin/aardvark/APP
-  npm install --only=dev
+  rm -rf node_modules
+  npm install
   grunt deploy
 )
 
@@ -112,6 +188,17 @@ if [ "$TAG" == "1" ];  then
 
   git tag "v$VERSION"
   git push --tags
+
+  if [ "$ENTERPRISE" == "1" ];  then
+    (
+      cd enterprise
+      git commit -m "release version $VERSION enterprise" -a
+      git push
+
+      git tag "v$VERSION"
+      git push --tags
+    )
+  fi
 
   echo
   echo "--------------------------------------------------"

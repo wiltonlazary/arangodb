@@ -28,7 +28,6 @@
 #include "Logger/Logger.h"
 #include "Basics/Mutex.h"
 #include "Basics/MutexLocker.h"
-#include "Basics/threads.h"
 #include "Statistics/StatisticsFeature.h"
 
 using namespace arangodb;
@@ -128,12 +127,17 @@ static void ProcessRequestStatistics(TRI_request_statistics_t* statistics) {
   statistics->reset();
 
 // put statistics item back onto the freelist
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
-  bool ok = RequestFreeList.push(statistics);
-  TRI_ASSERT(ok);
-#else
-  RequestFreeList.push(statistics);
-#endif
+  int tries = 0;
+  while (++tries < 1000) {
+    if (RequestFreeList.push(statistics)) {
+      break;
+    }
+    usleep(10000);
+  }
+  if (tries > 1) {
+    LOG_TOPIC(WARN, Logger::REQUESTS) << "RequestFreeList.push failed "
+      << tries-1 << " times.";
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -180,21 +184,13 @@ void TRI_ReleaseRequestStatistics(TRI_request_statistics_t* statistics) {
   }
 
   if (!statistics->_ignore) {
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
     bool ok = RequestFinishedList.push(statistics);
     TRI_ASSERT(ok);
-#else
-    RequestFinishedList.push(statistics);
-#endif
   } else {
     statistics->reset();
 
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
     bool ok = RequestFreeList.push(statistics);
     TRI_ASSERT(ok);
-#else
-    RequestFreeList.push(statistics);
-#endif
   }
 }
 
@@ -277,12 +273,8 @@ void TRI_ReleaseConnectionStatistics(TRI_connection_statistics_t* statistics) {
   statistics->reset();
 
 // put statistics item back onto the freelist
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
   bool ok = ConnectionFreeList.push(statistics);
   TRI_ASSERT(ok);
-#else
-  ConnectionFreeList.push(statistics);
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -296,7 +288,7 @@ void TRI_FillConnectionStatistics(
   if (!StatisticsFeature::enabled()) {
     // all the below objects may be deleted if we don't have statistics enabled
     for (int i = 0;
-         i < ((int)arangodb::GeneralRequest::RequestType::ILLEGAL) + 1; ++i) {
+         i < ((int)arangodb::rest::RequestType::ILLEGAL) + 1; ++i) {
       methodRequests.emplace_back(StatisticsCounter());
     }
     return;
@@ -324,29 +316,13 @@ TRI_server_statistics_t TRI_GetServerStatistics() {
   return server;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief shutdown flag
-////////////////////////////////////////////////////////////////////////////////
-
-static std::atomic<bool> Shutdown;
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief thread used for statistics
-////////////////////////////////////////////////////////////////////////////////
-
-static TRI_thread_t StatisticsThread;
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief checks for new statistics and process them
-////////////////////////////////////////////////////////////////////////////////
-
-static void StatisticsQueueWorker(void* data) {
+void StatisticsThread::run() {
   uint64_t sleepTime = 100 * 1000;
   uint64_t const MaxSleepTime = 250 * 1000;
   int nothingHappened = 0;
 
-  while (!Shutdown.load(std::memory_order_relaxed) &&
-         StatisticsFeature::enabled()) {
+  while (!isStopping() && StatisticsFeature::enabled()) {
     size_t count = ProcessAllRequestStatistics();
 
     if (count == 0) {
@@ -514,10 +490,7 @@ StatisticsDistribution* TRI_BytesReceivedDistributionStatistics;
 
 TRI_server_statistics_t TRI_ServerStatistics;
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief module init function
-////////////////////////////////////////////////////////////////////////////////
-
 void TRI_InitializeStatistics() {
   TRI_ServerStatistics._startTime = TRI_microtime();
 
@@ -552,7 +525,7 @@ void TRI_InitializeStatistics() {
   // initialize counters for all HTTP request types
   TRI_MethodRequestsStatistics.clear();
 
-  for (int i = 0; i < ((int)arangodb::GeneralRequest::RequestType::ILLEGAL) + 1;
+  for (int i = 0; i < ((int)arangodb::rest::RequestType::ILLEGAL) + 1;
        ++i) {
     StatisticsCounter c;
     TRI_MethodRequestsStatistics.emplace_back(c);
@@ -564,12 +537,8 @@ void TRI_InitializeStatistics() {
 
   for (size_t i = 0; i < QUEUE_SIZE; ++i) {
     auto entry = new TRI_request_statistics_t;
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
     bool ok = RequestFreeList.push(entry);
     TRI_ASSERT(ok);
-#else
-    RequestFreeList.push(entry);
-#endif
   }
 
   // .............................................................................
@@ -578,29 +547,8 @@ void TRI_InitializeStatistics() {
 
   for (size_t i = 0; i < QUEUE_SIZE; ++i) {
     auto entry = new TRI_connection_statistics_t;
-#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
     bool ok = ConnectionFreeList.push(entry);
     TRI_ASSERT(ok);
-#else
-    ConnectionFreeList.push(entry);
-#endif
   }
-
-  // .............................................................................
-  // use a separate thread for statistics
-  // .............................................................................
-
-  Shutdown = false;
-  TRI_StartThread(&StatisticsThread, nullptr, "Statistics",
-                  StatisticsQueueWorker, 0);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief shut down statistics
-////////////////////////////////////////////////////////////////////////////////
-
-void TRI_ShutdownStatistics(void) {
-  Shutdown = true;
-  int res TRI_UNUSED = TRI_JoinThread(&StatisticsThread);
-  TRI_ASSERT(res == 0);
-}

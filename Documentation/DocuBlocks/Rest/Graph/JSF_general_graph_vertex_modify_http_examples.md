@@ -24,7 +24,7 @@ The *_key* attribute of the vertex.
 Define if the request should wait until synced to disk.
 
 @RESTPARAM{keepNull, boolean, optional}
-Define if values set to null should be stored. By default the key is removed from the document.
+Define if values set to null should be stored. By default the key is not removed from the document.
 
 @RESTHEADERPARAMETERS
 
@@ -54,6 +54,7 @@ Returned if if-match header is given, but the documents revision is different.
 
 @EXAMPLE_ARANGOSH_RUN{HttpGharialModifyVertex}
   var examples = require("@arangodb/graph-examples/example-graph.js");
+~ examples.dropGraph("social");
   examples.loadGraph("social");
   body = {
     age: 26

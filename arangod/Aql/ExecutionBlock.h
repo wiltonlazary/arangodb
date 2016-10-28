@@ -26,23 +26,39 @@
 
 #include "AqlItemBlock.h"
 #include "Aql/ExecutionNode.h"
+#include "Aql/Variable.h"
 
 #include <deque>
 
 #if 0
 
-#define DEBUG_BEGIN_BLOCK() try { //
-#define DEBUG_END_BLOCK() } catch (arangodb::basics::Exception const& ex) { LOG(WARN) << "arango exception caught in " << __FILE__ << ":" << __LINE__ << ":" << ex.what(); throw; } catch (std::exception const& ex) { LOG(WARN) << "std exception caught in " << __FILE__ << ":" << __LINE__ << ": " << ex.what(); throw; } catch (...) { LOG(WARN) << "exception caught in " << __FILE__ << ":" << __LINE__; throw; } //
+#define DEBUG_BEGIN_BLOCK() try {  //
+#define DEBUG_END_BLOCK()                                                     \
+  }                                                                           \
+  catch (arangodb::basics::Exception const& ex) {                             \
+    LOG(WARN) << "arango exception caught in " << __FILE__ << ":" << __LINE__ \
+              << ":" << ex.what();                                            \
+    throw;                                                                    \
+  }                                                                           \
+  catch (std::exception const& ex) {                                          \
+    LOG(WARN) << "std exception caught in " << __FILE__ << ":" << __LINE__    \
+              << ": " << ex.what();                                           \
+    throw;                                                                    \
+  }                                                                           \
+  catch (...) {                                                               \
+    LOG(WARN) << "exception caught in " << __FILE__ << ":" << __LINE__;       \
+    throw;                                                                    \
+  }  //
 
 #else
 
-#define DEBUG_BEGIN_BLOCK() //
-#define DEBUG_END_BLOCK() //
+#define DEBUG_BEGIN_BLOCK()  //
+#define DEBUG_END_BLOCK()    //
 
 #endif
 
 namespace arangodb {
-class AqlTransaction;
+class Transaction;
 
 namespace aql {
 
@@ -53,10 +69,15 @@ class ExecutionBlock {
   ExecutionBlock(ExecutionEngine*, ExecutionNode const*);
 
   virtual ~ExecutionBlock();
- 
+
  public:
   /// @brief batch size value
   static constexpr inline size_t DefaultBatchSize() { return 1000; }
+
+  /// @brief returns the register id for a variable id
+  /// will return ExecutionNode::MaxRegisterId for an unknown variable
+  RegisterId getRegister(VariableId id) const;
+  RegisterId getRegister(Variable const* variable) const;
 
   /// @brief determine the number of rows in a vector of blocks
   size_t countBlocksRows(std::vector<AqlItemBlock*> const&) const;
@@ -68,7 +89,10 @@ class ExecutionBlock {
   void throwIfKilled();
 
   /// @brief add a dependency
-  void addDependency(ExecutionBlock* ep) { _dependencies.emplace_back(ep); }
+  void addDependency(ExecutionBlock* ep) { 
+    TRI_ASSERT(ep != nullptr);
+    _dependencies.emplace_back(ep); 
+  }
 
   /// @brief get all dependencies
   std::vector<ExecutionBlock*> getDependencies() const { return _dependencies; }
@@ -116,6 +140,9 @@ class ExecutionBlock {
   /// if it returns an actual block, it must contain at least one item.
   virtual AqlItemBlock* getSome(size_t atLeast, size_t atMost);
 
+  void traceGetSomeBegin() const;
+  void traceGetSomeEnd(AqlItemBlock const*) const;
+
  protected:
   /// @brief request an AqlItemBlock from the memory manager
   AqlItemBlock* requestBlock(size_t, RegisterId);
@@ -156,7 +183,7 @@ class ExecutionBlock {
 
   // skip exactly <number> outputs, returns <true> if _done after
   // skipping, and <false> otherwise . . .
-  bool skip(size_t number);
+  bool skip(size_t number, size_t& numActuallySkipped);
 
   virtual bool hasMore();
 
@@ -165,6 +192,8 @@ class ExecutionBlock {
   virtual int64_t remaining();
 
   ExecutionNode const* getPlanNode() const { return _exeNode; }
+  
+  arangodb::Transaction* transaction() const { return _trx; }
 
  protected:
   /// @brief generic method to get or skip some
@@ -175,7 +204,7 @@ class ExecutionBlock {
   ExecutionEngine* _engine;
 
   /// @brief the transaction for this query
-  arangodb::AqlTransaction* _trx;
+  arangodb::Transaction* _trx;
 
   /// @brief our corresponding ExecutionNode node
   ExecutionNode const* _exeNode;
@@ -199,6 +228,9 @@ class ExecutionBlock {
 
   /// @brief if this is set, we are done, this is reset to false by execute()
   bool _done;
+
+  /// A copy of the tracing value in the options:
+  double _tracing;
 };
 
 }  // namespace arangodb::aql

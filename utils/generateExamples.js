@@ -17,9 +17,9 @@ const testPort = internal.testPort;
 const yaml = require("js-yaml");
 
 const documentationSourceDirs = [
-  fs.join(fs.makeAbsolute(''), "Documentation/Examples/setup-arangosh.js"),
+  fs.join(fs.makeAbsolute(''), "Documentation/Scripts/setup-arangosh.js"),
   fs.join(fs.makeAbsolute(''), "Documentation/DocuBlocks"),
-  fs.join(fs.makeAbsolute(''), "Documentation/Books/Users"),
+  fs.join(fs.makeAbsolute(''), "Documentation/Books/Manual"),
   fs.join(fs.makeAbsolute(''), "Documentation/Books/AQL"),
   fs.join(fs.makeAbsolute(''), "Documentation/Books/HTTP")
 ];
@@ -34,8 +34,25 @@ const scriptArguments = {
 let ARANGOD;
 let ARANGOSH;
 
-ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangod");
-ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangosh");
+function locateArangod() {
+  ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangod");
+  if(!fs.isFile(ARANGOD) && !fs.isFile(ARANGOD + ".exe")) {
+    ARANGOD = fs.join(fs.join(fs.makeAbsolute('')), "bin/arangod");
+  }
+  if(!fs.isFile(ARANGOD) && !fs.isFile(ARANGOD + ".exe")) {
+    throw "Cannot find Aarangod to execute tests against";
+  }
+}
+
+function locateArangosh() {
+  ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "build/bin/arangosh");
+  if(!fs.isFile(ARANGOSH) && !fs.isFile(ARANGOSH + ".exe")) {
+    ARANGOSH = fs.join(fs.join(fs.makeAbsolute('')), "bin/arangosh");
+  }
+  if(!fs.isFile(ARANGOSH) && !fs.isFile(ARANGOSH + ".exe")) {
+    throw "Cannot find arangosh to run tests with";
+  }
+}
 
 function endpointToURL(endpoint) {
   if (endpoint.substr(0, 6) === "ssl://") {
@@ -85,9 +102,6 @@ function main(argv) {
     print("failed to parse the options: " + x.message);
     return -1;
   }
-
-  print(options);
-
   if (options.hasOwnProperty('withPython')) {
     thePython = options.withPython;
   }
@@ -123,18 +137,22 @@ function main(argv) {
     fs.makeDirectoryRecursive(fs.join(tmpDataDir, "data"));
 
     let serverArgs = {};
+    fs.makeDirectoryRecursive(fs.join(tmpDataDir, "apps"));
 
     serverArgs["configuration"] = "none";
     serverArgs["database.directory"] = fs.join(tmpDataDir, "data");
     serverArgs["javascript.app-path"] = fs.join(tmpDataDir, "apps");
     serverArgs["javascript.startup-directory"] = "js";
+    serverArgs["javascript.module-directory"] = "enterprise/js";
     serverArgs["log.file"] = fs.join(tmpDataDir, "log");
     serverArgs["server.authentication"] = "false";
     serverArgs["server.endpoint"] = serverEndpoint;
     serverArgs["server.threads"] = "3";
 
     print("================================================================================");
+    print(ARANGOD);
     print(toArgv(serverArgs));
+    locateArangod();
     instanceInfo.pid = executeExternal(ARANGOD, toArgv(serverArgs)).pid;
 
     // Wait until the server is up:
@@ -169,11 +187,15 @@ function main(argv) {
     'javascript.execute': scriptArguments.outputFile
   };
 
+  locateArangosh();
+  print("--------------------------------------------------------------------------------");
+  print(ARANGOSH);
+  print(internal.toArgv(arangoshArgs));
   res = executeExternalAndWait(ARANGOSH, internal.toArgv(arangoshArgs));
 
   if (startServer) {
     if (typeof(instanceInfo.exitStatus) === 'undefined') {
-      download(instanceInfo.url + "/_admin/shutdown", "");
+      download(instanceInfo.url + "/_admin/shutdown", "", {method: "DELETE"});
 
       print("Waiting for server shut down");
       count = 0;
@@ -223,6 +245,10 @@ function main(argv) {
       }
 
     }
+  }
+
+  if (res.exit != 0) {
+    throw("generating examples failed!");
   }
 
   return 0;

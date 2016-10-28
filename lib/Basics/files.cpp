@@ -25,8 +25,10 @@
 
 #ifdef _WIN32
 #include <tchar.h>
+#include <Shlwapi.h>
 #endif
 
+#include "Basics/directories.h"
 #include "Basics/FileUtils.h"
 #include "Basics/Mutex.h"
 #include "Basics/MutexLocker.h"
@@ -86,6 +88,19 @@ static TRI_vector_t FileDescriptors;
 static TRI_read_write_lock_t FileNamesLock;
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief whether or not the character is a directory separator
+////////////////////////////////////////////////////////////////////////////////
+///
+
+static constexpr bool IsDirSeparatorChar(char c) {
+  // the check for c != TRI_DIR_SEPARATOR_CHAR is required
+  // for g++6. otherwise it will warn about equal expressions
+  // in the two branches
+  return (c == TRI_DIR_SEPARATOR_CHAR ||
+          (TRI_DIR_SEPARATOR_CHAR != '/' && c == '/'));
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief removes trailing path separators from path
 ///
 /// @note path will be modified in-place
@@ -101,7 +116,7 @@ static void RemoveTrailingSeparator(char* path) {
   if (n > 0) {
     char* p = path + n - 1;
 
-    while (p > s && (*p == TRI_DIR_SEPARATOR_CHAR || *p == '/')) {
+    while (p > s && IsDirSeparatorChar(*p)) {
       *p = '\0';
       --p;
     }
@@ -121,7 +136,7 @@ static void NormalizePath(char* path) {
   char* e = path + strlen(p);
 
   for (; p < e; ++p) {
-    if (*p == TRI_DIR_SEPARATOR_CHAR || *p == '/') {
+    if (IsDirSeparatorChar(*p)) {
       *p = TRI_DIR_SEPARATOR_CHAR;
     }
   }
@@ -210,7 +225,8 @@ static void ListTreeRecursively(char const* full, char const* path,
 
   for (size_t j = 0; j < 2; ++j) {
     for (auto const& filename : dirs) {
-      std::string const newFull = arangodb::basics::FileUtils::buildFilename(full, filename);
+      std::string const newFull =
+          arangodb::basics::FileUtils::buildFilename(full, filename);
       std::string newPath;
 
       if (*path) {
@@ -360,32 +376,32 @@ bool TRI_IsSymbolicLink(char const* path) {
 bool TRI_ExistsFile(char const* path) {
   if (path == nullptr) {
     return false;
-  } else {
-    TRI_stat_t stbuf;
-    size_t len;
-    int res;
+  }
 
-    len = strlen(path);
+  TRI_stat_t stbuf;
+  size_t len;
+  int res;
 
-    // path must not end with a \ on Windows, other stat() will return -1
-    if (len > 0 && path[len - 1] == TRI_DIR_SEPARATOR_CHAR) {
-      char* copy = TRI_DuplicateString(TRI_CORE_MEM_ZONE, path);
+  len = strlen(path);
 
-      if (copy == nullptr) {
-        return false;
-      }
+  // path must not end with a \ on Windows, other stat() will return -1
+  if (len > 0 && path[len - 1] == TRI_DIR_SEPARATOR_CHAR) {
+    char* copy = TRI_DuplicateString(TRI_CORE_MEM_ZONE, path);
 
-      // remove trailing slash
-      RemoveTrailingSeparator(copy);
-
-      res = TRI_STAT(copy, &stbuf);
-      TRI_FreeString(TRI_CORE_MEM_ZONE, copy);
-    } else {
-      res = TRI_STAT(path, &stbuf);
+    if (copy == nullptr) {
+      return false;
     }
 
-    return res == 0;
+    // remove trailing slash
+    RemoveTrailingSeparator(copy);
+
+    res = TRI_STAT(copy, &stbuf);
+    TRI_FreeString(TRI_CORE_MEM_ZONE, copy);
+  } else {
+    res = TRI_STAT(path, &stbuf);
   }
+
+  return res == 0;
 }
 
 #else
@@ -543,7 +559,8 @@ int TRI_RemoveEmptyDirectory(char const* filename) {
   int res = TRI_RMDIR(filename);
 
   if (res != 0) {
-    LOG(TRACE) << "cannot remove directory '" << filename << "': " << TRI_LAST_ERROR_STR;
+    LOG(TRACE) << "cannot remove directory '" << filename
+               << "': " << TRI_LAST_ERROR_STR;
     return TRI_set_errno(TRI_ERROR_SYS_ERROR);
   }
 
@@ -555,7 +572,10 @@ int TRI_RemoveEmptyDirectory(char const* filename) {
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_RemoveDirectory(char const* filename) {
-  if (TRI_IsDirectory(filename)) {
+  if (TRI_IsSymbolicLink(filename)) {
+    LOG(TRACE) << "removing symbolic link '" << filename << "'";
+    return TRI_UnlinkFile(filename);
+  } else if (TRI_IsDirectory(filename)) {
     int res;
 
     LOG(TRACE) << "removing directory '" << filename << "'";
@@ -586,7 +606,8 @@ int TRI_RemoveDirectory(char const* filename) {
 
     return TRI_UnlinkFile(filename);
   } else {
-    LOG(TRACE) << "attempt to remove non-existing file/directory '" << filename << "'";
+    LOG(TRACE) << "attempt to remove non-existing file/directory '" << filename
+               << "'";
 
     return TRI_ERROR_NO_ERROR;
   }
@@ -644,12 +665,10 @@ char* TRI_Dirname(char const* path) {
 ////////////////////////////////////////////////////////////////////////////////
 
 char* TRI_Basename(char const* path) {
-  size_t n;
-
-  n = strlen(path);
+  size_t n = strlen(path);
 
   if (1 < n) {
-    if (path[n - 1] == TRI_DIR_SEPARATOR_CHAR || path[n - 1] == '/') {
+    if (IsDirSeparatorChar(path[n - 1])) {
       n -= 1;
     }
   }
@@ -657,26 +676,24 @@ char* TRI_Basename(char const* path) {
   if (n == 0) {
     return TRI_DuplicateString("");
   } else if (n == 1) {
-    if (*path == TRI_DIR_SEPARATOR_CHAR || *path == '/') {
+    if (IsDirSeparatorChar(*path)) {
       return TRI_DuplicateString(TRI_DIR_SEPARATOR_STR);
-    } else {
-      return TRI_DuplicateString(path, n);
     }
+    return TRI_DuplicateString(path, n);
   } else {
     char const* p;
 
     for (p = path + (n - 2); path < p; --p) {
-      if (*p == TRI_DIR_SEPARATOR_CHAR || *p == '/') {
+      if (IsDirSeparatorChar(*p)) {
         break;
       }
     }
 
     if (path == p) {
-      if (*p == TRI_DIR_SEPARATOR_CHAR || *p == '/') {
+      if (IsDirSeparatorChar(*p)) {
         return TRI_DuplicateString(path + 1, n - 1);
-      } else {
-        return TRI_DuplicateString(path, n);
       }
+      return TRI_DuplicateString(path, n);
     } else {
       n -= p - path;
 
@@ -827,7 +844,8 @@ int TRI_RenameFile(char const* old, char const* filename, long* systemError,
     if (systemErrorStr != nullptr) {
       *systemErrorStr = windowsErrorBuf;
     }
-    LOG(TRACE) << "cannot rename file from '" << old << "' to '" << filename << "': " << errno << " - " << windowsErrorBuf;
+    LOG(TRACE) << "cannot rename file from '" << old << "' to '" << filename
+               << "': " << errno << " - " << windowsErrorBuf;
     res = -1;
   } else {
     res = 0;
@@ -843,7 +861,8 @@ int TRI_RenameFile(char const* old, char const* filename, long* systemError,
     if (systemErrorStr != nullptr) {
       *systemErrorStr = TRI_LAST_ERROR_STR;
     }
-    LOG(TRACE) << "cannot rename file from '" << old << "' to '" << filename << "': " << TRI_LAST_ERROR_STR;
+    LOG(TRACE) << "cannot rename file from '" << old << "' to '" << filename
+               << "': " << TRI_LAST_ERROR_STR;
     return TRI_set_errno(TRI_ERROR_SYS_ERROR);
   }
 
@@ -859,7 +878,8 @@ int TRI_UnlinkFile(char const* filename) {
 
   if (res != 0) {
     TRI_set_errno(TRI_ERROR_SYS_ERROR);
-    LOG(TRACE) << "cannot unlink file '" << filename << "': " << TRI_LAST_ERROR_STR;
+    LOG(TRACE) << "cannot unlink file '" << filename
+               << "': " << TRI_LAST_ERROR_STR;
     int e = TRI_errno();
     if (e == ENOENT) {
       return TRI_ERROR_FILE_NOT_FOUND;
@@ -975,23 +995,18 @@ bool TRI_fsync(int fd) {
 
 char* TRI_SlurpFile(TRI_memory_zone_t* zone, char const* filename,
                     size_t* length) {
-  TRI_string_buffer_t result;
-  int fd;
-
-  fd = TRI_OPEN(filename, O_RDONLY | TRI_O_CLOEXEC);
+  int fd = TRI_OPEN(filename, O_RDONLY | TRI_O_CLOEXEC);
 
   if (fd == -1) {
     TRI_set_errno(TRI_ERROR_SYS_ERROR);
     return nullptr;
   }
 
+  TRI_string_buffer_t result;
   TRI_InitStringBuffer(&result, zone);
 
   while (true) {
-    int res;
-    ssize_t n;
-
-    res = TRI_ReserveStringBuffer(&result, READBUFFER_SIZE);
+    int res = TRI_ReserveStringBuffer(&result, READBUFFER_SIZE);
 
     if (res != TRI_ERROR_NO_ERROR) {
       TRI_CLOSE(fd);
@@ -1001,7 +1016,7 @@ char* TRI_SlurpFile(TRI_memory_zone_t* zone, char const* filename,
       return nullptr;
     }
 
-    n = TRI_READ(fd, (void*)TRI_EndStringBuffer(&result), READBUFFER_SIZE);
+    ssize_t n = TRI_READ(fd, (void*)TRI_EndStringBuffer(&result), READBUFFER_SIZE);
 
     if (n == 0) {
       break;
@@ -1055,7 +1070,8 @@ int TRI_CreateLockFile(char const* filename) {
 
   if (fd == INVALID_HANDLE_VALUE) {
     TRI_SYSTEM_ERROR();
-    LOG(ERR) << "cannot create Lockfile '" << filename << "': " << TRI_GET_ERRORBUF;
+    LOG(ERR) << "cannot create Lockfile '" << filename
+             << "': " << TRI_GET_ERRORBUF;
     return TRI_set_errno(TRI_ERROR_SYS_ERROR);
   }
 
@@ -1066,7 +1082,8 @@ int TRI_CreateLockFile(char const* filename) {
 
   if (!r || len != strlen(buf)) {
     TRI_SYSTEM_ERROR();
-    LOG(ERR) << "cannot write Lockfile '" << filename << "': " << TRI_GET_ERRORBUF;
+    LOG(ERR) << "cannot write Lockfile '" << filename
+             << "': " << TRI_GET_ERRORBUF;
     res = TRI_set_errno(TRI_ERROR_SYS_ERROR);
 
     TRI_FreeString(TRI_CORE_MEM_ZONE, buf);
@@ -1088,7 +1105,8 @@ int TRI_CreateLockFile(char const* filename) {
 
   if (!r) {
     TRI_SYSTEM_ERROR();
-    LOG(ERR) << "cannot set Lockfile status '" << filename << "': " << TRI_GET_ERRORBUF;
+    LOG(ERR) << "cannot set Lockfile status '" << filename
+             << "': " << TRI_GET_ERRORBUF;
     res = TRI_set_errno(TRI_ERROR_SYS_ERROR);
 
     CloseHandle(fd);
@@ -1245,6 +1263,11 @@ int TRI_VerifyLockFile(char const* filename) {
   }
 
   TRI_pid_t pid = fc;
+  
+  if (pid == Thread::currentProcessId()) {
+    TRI_CLOSE(fd);
+    return TRI_ERROR_NO_ERROR;
+  }
 
   if (kill(pid, 0) == -1) {
     TRI_CLOSE(fd);
@@ -1261,7 +1284,7 @@ int TRI_VerifyLockFile(char const* filename) {
   // try to lock pid file
   int canLock = fcntl(fd, F_SETLK, &lock);  // Exclusive (write) lock
 
-  // file was not yet locken; could be locked
+  // file was not yet locked; could be locked
   if (canLock == 0) {
     lock.l_type = F_UNLCK;
     fcntl(fd, F_GETLK, &lock);
@@ -1274,7 +1297,8 @@ int TRI_VerifyLockFile(char const* filename) {
 
   TRI_CLOSE(fd);
 
-  LOG(WARN) << "fcntl on lockfile '" << filename << "' failed: " << TRI_errno_string(canLock);
+  LOG(WARN) << "fcntl on lockfile '" << filename
+            << "' failed: " << TRI_errno_string(canLock);
 #endif
 
   return TRI_ERROR_ARANGO_DATADIR_LOCKED;
@@ -1332,8 +1356,8 @@ int TRI_DestroyLockFile(char const* filename) {
   lock.l_len = 0;
   lock.l_type = F_UNLCK;
   lock.l_whence = SEEK_SET;
-  // relesae the lock
-  int res = fcntl(fd, F_GETLK, &lock);
+  // release the lock
+  int res = fcntl(fd, F_SETLK, &lock);
   TRI_CLOSE(fd);
 
   if (res == 0) {
@@ -1447,7 +1471,8 @@ char* TRI_GetAbsolutePath(char const* fileName,
 
   if (!ok) {
     // directory name can also start with a backslash
-    if (currentWorkingDirectory[0] == '/' || currentWorkingDirectory[0] == '\\') {
+    if (currentWorkingDirectory[0] == '/' ||
+        currentWorkingDirectory[0] == '\\') {
       ok = true;
     }
   }
@@ -1464,8 +1489,7 @@ char* TRI_GetAbsolutePath(char const* fileName,
   fileLength = strlen(fileName);
 
   if (currentWorkingDirectory[cwdLength - 1] == '\\' ||
-      currentWorkingDirectory[cwdLength - 1] == '/' ||
-      fileName[0] == '\\' ||
+      currentWorkingDirectory[cwdLength - 1] == '/' || fileName[0] == '\\' ||
       fileName[0] == '/') {
     // we do not require a backslash
     result = static_cast<char*>(
@@ -1580,9 +1604,6 @@ std::string TRI_BinaryName(char const* argv0) {
 ////////////////////////////////////////////////////////////////////////////////
 
 std::string TRI_LocateBinaryPath(char const* argv0) {
-  char const* p;
-  char* binaryPath = nullptr;
-
 #if _WIN32
 
   if (argv0 == nullptr) {
@@ -1610,9 +1631,11 @@ std::string TRI_LocateBinaryPath(char const* argv0) {
   }
 
 #endif
+  
+  std::string binaryPath;
 
   // check if name contains a '/' ( or '\' for windows)
-  p = argv0;
+  char const* p = argv0;
 
   for (; *p && *p != TRI_DIR_SEPARATOR_CHAR; ++p) {
   }
@@ -1621,8 +1644,8 @@ std::string TRI_LocateBinaryPath(char const* argv0) {
   if (*p) {
     char* dir = TRI_Dirname(argv0);
 
-    if (dir == nullptr) {
-      binaryPath = TRI_DuplicateString("");
+    if (dir != nullptr) {
+      binaryPath = dir;
       TRI_FreeString(TRI_CORE_MEM_ZONE, dir);
     }
   }
@@ -1638,11 +1661,9 @@ std::string TRI_LocateBinaryPath(char const* argv0) {
       files = TRI_SplitString(p, ':');
 
       for (i = 0; i < files._length; ++i) {
+        char* prefix = files._buffer[i];
+
         char* full;
-        char* prefix;
-
-        prefix = files._buffer[i];
-
         if (*prefix) {
           full = TRI_Concatenate2File(prefix, argv0);
         } else {
@@ -1651,7 +1672,7 @@ std::string TRI_LocateBinaryPath(char const* argv0) {
 
         if (TRI_ExistsFile(full)) {
           TRI_FreeString(TRI_CORE_MEM_ZONE, full);
-          binaryPath = TRI_DuplicateString(files._buffer[i]);
+          binaryPath = files._buffer[i];
           break;
         }
 
@@ -1662,13 +1683,35 @@ std::string TRI_LocateBinaryPath(char const* argv0) {
     }
   }
 
-  std::string result = (binaryPath == nullptr) ? "" : binaryPath;
+  return binaryPath;
+}
 
-  if (binaryPath != nullptr) {
-    TRI_FreeString(TRI_CORE_MEM_ZONE, binaryPath);
+std::string TRI_GetInstallRoot(std::string const& binaryPath,
+                               char const* installBinaryPath) {
+  // First lets remove trailing (back) slashes from the bill:
+  size_t ibpLength = strlen(installBinaryPath);
+
+  if (installBinaryPath[ibpLength - 1] == TRI_DIR_SEPARATOR_CHAR) {
+    ibpLength --;
+  }
+  
+  size_t bpLength = binaryPath.length();
+  char const* pbPath = binaryPath.c_str();
+
+  if (pbPath[bpLength - 1] == TRI_DIR_SEPARATOR_CHAR) {
+    --bpLength;
+  }
+  
+  if (ibpLength > bpLength) {
+    return TRI_DIR_SEPARATOR_STR;
   }
 
-  return result;
+  for (size_t i = 1; i < ibpLength; ++i) {
+    if (pbPath[bpLength - i] != installBinaryPath[ibpLength - i]) {
+      return TRI_DIR_SEPARATOR_STR;
+    }
+  }
+  return std::string(pbPath, bpLength - ibpLength);
 }
 
 static bool CopyFileContents(int srcFD, int dstFD, ssize_t fileSize,
@@ -1957,7 +2000,7 @@ int TRI_Crc32File(char const* path, uint32_t* crc) {
 
     if (sizeRead > 0) {
       *crc = TRI_BlockCrc32(*crc, static_cast<char const*>(buffer), sizeRead);
-    } else if (sizeRead <= 0) {
+    } else /* if (sizeRead <= 0) */ {
       break;
     }
   }
@@ -2086,7 +2129,8 @@ std::string TRI_GetTempPath() {
 
   if ((dwReturnValue > LOCAL_MAX_PATH_BUFFER) || (dwReturnValue == 0)) {
     // something wrong
-    LOG(TRACE) << "GetTempPathA failed: LOCAL_MAX_PATH_BUFFER=" << LOCAL_MAX_PATH_BUFFER << ":dwReturnValue=" << dwReturnValue;
+    LOG(TRACE) << "GetTempPathA failed: LOCAL_MAX_PATH_BUFFER="
+               << LOCAL_MAX_PATH_BUFFER << ":dwReturnValue=" << dwReturnValue;
     // attempt to simply use the current directory
     _tcscpy(tempFileName, TEXT("."));
   }
@@ -2112,19 +2156,22 @@ std::string TRI_GetTempPath() {
                               NULL);                  // no template
 
   if (tempFileHandle == INVALID_HANDLE_VALUE) {
-    LOG(FATAL) << "Can not create a temporary file"; FATAL_ERROR_EXIT();
+    LOG(FATAL) << "Can not create a temporary file";
+    FATAL_ERROR_EXIT();
   }
 
   ok = CloseHandle(tempFileHandle);
 
   if (!ok) {
-    LOG(FATAL) << "Can not close the handle of a temporary file"; FATAL_ERROR_EXIT();
+    LOG(FATAL) << "Can not close the handle of a temporary file";
+    FATAL_ERROR_EXIT();
   }
 
   ok = DeleteFile(tempFileName);
 
   if (!ok) {
-    LOG(FATAL) << "Can not destroy a temporary file"; FATAL_ERROR_EXIT();
+    LOG(FATAL) << "Can not destroy a temporary file";
+    FATAL_ERROR_EXIT();
   }
 
   // ...........................................................................
@@ -2139,12 +2186,14 @@ std::string TRI_GetTempPath() {
         TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, pathSize + 1, false));
 
     if (temp == nullptr) {
-      LOG(FATAL) << "Out of memory"; FATAL_ERROR_EXIT();
+      LOG(FATAL) << "Out of memory";
+      FATAL_ERROR_EXIT();
     }
 
     for (j = 0; j < pathSize; ++j) {
       if (tempPathName[j] > 127) {
-        LOG(FATAL) << "Invalid characters in temporary path name"; FATAL_ERROR_EXIT();
+        LOG(FATAL) << "Invalid characters in temporary path name";
+        FATAL_ERROR_EXIT();
       }
       temp[j] = (char)(tempPathName[j]);
     }
@@ -2276,10 +2325,10 @@ void TRI_SetUserTempPath(std::string const& path) { TempPath = path; }
 
 #if _WIN32
 
-std::string TRI_LocateInstallDirectory() {
-  return TRI_LocateBinaryPath(nullptr) +
-         std::string(1, TRI_DIR_SEPARATOR_CHAR) + ".." +
-         std::string(1, TRI_DIR_SEPARATOR_CHAR);
+std::string TRI_LocateInstallDirectory(const char *binaryPath) {
+  std::string thisPath = TRI_LocateBinaryPath(nullptr);
+  return TRI_GetInstallRoot(thisPath, binaryPath) + 
+    std::string(1, TRI_DIR_SEPARATOR_CHAR);
 }
 
 #endif
@@ -2292,20 +2341,16 @@ std::string TRI_LocateInstallDirectory() {
 
 #if _WIN32
 
-char* TRI_LocateConfigDirectory() {
+char* TRI_LocateConfigDirectory(const char* binaryPath) {
   char* v = LocateConfigDirectoryEnv();
 
   if (v != nullptr) {
     return v;
   }
 
-  std::string r = TRI_LocateInstallDirectory();
+  std::string r = TRI_LocateInstallDirectory(binaryPath);
 
-#ifdef _SYSCONFDIR_
   r += _SYSCONFDIR_;
-#else
-  r += "etc\\arangodb3";
-#endif
 
   r += std::string(1, TRI_DIR_SEPARATOR_CHAR);
 
@@ -2314,7 +2359,7 @@ char* TRI_LocateConfigDirectory() {
 
 #elif defined(_SYSCONFDIR_)
 
-char* TRI_LocateConfigDirectory() {
+char* TRI_LocateConfigDirectory(const char* binaryPath) {
   char* v = LocateConfigDirectoryEnv();
 
   if (v != nullptr) {
@@ -2368,3 +2413,16 @@ void TRI_InitializeFiles() {
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_ShutdownFiles() {}
+
+
+
+#if _WIN32
+bool TRI_PathIsAbsolute(const std::string &path) {
+  return !PathIsRelative(path.c_str());
+}
+
+#else  
+bool TRI_PathIsAbsolute(const std::string &path) {
+  return path.c_str()[0] == '/';
+}
+#endif

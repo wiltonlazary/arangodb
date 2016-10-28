@@ -36,6 +36,14 @@ class StaticStrings {
   static std::string const Empty;
   static std::string const N1800;
 
+  // index lookup strings
+  static std::string const IndexEq;
+  static std::string const IndexIn;
+  static std::string const IndexLe;
+  static std::string const IndexLt;
+  static std::string const IndexGe;
+  static std::string const IndexGt;
+
   // system attribute names
   static std::string const IdString;
   static std::string const KeyString;
@@ -63,20 +71,24 @@ class StaticStrings {
   static std::string const BatchContentType;
   static std::string const CacheControl;
   static std::string const Close;
+  static std::string const Code;
   static std::string const Connection;
   static std::string const ContentEncoding;
   static std::string const ContentTypeHeader;
   static std::string const Coordinator;
   static std::string const CorsMethods;
+  static std::string const Error;
+  static std::string const ErrorMessage;
+  static std::string const ErrorNum;
   static std::string const Errors;
   static std::string const ErrorCodes;
   static std::string const Etag;
   static std::string const Expect;
   static std::string const ExposedCorsHeaders;
+  static std::string const HLCHeader;
   static std::string const KeepAlive;
   static std::string const Location;
   static std::string const MultiPartContentType;
-  static std::string const OmitWwwAuthenticate;
   static std::string const Origin;
   static std::string const Queue;
   static std::string const Server;

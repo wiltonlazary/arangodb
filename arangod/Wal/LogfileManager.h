@@ -33,8 +33,6 @@
 #include "Wal/Marker.h"
 #include "Wal/Slots.h"
 
-struct TRI_server_t;
-
 namespace arangodb {
 namespace options {
 class ProgramOptions;
@@ -95,6 +93,8 @@ class LogfileManager final : public application_features::ApplicationFeature {
   LogfileManager(LogfileManager const&) = delete;
   LogfileManager& operator=(LogfileManager const&) = delete;
 
+  static constexpr size_t numBuckets = 16;
+
  public:
   explicit LogfileManager(application_features::ApplicationServer* server);
 
@@ -116,7 +116,9 @@ class LogfileManager final : public application_features::ApplicationFeature {
   void validateOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void prepare() override final;
   void start() override final;
+  void beginShutdown() override final;
   void stop() override final;
+  void unprepare() override final;
 
  public:
   // run the recovery procedure
@@ -186,13 +188,13 @@ class LogfileManager final : public application_features::ApplicationFeature {
   inline void maxThrottleWait(uint64_t value) { _maxThrottleWait = value; }
 
   // whether or not write-throttling is currently enabled
-  inline bool isThrottled() { return (_writeThrottled != 0); }
+  inline bool isThrottled() { return _writeThrottled; }
 
   // activate write-throttling
-  void activateWriteThrottling() { _writeThrottled = 1; }
+  void activateWriteThrottling() { _writeThrottled = true; }
 
   // deactivate write-throttling
-  void deactivateWriteThrottling() { _writeThrottled = 0; }
+  void deactivateWriteThrottling() { _writeThrottled = false; }
 
   // allow or disallow writes to the WAL
   inline void allowWrites(bool value) { _allowWrites = value; }
@@ -239,12 +241,6 @@ class LogfileManager final : public application_features::ApplicationFeature {
 
   // signal that a sync operation is required
   void signalSync(bool);
-
-  // reserve space in a logfile
-  SlotInfo allocate(uint32_t);
-
-  // reserve space in a logfile
-  SlotInfo allocate(TRI_voc_tick_t, TRI_voc_cid_t, uint32_t);
 
   // write data into the logfile, using database id and collection id
   /// this is a convenience function that combines allocate, memcpy and finalize
@@ -373,8 +369,19 @@ class LogfileManager final : public application_features::ApplicationFeature {
 
   // get information about running transactions
   std::tuple<size_t, Logfile::IdType, Logfile::IdType> runningTransactions();
+  
+  void waitForCollector();
 
  private:
+  // hashes the transaction id into a bucket
+  size_t getBucket(TRI_voc_tid_t id) const { return std::hash<TRI_voc_cid_t>()(id) % numBuckets; }
+  
+  // reserve space in a logfile
+  SlotInfo allocate(uint32_t);
+
+  // reserve space in a logfile
+  SlotInfo allocate(TRI_voc_tick_t, TRI_voc_cid_t, uint32_t);
+
   // memcpy the data into the WAL region and return the filled slot
   // to the WAL logfile manager
   SlotInfoCopy writeSlot(SlotInfo& slotInfo,
@@ -446,9 +453,6 @@ class LogfileManager final : public application_features::ApplicationFeature {
   std::string logfileName(Logfile::IdType) const;
 
  private:
-  // pointer to the server
-  TRI_server_t* _server;
-
   // the arangod config variable containing the database path
   std::string _databasePath;
 
@@ -462,7 +466,7 @@ class LogfileManager final : public application_features::ApplicationFeature {
   bool _ignoreRecoveryErrors = false;
   uint32_t _filesize = 32 * 1024 * 1024;
   uint32_t _maxOpenLogfiles = 0;
-  uint32_t _reserveLogfiles = 4;
+  uint32_t _reserveLogfiles = 3;
   uint32_t _numberOfSlots = 1048576;
   uint64_t _syncInterval = 100;
   uint64_t _throttleWhenPending = 0;
@@ -514,15 +518,24 @@ class LogfileManager final : public application_features::ApplicationFeature {
   // a lock protecting the shutdown file
   Mutex _shutdownFileLock;
 
-  // a lock protecting _transactions and _failedTransactions
-  basics::ReadWriteLock _transactionsLock;
+  // a lock protecting ALL buckets in _transactions
+  basics::ReadWriteLock _allTransactionsLock;
 
-  // currently ongoing transactions
-  std::unordered_map<TRI_voc_tid_t, std::pair<Logfile::IdType, Logfile::IdType>>
-      _transactions;
+#ifdef _WIN32
+  struct {
+#else
+  struct alignas(64) {
+#endif
+    // a lock protecting _activeTransactions and _failedTransactions
+    basics::ReadWriteLock _lock;
 
-  // set of failed transactions
-  std::unordered_set<TRI_voc_tid_t> _failedTransactions;
+    // currently ongoing transactions
+    std::unordered_map<TRI_voc_tid_t, std::pair<Logfile::IdType, Logfile::IdType>>
+        _activeTransactions;
+
+    // set of failed transactions
+    std::unordered_set<TRI_voc_tid_t> _failedTransactions;
+  } _transactions[numBuckets];
 
   // set of dropped collections
   /// this is populated during recovery and not used afterwards
@@ -537,7 +550,7 @@ class LogfileManager final : public application_features::ApplicationFeature {
   Mutex _idLock;
 
   // whether or not write-throttling is currently enabled
-  int _writeThrottled;
+  bool _writeThrottled;
 
   // whether or not we have been shut down already
   volatile sig_atomic_t _shutdown;

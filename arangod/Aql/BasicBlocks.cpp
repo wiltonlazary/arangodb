@@ -28,7 +28,22 @@
 
 using namespace arangodb::aql;
 
-using Json = arangodb::basics::Json;
+void SingletonBlock::buildWhitelist() {
+  if (!_whitelistBuilt) {
+    auto en = static_cast<SingletonNode const*>(getPlanNode());
+    auto const& registerPlan = en->getRegisterPlan()->varInfo;
+    std::unordered_set<Variable const*> const& varsUsedLater = en->getVarsUsedLater();
+
+    for (auto const& it : varsUsedLater) {
+      auto it2 = registerPlan.find(it->id);
+
+      if (it2 != registerPlan.end()) {
+        _whitelist.emplace((*it2).second.registerId);
+      }
+    }
+  }
+  _whitelistBuilt = true;
+}
 
 /// @brief initializeCursor, store a copy of the register values coming from
 /// above
@@ -38,27 +53,17 @@ int SingletonBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   deleteInputVariables();
 
   if (items != nullptr) {
-    auto en = static_cast<SingletonNode const*>(getPlanNode());
-    auto const& registerPlan = en->getRegisterPlan()->varInfo;
-    std::unordered_set<Variable const*> const& varsUsedLater =
-        en->getVarsUsedLater();
-
     // build a whitelist with all the registers that we will copy from above
-    std::unordered_set<RegisterId> whitelist;
-
-    for (auto const& it : varsUsedLater) {
-      auto it2 = registerPlan.find(it->id);
-
-      if (it2 != registerPlan.end()) {
-        whitelist.emplace((*it2).second.registerId);
-      }
-    }
-
-    _inputRegisterValues = items->slice(pos, whitelist);
+    buildWhitelist();
+    deleteInputVariables();
+    TRI_ASSERT(_whitelistBuilt);
+    _inputRegisterValues = items->slice(pos, _whitelist);
   }
 
   _done = false;
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 
@@ -87,14 +92,23 @@ int SingletonBlock::getOrSkipSome(size_t,  // atLeast,
 
     try {
       if (_inputRegisterValues != nullptr) {
+        buildWhitelist();
+        TRI_ASSERT(_whitelistBuilt); 
+
         skipped++;
         for (RegisterId reg = 0; reg < _inputRegisterValues->getNrRegs();
              ++reg) {
+          if (_whitelist.find(reg) == _whitelist.end()) {
+            continue;
+          }
           TRI_IF_FAILURE("SingletonBlock::getOrSkipSome") {
             THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
           }
 
           AqlValue a = _inputRegisterValues->getValue(0, reg);
+          if (a.isEmpty()) {
+            continue;
+          }
           _inputRegisterValues->steal(a);
 
           try {
@@ -123,6 +137,8 @@ int SingletonBlock::getOrSkipSome(size_t,  // atLeast,
 
   _done = true;
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 
@@ -135,8 +151,6 @@ FilterBlock::FilterBlock(ExecutionEngine* engine, FilterNode const* en)
 }
 
 FilterBlock::~FilterBlock() {}
-
-int FilterBlock::initialize() { return ExecutionBlock::initialize(); }
 
 /// @brief internal function to get another block
 bool FilterBlock::getBlock(size_t atLeast, size_t atMost) {
@@ -178,6 +192,8 @@ bool FilterBlock::getBlock(size_t atLeast, size_t atMost) {
   }
 
   return true;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 
@@ -287,6 +303,8 @@ int FilterBlock::getOrSkipSome(size_t atLeast, size_t atMost, bool skipping,
     }
   }
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 
@@ -314,16 +332,9 @@ bool FilterBlock::hasMore() {
   // in it.
 
   return true;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
-}
-
-int LimitBlock::initialize() {
-  int res = ExecutionBlock::initialize();
-
-  if (res != TRI_ERROR_NO_ERROR) {
-    return res;
-  }
-  return TRI_ERROR_NO_ERROR;
 }
 
 int LimitBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
@@ -335,6 +346,8 @@ int LimitBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   _state = 0;
   _count = 0;
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 
@@ -353,11 +366,14 @@ int LimitBlock::getOrSkipSome(size_t atLeast, size_t atMost, bool skipping,
       if (_engine->_stats.fullCount == -1) {
         _engine->_stats.fullCount = 0;
       }
-      _engine->_stats.fullCount += static_cast<int64_t>(_offset);
     }
 
     if (_offset > 0) {
-      ExecutionBlock::_dependencies[0]->skip(_offset);
+      size_t numActuallySkipped = 0;
+      ExecutionBlock::_dependencies[0]->skip(_offset, numActuallySkipped);
+      if (_fullCount) {
+        _engine->_stats.fullCount += static_cast<int64_t>(numActuallySkipped);
+      }
     }
     _state = 1;
     _count = 0;
@@ -418,19 +434,24 @@ int LimitBlock::getOrSkipSome(size_t atLeast, size_t atMost, bool skipping,
   }
 
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();
 }
 
 AqlItemBlock* ReturnBlock::getSome(size_t atLeast, size_t atMost) {
   DEBUG_BEGIN_BLOCK();
+  traceGetSomeBegin();
   std::unique_ptr<AqlItemBlock> res(
       ExecutionBlock::getSomeWithoutRegisterClearout(atLeast, atMost));
 
   if (res.get() == nullptr) {
+    traceGetSomeEnd(nullptr);
     return nullptr;
   }
 
   if (_returnInheritedResults) {
+    traceGetSomeEnd(res.get());
     return res.release();
   }
 
@@ -473,7 +494,10 @@ AqlItemBlock* ReturnBlock::getSome(size_t atLeast, size_t atMost) {
   delete res.get();
   res.release();
 
+  traceGetSomeEnd(stripped.get());
   return stripped.release();
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();
 }
 
@@ -489,6 +513,8 @@ RegisterId ReturnBlock::returnInheritedResults() {
   TRI_ASSERT(it != ep->getRegisterPlan()->varInfo.end());
 
   return it->second.registerId;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();
 }
 
@@ -497,6 +523,8 @@ int NoResultsBlock::initializeCursor(AqlItemBlock*, size_t) {
   DEBUG_BEGIN_BLOCK();  
   _done = true;
   return TRI_ERROR_NO_ERROR;
+
+  // cppcheck-suppress style
   DEBUG_END_BLOCK();  
 }
 

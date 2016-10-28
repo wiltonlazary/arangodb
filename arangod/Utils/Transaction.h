@@ -26,7 +26,9 @@
 
 #include "Basics/Common.h"
 #include "Basics/Exceptions.h"
+#include "Basics/StringRef.h"
 #include "Cluster/ServerState.h"
+#include "Indexes/IndexElement.h"
 #include "Utils/OperationOptions.h"
 #include "Utils/OperationResult.h"
 #include "VocBase/transaction.h"
@@ -35,13 +37,9 @@
 
 #include <velocypack/Slice.h>
 
-#ifdef ARANGODB_ENABLE_ROCKSDB
 namespace rocksdb {
 class Transaction;
 }
-#endif
-
-struct TRI_document_collection_t;
 
 namespace arangodb {
 
@@ -55,12 +53,22 @@ class Builder;
 }
 
 class Index;
+class ManagedDocumentResult;
+class RevisionCacheChunk;
 
 namespace aql {
 class Ast;
 struct AstNode;
 class SortCondition;
 struct Variable;
+}
+
+namespace rest {
+  enum class ResponseCode; 
+}
+
+namespace traverser {
+class BaseTraverserEngine;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -73,14 +81,17 @@ struct OperationCursor;
 class TransactionContext;
 
 class Transaction {
+  friend class traverser::BaseTraverserEngine;
+
  public:
+
+  double const TRX_FOLLOWER_TIMEOUT = 3.0;
 
   class IndexHandle {
     friend class Transaction;
     std::shared_ptr<arangodb::Index> _index;
    public:
-    IndexHandle() {
-    }
+    IndexHandle() = default;
     void toVelocyPack(arangodb::velocypack::Builder& builder,
                       bool withFigures) const;
     bool operator==(IndexHandle const& other) const {
@@ -91,6 +102,10 @@ class Transaction {
     }
     explicit IndexHandle(std::shared_ptr<arangodb::Index> idx) : _index(idx) {
     }
+    std::vector<std::vector<std::string>> fieldNames() const;
+
+    bool isEdgeIndex() const;
+
    private:
     std::shared_ptr<arangodb::Index> getIndex() const;
   };
@@ -113,8 +128,7 @@ class Transaction {
   /// @brief create the transaction
   //////////////////////////////////////////////////////////////////////////////
 
-  Transaction(std::shared_ptr<TransactionContext> transactionContext, 
-              TRI_voc_tid_t externalId);
+  explicit Transaction(std::shared_ptr<TransactionContext> transactionContext);
 
  public:
 
@@ -157,8 +171,12 @@ class Transaction {
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return role of server in cluster
   //////////////////////////////////////////////////////////////////////////////
-  
+
   inline ServerState::RoleEnum serverRole() const { return _serverRole; }
+  
+  bool isCluster();
+
+  int resolveId(char const* handle, size_t length, TRI_voc_cid_t& cid, char const*& key, size_t& outLength); 
   
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return a pointer to the transaction context
@@ -167,14 +185,16 @@ class Transaction {
   std::shared_ptr<TransactionContext> transactionContext() const {
     return _transactionContext;
   }
-
+  
+  inline TransactionContext* transactionContextPtr() const {
+    return _transactionContextPtr;
+  }
+  
   //////////////////////////////////////////////////////////////////////////////
   /// @brief get (or create) a rocksdb WriteTransaction
   //////////////////////////////////////////////////////////////////////////////
 
-#ifdef ARANGODB_ENABLE_ROCKSDB
   rocksdb::Transaction* rocksTransaction();
-#endif
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief add a transaction hint
@@ -229,7 +249,7 @@ class Transaction {
   //////////////////////////////////////////////////////////////////////////////
 
   bool isSingleOperationTransaction() const {
-    return TRI_IsSingleOperationTransaction(this->getInternals());
+    return TRI_IsSingleOperationTransaction(_trx);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -274,23 +294,25 @@ class Transaction {
   /// @brief return a collection name
   //////////////////////////////////////////////////////////////////////////////
 
-  std::string name(TRI_voc_cid_t cid) const {
-    auto c = trxCollection(cid);
-    TRI_ASSERT(c != nullptr);
-    return c->_collection->_name;
-  }
+  std::string name(TRI_voc_cid_t cid) const;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief order a ditch for a collection
   //////////////////////////////////////////////////////////////////////////////
 
   arangodb::DocumentDitch* orderDitch(TRI_voc_cid_t);
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief whether or not a ditch has been created for the collection
+  //////////////////////////////////////////////////////////////////////////////
+  
+  bool hasDitch(TRI_voc_cid_t cid) const;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief extract the _key attribute from a slice
   //////////////////////////////////////////////////////////////////////////////
 
-  static std::string extractKeyPart(VPackSlice const);
+  static StringRef extractKeyPart(VPackSlice const);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief extract the _id attribute from a slice, and convert it into a 
@@ -336,14 +358,6 @@ class Transaction {
   static VPackSlice extractToFromDocument(VPackSlice);
   
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief quick access to the _rev attribute in a database document
-  /// the document must have at least three attributes: _key, _id, _rev 
-  /// (possibly with _from and _to in between)
-  //////////////////////////////////////////////////////////////////////////////
-  
-  static VPackSlice extractRevFromDocument(VPackSlice);
-
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief extract _key and _rev from a document, in one go
   /// this is an optimized version used when loading collections, WAL 
   /// collection and compaction
@@ -352,6 +366,13 @@ class Transaction {
   static void extractKeyAndRevFromDocument(VPackSlice slice,
                                            VPackSlice& keySlice,
                                            TRI_voc_rid_t& revisionId);
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief extract _rev from a database document
+  //////////////////////////////////////////////////////////////////////////////
+  
+  static TRI_voc_rid_t extractRevFromDocument(VPackSlice slice);
+  static VPackSlice extractRevSliceFromDocument(VPackSlice slice);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief read any (random) document
@@ -377,13 +398,17 @@ class Transaction {
     auto collection = this->trxCollection(cid);
 
     if (collection == nullptr) {
-      int res = TRI_AddCollectionTransaction(this->getInternals(), cid,
+      int res = TRI_AddCollectionTransaction(_trx, cid,
                                              type,
-                                             this->nestingLevel(), true, true);
+                                             _nestingLevel, true, _allowImplicitCollections);
       if (res != TRI_ERROR_NO_ERROR) {
+        if (res == TRI_ERROR_TRANSACTION_UNREGISTERED_COLLECTION) {
+          // special error message to indicate which collection was undeclared
+          THROW_ARANGO_EXCEPTION_MESSAGE(res, std::string(TRI_errno_string(res)) + ": " + collectionName + " [" + TRI_TransactionTypeGetStr(type) + "]");
+        }
         THROW_ARANGO_EXCEPTION(res);
       }
-      TRI_EnsureCollectionsTransaction(this->getInternals());
+      TRI_EnsureCollectionsTransaction(_trx, _nestingLevel);
       collection = this->trxCollection(cid);
 
       if (collection == nullptr) {
@@ -407,7 +432,7 @@ class Transaction {
 
   bool isEdgeCollection(std::string const& collectionName);
   bool isDocumentCollection(std::string const& collectionName);
-  TRI_col_type_t getCollectionType(std::string const& collectionName);
+  TRI_col_type_e getCollectionType(std::string const& collectionName);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return the name of a collection
@@ -426,7 +451,7 @@ class Transaction {
   //////////////////////////////////////////////////////////////////////////////
 
   void invokeOnAllElements(std::string const& collectionName,
-                           std::function<bool(TRI_doc_mptr_t const*)>);
+                           std::function<bool(SimpleIndexElement const&)>);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return one  document from a collection, fast path
@@ -435,11 +460,28 @@ class Transaction {
   ///        If there was an error the code is returned and it is guaranteed
   ///        that result remains unmodified.
   ///        Does not care for revision handling!
+  ///        shouldLock indicates if the transaction should lock the collection
+  ///        if set to false it will not lock it (make sure it is already locked!)
   //////////////////////////////////////////////////////////////////////////////
 
   int documentFastPath(std::string const& collectionName,
+                       ManagedDocumentResult* mmdr,
                        arangodb::velocypack::Slice const value,
-                       arangodb::velocypack::Builder& result);
+                       arangodb::velocypack::Builder& result,
+                       bool shouldLock);
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief return one  document from a collection, fast path
+  ///        If everything went well the result will contain the found document
+  ///        (as an external on single_server)  and this function will return TRI_ERROR_NO_ERROR.
+  ///        If there was an error the code is returned
+  ///        Does not care for revision handling!
+  ///        Must only be called on a local server, not in cluster case!
+  //////////////////////////////////////////////////////////////////////////////
+  
+  int documentFastPathLocal(std::string const& collectionName,
+                            std::string const& key,
+                            ManagedDocumentResult& result);
  
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return one or multiple documents from a collection
@@ -521,6 +563,17 @@ class Transaction {
       arangodb::aql::Variable const*, arangodb::aql::SortCondition const*,
       size_t, std::vector<IndexHandle>&, bool&);
 
+  /// @brief Gets the best fitting index for one specific condition.
+  ///        Difference to IndexHandles: Condition is only one NARY_AND
+  ///        and the Condition stays unmodified. Also does not care for sorting.
+  ///        Returns false if no index could be found.
+  ///        If it returned true, the AstNode contains the specialized condition
+
+  bool getBestIndexHandleForFilterCondition(std::string const&,
+                                            arangodb::aql::AstNode*&,
+                                            arangodb::aql::Variable const*,
+                                            size_t, IndexHandle&);
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Checks if the index supports the filter condition.
   /// note: the caller must have read-locked the underlying collection when
@@ -559,10 +612,11 @@ class Transaction {
   /// calling this method
   //////////////////////////////////////////////////////////////////////////////
 
-  OperationCursor* indexScanForCondition(
-      std::string const& collectionName, IndexHandle const& indexId,
-      arangodb::aql::Ast*, arangodb::aql::AstNode const*,
-      arangodb::aql::Variable const*, uint64_t, uint64_t, bool);
+  OperationCursor* indexScanForCondition(IndexHandle const&,
+                                         arangodb::aql::AstNode const*,
+                                         arangodb::aql::Variable const*,
+                                         ManagedDocumentResult*,
+                                         uint64_t, uint64_t, bool);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief factory for OperationCursor objects
@@ -570,10 +624,11 @@ class Transaction {
   /// calling this method
   //////////////////////////////////////////////////////////////////////////////
 
-  std::shared_ptr<OperationCursor> indexScan(std::string const& collectionName,
+  std::unique_ptr<OperationCursor> indexScan(std::string const& collectionName,
                                              CursorType cursorType,
                                              IndexHandle const& indexId,
                                              VPackSlice const search,
+                                             ManagedDocumentResult*,
                                              uint64_t skip, uint64_t limit,
                                              uint64_t batchSize, bool reverse);
 
@@ -581,7 +636,7 @@ class Transaction {
   /// @brief test if a collection is already locked
   //////////////////////////////////////////////////////////////////////////////
 
-  bool isLocked(TRI_document_collection_t*, TRI_transaction_type_e);
+  bool isLocked(arangodb::LogicalCollection*, TRI_transaction_type_e);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief return the setup state
@@ -589,7 +644,7 @@ class Transaction {
 
   int setupState() { return _setupState; }
   
-  TRI_document_collection_t* documentCollection(TRI_voc_cid_t) const;
+  arangodb::LogicalCollection* documentCollection(TRI_voc_cid_t) const;
   
 //////////////////////////////////////////////////////////////////////////////
 /// @brief get the index by it's identifier. Will either throw or
@@ -605,6 +660,14 @@ class Transaction {
 
   std::vector<std::shared_ptr<arangodb::Index>> indexesForCollection(
       std::string const&);
+
+  /// @brief Lock all collections. Only works for selected sub-classes
+  virtual int lockCollections();
+
+  /// @brief Clone this transaction. Only works for selected sub-classes
+  virtual Transaction* clone() const;
+  
+  void addChunk(RevisionCacheChunk* chunk);
 
  private:
   
@@ -622,14 +685,12 @@ class Transaction {
   /// argument as a single object.
   //////////////////////////////////////////////////////////////////////////////
 
-  void buildDocumentIdentity(TRI_document_collection_t* document,
-                             VPackBuilder& builder,
-                             TRI_voc_cid_t cid,
-                             std::string const& key,
-                             VPackSlice const rid,
-                             VPackSlice const oldRid,
-                             TRI_doc_mptr_t const* oldMptr,
-                             TRI_doc_mptr_t const* newMptr);
+  void buildDocumentIdentity(arangodb::LogicalCollection* collection,
+                             VPackBuilder& builder, TRI_voc_cid_t cid,
+                             StringRef const& key, TRI_voc_rid_t rid,
+                             TRI_voc_rid_t oldRid,
+                             uint8_t const* oldVPack,
+                             uint8_t const* newVPack);
 
   OperationResult documentCoordinator(std::string const& collectionName,
                                       VPackSlice const value,
@@ -703,7 +764,7 @@ class Transaction {
   /// @brief return the collection
   //////////////////////////////////////////////////////////////////////////////
 
-  TRI_document_collection_t* documentCollection(
+  arangodb::LogicalCollection* documentCollection(
       TRI_transaction_collection_t const*) const;
   
   //////////////////////////////////////////////////////////////////////////////
@@ -748,6 +809,9 @@ class Transaction {
 
   void setAllowImplicitCollections(bool value) {
     _allowImplicitCollections = value;
+    if (_trx != nullptr) {
+      _trx->_allowImplicit = value;
+    }
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -764,6 +828,30 @@ class Transaction {
 
  private:
 
+/// @brief Helper create a Cluster Communication document
+  OperationResult clusterResultDocument(
+      rest::ResponseCode const& responseCode,
+      std::shared_ptr<arangodb::velocypack::Builder> const& resultBody,
+      std::unordered_map<int, size_t> const& errorCounter) const;
+
+/// @brief Helper create a Cluster Communication insert
+  OperationResult clusterResultInsert(
+      rest::ResponseCode const& responseCode,
+      std::shared_ptr<arangodb::velocypack::Builder> const& resultBody,
+      std::unordered_map<int, size_t> const& errorCounter) const;
+
+/// @brief Helper create a Cluster Communication modify result
+  OperationResult clusterResultModify(
+      rest::ResponseCode const& responseCode,
+      std::shared_ptr<arangodb::velocypack::Builder> const& resultBody,
+      std::unordered_map<int, size_t> const& errorCounter) const;
+
+/// @brief Helper create a Cluster Communication remove result
+  OperationResult clusterResultRemove(
+      rest::ResponseCode const& responseCode,
+      std::shared_ptr<arangodb::velocypack::Builder> const& resultBody,
+      std::unordered_map<int, size_t> const& errorCounter) const;
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief sort ORs for the same attribute so they are in ascending value
   /// order. this will only work if the condition is for a single attribute
@@ -773,7 +861,7 @@ class Transaction {
   bool sortOrs(arangodb::aql::Ast* ast,
                arangodb::aql::AstNode* root,
                arangodb::aql::Variable const* variable,
-               std::vector<arangodb::Transaction::IndexHandle>& usedIndexes) const;
+               std::vector<arangodb::Transaction::IndexHandle>& usedIndexes);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief findIndexHandleForAndNode
@@ -787,6 +875,16 @@ class Transaction {
       std::vector<Transaction::IndexHandle>& usedIndexes,
       arangodb::aql::AstNode*& specializedCondition,
       bool& isSparse) const;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief findIndexHandleForAndNode, Shorthand which does not support Sort
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool findIndexHandleForAndNode(std::vector<std::shared_ptr<Index>> indexes,
+                                 arangodb::aql::AstNode*& node,
+                                 arangodb::aql::Variable const* reference,
+                                 size_t itemsInCollection,
+                                 Transaction::IndexHandle& usedIndex) const;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief Get one index by id for a collection name, coordinator case
@@ -857,12 +955,6 @@ class Transaction {
   void freeTransaction();
 
  private:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief external transaction id. used in replication only
-  //////////////////////////////////////////////////////////////////////////////
-
-  TRI_voc_tid_t _externalId;
-  
   //////////////////////////////////////////////////////////////////////////////
   /// @brief role of server in cluster
   //////////////////////////////////////////////////////////////////////////////
@@ -942,6 +1034,28 @@ class Transaction {
 
   std::shared_ptr<TransactionContext> _transactionContext;
 
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief cache for last handed out DocumentDitch
+  //////////////////////////////////////////////////////////////////////////////
+  
+  struct {
+    TRI_voc_cid_t cid = 0;
+    DocumentDitch* ditch = nullptr;
+  }
+  _ditchCache;
+
+  struct {
+    TRI_voc_cid_t cid = 0;
+    std::string name;
+  }
+  _collectionCache;
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief pointer to transaction context (faster than shared ptr)
+  //////////////////////////////////////////////////////////////////////////////
+  
+  TransactionContext* const _transactionContextPtr;
+
  public:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief makeNolockHeaders
@@ -968,9 +1082,14 @@ class TransactionBuilderLeaser {
   explicit TransactionBuilderLeaser(arangodb::Transaction*); 
   explicit TransactionBuilderLeaser(arangodb::TransactionContext*); 
   ~TransactionBuilderLeaser();
-  arangodb::velocypack::Builder* builder() const { return _builder; }
-  arangodb::velocypack::Builder* operator->() const { return _builder; }
-  arangodb::velocypack::Builder* get() const { return _builder; }
+  inline arangodb::velocypack::Builder* builder() const { return _builder; }
+  inline arangodb::velocypack::Builder* operator->() const { return _builder; }
+  inline arangodb::velocypack::Builder* get() const { return _builder; }
+  inline arangodb::velocypack::Builder* steal() { 
+    arangodb::velocypack::Builder* res = _builder;
+    _builder = nullptr;
+    return res;
+  }
  private:
   arangodb::TransactionContext* _transactionContext;
   arangodb::velocypack::Builder* _builder;

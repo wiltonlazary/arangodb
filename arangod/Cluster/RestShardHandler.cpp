@@ -25,28 +25,28 @@
 #include "Basics/StaticStrings.h"
 #include "Cluster/ServerState.h"
 #include "Cluster/ClusterComm.h"
-#include "Dispatcher/Dispatcher.h"
 #include "Rest/HttpRequest.h"
 #include "Rest/HttpResponse.h"
 
 using namespace arangodb;
 using namespace arangodb::rest;
 
-RestShardHandler::RestShardHandler(arangodb::HttpRequest* request)
-    : RestBaseHandler(request) {
-}
+RestShardHandler::RestShardHandler(GeneralRequest* request,
+                                   GeneralResponse* response)
+    : RestBaseHandler(request, response) {}
 
 bool RestShardHandler::isDirect() const { return true; }
 
-arangodb::rest::HttpHandler::status_t RestShardHandler::execute() {
+RestStatus RestShardHandler::execute() {
   bool found;
-  std::string const& _coordinator = _request->header(StaticStrings::Coordinator, found);
+  std::string const& _coordinator =
+      _request->header(StaticStrings::Coordinator, found);
 
   if (!found) {
-    generateError(arangodb::GeneralResponse::ResponseCode::BAD,
-                  (int)arangodb::GeneralResponse::ResponseCode::BAD,
+    generateError(arangodb::rest::ResponseCode::BAD,
+                  (int)arangodb::rest::ResponseCode::BAD,
                   "header 'X-Arango-Coordinator' is missing");
-    return status_t(HANDLER_DONE);
+    return RestStatus::DONE;
   }
 
   std::string coordinatorHeader = _coordinator;
@@ -54,11 +54,12 @@ arangodb::rest::HttpHandler::status_t RestShardHandler::execute() {
       ClusterComm::instance()->processAnswer(coordinatorHeader, stealRequest());
 
   if (result == "") {
-    createResponse(arangodb::GeneralResponse::ResponseCode::ACCEPTED);
+    resetResponse(arangodb::rest::ResponseCode::ACCEPTED);
   } else {
-    generateError(arangodb::GeneralResponse::ResponseCode::BAD,
-                  (int)arangodb::GeneralResponse::ResponseCode::BAD, result.c_str());
+    generateError(arangodb::rest::ResponseCode::BAD,
+                  (int)arangodb::rest::ResponseCode::BAD,
+                  result.c_str());
   }
 
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

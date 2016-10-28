@@ -23,7 +23,7 @@
 #include "WorkMonitorHandler.h"
 
 #include "Basics/StringUtils.h"
-#include "HttpServer/HttpHandler.h"
+#include "GeneralServer/RestHandler.h"
 #include "Rest/HttpRequest.h"
 #include "velocypack/Builder.h"
 #include "velocypack/velocypack-aliases.h"
@@ -33,37 +33,41 @@ using namespace arangodb::basics;
 using namespace arangodb::rest;
 
 using arangodb::HttpRequest;
-using arangodb::rest::HttpHandler;
+using arangodb::rest::RestHandler;
 
-WorkMonitorHandler::WorkMonitorHandler(HttpRequest* request)
-    : RestBaseHandler(request) {}
+WorkMonitorHandler::WorkMonitorHandler(GeneralRequest* request,
+                                       GeneralResponse* response)
+    : RestBaseHandler(request, response) {}
 
 bool WorkMonitorHandler::isDirect() const { return true; }
 
-HttpHandler::status_t WorkMonitorHandler::execute() {
+RestStatus WorkMonitorHandler::execute() {
   auto suffix = _request->suffix();
   size_t const len = suffix.size();
   auto const type = _request->requestType();
 
-  if (type == GeneralRequest::RequestType::GET) {
+  if (type == rest::RequestType::GET) {
     if (len != 0) {
-      generateError(GeneralResponse::ResponseCode::BAD,
+      generateError(rest::ResponseCode::BAD,
                     TRI_ERROR_HTTP_BAD_PARAMETER,
                     "expecting GET /_admin/work-monitor");
-      return status_t(HANDLER_DONE);
+      return RestStatus::DONE;
     }
 
-    WorkMonitor::requestWorkOverview(_taskId);
-    return status_t(HANDLER_ASYNC);
+    std::shared_ptr<RestHandler> self = shared_from_this();
+
+    return RestStatus::WAIT_FOR([self](std::function<void()> next) {
+        WorkMonitor::requestWorkOverview(self, next);
+      }).done();
   }
 
-  if (type == GeneralRequest::RequestType::DELETE_REQ) {
+  if (type == rest::RequestType::DELETE_REQ) {
     if (len != 1) {
-      generateError(GeneralResponse::ResponseCode::BAD,
+      generateError(rest::ResponseCode::BAD,
                     TRI_ERROR_HTTP_BAD_PARAMETER,
                     "expecting DELETE /_admin/work-monitor/<id>");
 
-      return status_t(HANDLER_DONE);
+      return RestStatus::DONE;
     }
 
     uint64_t id = StringUtils::uint64(suffix[0]);
@@ -76,11 +80,11 @@ HttpHandler::status_t WorkMonitorHandler::execute() {
 
     VPackSlice s(b.start());
 
-    generateResult(GeneralResponse::ResponseCode::OK, s);
-    return status_t(HANDLER_DONE);
+    generateResult(rest::ResponseCode::OK, s);
+    return RestStatus::DONE;
   }
 
-  generateError(GeneralResponse::ResponseCode::BAD,
+  generateError(rest::ResponseCode::BAD,
                 TRI_ERROR_HTTP_METHOD_NOT_ALLOWED, "expecting GET or DELETE");
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

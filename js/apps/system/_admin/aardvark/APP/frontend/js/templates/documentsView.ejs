@@ -57,7 +57,12 @@
 
 <div class="arangoDropdown documentsDropdown">
   <div id="filterHeader" class="headerDropdown">
-    <div class="queryline">
+     <div style="float: right;">
+       <button id="resetView" class="button-warning btn-old-padding">Reset</button>
+       <button id="filterSend" class="button-success btn-old-padding">Filter</button>
+       <input type="text" id="docsSort" style="float: right" placeholder="Sort by attribute"></input>
+    </div>
+    <div class="queryline querylineAdd">
        <input id="attribute_name0" type="text" placeholder="Attribute name"><select name="operator" id="operator0" class="filterSelect">
            <option value="==">==</option>
            <option value="!=">!=</option>
@@ -69,18 +74,15 @@
            <option value="IN">IN</option>
            <option value="NOT IN">NOT IN</option>
        </select><input id="attribute_value0" type="text" placeholder="Attribute value" class="filterValue">
-       <a id="addFilterItem" class="add-filter-item"><i class="icon-plus arangoicon"></i></a>
-       <button id="resetView" class="button-warning btn-old-padding">Reset</button>
-       <button id="filterSend" class="button-success btn-old-padding">Filter</button>
-       <input type="text" id="docsSort" style="float: right" placeholder="Sort by attribute"></input>
-    </div>
+       <a id="addFilterItem" class="add-filter-item"><i class="fa fa-plus-circle"></i></a>
+     </div>
   </div>
 
   <div id="importHeader" class="dropdownImport">
     <div class="queryline">
       <input id="importDocuments" name="importDocuments" type="file" accept="application/json" />
       <button id="confirmDocImport" class="button-success btn-old-padding" style="float:right" disabled>
-        <img id="uploadIndicator" class="upload-indicator" src="img/ajax-loader.gif"/>Import JSON
+        <span class="upload-indicator"><i id="uploadIndicator" class="fa fa-circle-o-notch fa-spin fa-fw"></i></span>Import JSON
       </button>
       <div title='Example input data:<br /><br /> I. Line-wise: <br /> { "_key": "key1", ... } <br /> { "_key": "key2", ... } <br /><br /> or <br /><br /> II. JSON documents embedded into a list: <br /> [ <br /> &nbsp; { "_key": "key1", ... }, <br /> &nbsp; { "_key": "key2", ... }, <br /> &nbsp; ... <br /> ]' class="upload-info" style="float:left; margin-top:7px; margin-right: 10px;"><i style="font-size: 13pt;" class="fa fa-info-circle"></i></div>
     </div>
@@ -130,7 +132,7 @@
     <a class="arangoHeader">Delete Document?</a>
   </div>
   <div class="modal-body" id="deleteDoc">
-    <p>There is no way back…</p>
+    <p style="padding: 20px;">There is no way back…</p>
   </div>
   <div class="modal-footer">
     <button class="button-close" data-dismiss="modal" aria-hidden="true">Close</button>

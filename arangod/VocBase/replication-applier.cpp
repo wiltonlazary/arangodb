@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "replication-applier.h"
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/FileUtils.h"
 #include "Basics/ReadLocker.h"
 #include "Basics/ScopeGuard.h"
@@ -31,14 +32,13 @@
 #include "Basics/WriteLocker.h"
 #include "Basics/conversions.h"
 #include "Basics/files.h"
-#include "Basics/json.h"
 #include "Basics/tri-strings.h"
 #include "Logger/Logger.h"
 #include "Replication/ContinuousSyncer.h"
 #include "Rest/Version.h"
-#include "VocBase/collection.h"
-#include "VocBase/document-collection.h"
-#include "VocBase/server.h"
+#include "RestServer/ServerIdFeature.h"
+#include "StorageEngine/EngineSelectorFeature.h"
+#include "StorageEngine/StorageEngine.h"
 #include "VocBase/transaction.h"
 #include "VocBase/vocbase.h"
 
@@ -79,7 +79,8 @@ static int ReadTick(VPackSlice const& slice, char const* attributeName,
 ////////////////////////////////////////////////////////////////////////////////
 
 static std::string GetConfigurationFilename(TRI_vocbase_t* vocbase) {
-  return arangodb::basics::FileUtils::buildFilename(vocbase->_path, "REPLICATION-APPLIER-CONFIG");
+  StorageEngine* engine = EngineSelectorFeature::ENGINE;
+  return arangodb::basics::FileUtils::buildFilename(engine->databasePath(vocbase), "REPLICATION-APPLIER-CONFIG");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -120,22 +121,31 @@ static int LoadConfiguration(TRI_vocbase_t* vocbase,
   VPackSlice value = slice.get("database");
 
   if (!value.isString()) {
-    config->_database = std::string(vocbase->_name);
+    config->_database = vocbase->name();
   } else {
     config->_database = value.copyString();
   }
 
   // read username / password
   value = slice.get("username");
-
+  bool hasUsernamePassword = false;
   if (value.isString()) {
+    hasUsernamePassword = true;
     config->_username = value.copyString();
   }
 
   value = slice.get("password");
 
   if (value.isString()) {
+    hasUsernamePassword = true;
     config->_password = value.copyString();
+  }
+
+  if (!hasUsernamePassword) {
+    value = slice.get("jwt");
+    if (value.isString()) {
+      config->_jwt = value.copyString();
+    }
   }
 
   value = slice.get("requestTimeout");
@@ -208,6 +218,12 @@ static int LoadConfiguration(TRI_vocbase_t* vocbase,
 
   if (value.isBoolean()) {
     config->_incremental = value.getBoolean();
+  }
+
+  value = slice.get("useCollectionId");
+
+  if (value.isBoolean()) {
+    config->_useCollectionId = value.getBoolean();
   }
 
   value = slice.get("ignoreErrors");
@@ -288,7 +304,8 @@ static int LoadConfiguration(TRI_vocbase_t* vocbase,
 ////////////////////////////////////////////////////////////////////////////////
 
 static std::string GetStateFilename(TRI_vocbase_t* vocbase) {
-  return arangodb::basics::FileUtils::buildFilename(vocbase->_path, "REPLICATION-APPLIER-STATE");
+  StorageEngine* engine = EngineSelectorFeature::ENGINE;
+  return arangodb::basics::FileUtils::buildFilename(engine->databasePath(vocbase), "REPLICATION-APPLIER-STATE");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -400,39 +417,31 @@ static void VPackState(VPackBuilder& builder,
 /// @brief create a replication applier
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_replication_applier_t* TRI_CreateReplicationApplier(
-    TRI_server_t* server, TRI_vocbase_t* vocbase) {
-  TRI_replication_applier_t* applier =
-      new TRI_replication_applier_t(server, vocbase);
+TRI_replication_applier_t* TRI_CreateReplicationApplier(TRI_vocbase_t* vocbase) {
+  auto applier = std::make_unique<TRI_replication_applier_t>(vocbase);
 
   TRI_InitStateReplicationApplier(&applier->_state);
 
-  if (vocbase->_type == TRI_VOCBASE_TYPE_NORMAL) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_NORMAL) {
     int res = LoadConfiguration(vocbase, &applier->_configuration);
 
     if (res != TRI_ERROR_NO_ERROR && res != TRI_ERROR_FILE_NOT_FOUND) {
       TRI_DestroyStateReplicationApplier(&applier->_state);
-      delete applier;
-      TRI_set_errno(res);
-
-      return nullptr;
+      THROW_ARANGO_EXCEPTION(res);
     }
 
     res = TRI_LoadStateReplicationApplier(vocbase, &applier->_state);
 
     if (res != TRI_ERROR_NO_ERROR && res != TRI_ERROR_FILE_NOT_FOUND) {
       TRI_DestroyStateReplicationApplier(&applier->_state);
-      delete applier;
-      TRI_set_errno(res);
-
-      return nullptr;
+      THROW_ARANGO_EXCEPTION(res);
     }
   }
 
   applier->setTermination(false);
   applier->setProgress("applier initially created", true);
 
-  return applier;
+  return applier.release();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -445,6 +454,7 @@ TRI_replication_applier_configuration_t::
       _database(),
       _username(),
       _password(),
+      _jwt(),
       _requestTimeout(600.0),
       _connectTimeout(10.0),
       _ignoreErrors(0),
@@ -463,6 +473,7 @@ TRI_replication_applier_configuration_t::
       _requireFromPresent(false),
       _incremental(false),
       _verbose(false),
+      _useCollectionId(true),
       _restrictType(),
       _restrictCollections() {}
 
@@ -488,11 +499,18 @@ void TRI_replication_applier_configuration_t::toVelocyPack(
   if (!_database.empty()) {
     builder.add("database", VPackValue(_database));
   }
+  
+  bool hasUsernamePassword = false;
   if (!_username.empty()) {
+    hasUsernamePassword = true;
     builder.add("username", VPackValue(_username));
   }
   if (includePassword) {
+    hasUsernamePassword = true;
     builder.add("password", VPackValue(_password));
+  }
+  if (!hasUsernamePassword && !_jwt.empty()) {
+    builder.add("jwt", VPackValue(_jwt));
   }
 
   builder.add("requestTimeout", VPackValue(_requestTimeout));
@@ -509,6 +527,7 @@ void TRI_replication_applier_configuration_t::toVelocyPack(
   builder.add("requireFromPresent", VPackValue(_requireFromPresent));
   builder.add("verbose", VPackValue(_verbose));
   builder.add("incremental", VPackValue(_incremental));
+  builder.add("useCollectionId", VPackValue(_useCollectionId));
   builder.add("restrictType", VPackValue(_restrictType));
 
   builder.add("restrictCollections", VPackValue(VPackValueType::Array));
@@ -554,7 +573,7 @@ TRI_replication_applier_configuration_t::toVelocyPack(
 int TRI_ConfigureReplicationApplier(
     TRI_replication_applier_t* applier,
     TRI_replication_applier_configuration_t const* config) {
-  if (applier->_vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (applier->_vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -669,7 +688,7 @@ void TRI_DestroyStateReplicationApplier(
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_RemoveStateReplicationApplier(TRI_vocbase_t* vocbase) {
-  if (vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -691,7 +710,7 @@ int TRI_RemoveStateReplicationApplier(TRI_vocbase_t* vocbase) {
 int TRI_SaveStateReplicationApplier(
     TRI_vocbase_t* vocbase, TRI_replication_applier_state_t const* state,
     bool doSync) {
-  if (vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -701,7 +720,7 @@ int TRI_SaveStateReplicationApplier(
   LOG_TOPIC(TRACE, Logger::REPLICATION)
       << "saving replication applier state to file '" << filename << "'";
 
-  if (!VelocyPackHelper::velocyPackToFile(filename.c_str(), builder.slice(), doSync)) {
+  if (!VelocyPackHelper::velocyPackToFile(filename, builder.slice(), doSync)) {
     return TRI_errno();
   }
 
@@ -714,7 +733,7 @@ int TRI_SaveStateReplicationApplier(
 
 int TRI_LoadStateReplicationApplier(TRI_vocbase_t* vocbase,
                                     TRI_replication_applier_state_t* state) {
-  if (vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -787,6 +806,7 @@ void TRI_replication_applier_configuration_t::update(
   _database = src->_database;
   _username = src->_username;
   _password = src->_password;
+  _jwt = src->_jwt;
   _requestTimeout = src->_requestTimeout;
   _connectTimeout = src->_connectTimeout;
   _ignoreErrors = src->_ignoreErrors;
@@ -800,6 +820,7 @@ void TRI_replication_applier_configuration_t::update(
   _requireFromPresent = src->_requireFromPresent;
   _verbose = src->_verbose;
   _incremental = src->_incremental;
+  _useCollectionId = src->_useCollectionId;
   _restrictType = src->_restrictType;
   _restrictCollections = src->_restrictCollections;
   _connectionRetryWaitTime = src->_connectionRetryWaitTime;
@@ -814,7 +835,7 @@ void TRI_replication_applier_configuration_t::update(
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_RemoveConfigurationReplicationApplier(TRI_vocbase_t* vocbase) {
-  if (vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -834,20 +855,20 @@ int TRI_RemoveConfigurationReplicationApplier(TRI_vocbase_t* vocbase) {
 int TRI_SaveConfigurationReplicationApplier(
     TRI_vocbase_t* vocbase,
     TRI_replication_applier_configuration_t const* config, bool doSync) {
-  if (vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
   std::shared_ptr<VPackBuilder> builder;
   try {
-    builder = config->toVelocyPack(false);
+    builder = config->toVelocyPack(true);
   } catch (...) {
     return TRI_ERROR_OUT_OF_MEMORY;
   }
 
   std::string const filename = GetConfigurationFilename(vocbase);
 
-  if (!VelocyPackHelper::velocyPackToFile(filename.c_str(), builder->slice(), doSync)) {
+  if (!VelocyPackHelper::velocyPackToFile(filename, builder->slice(), doSync)) {
     return TRI_errno();
   } 
   
@@ -858,11 +879,9 @@ int TRI_SaveConfigurationReplicationApplier(
 /// @brief create a replication applier
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_replication_applier_t::TRI_replication_applier_t(TRI_server_t* server,
-                                                     TRI_vocbase_t* vocbase)
-    : _databaseName(vocbase->_name),
+TRI_replication_applier_t::TRI_replication_applier_t(TRI_vocbase_t* vocbase)
+    : _databaseName(vocbase->name()),
       _starts(0),
-      _server(server),
       _vocbase(vocbase),
       _terminateThread(false),
       _state() {}
@@ -882,7 +901,7 @@ TRI_replication_applier_t::~TRI_replication_applier_t() {
 
 int TRI_replication_applier_t::start(TRI_voc_tick_t initialTick, bool useTick,
                                      TRI_voc_tick_t barrierId) {
-  if (_vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (_vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -914,8 +933,7 @@ int TRI_replication_applier_t::start(TRI_voc_tick_t initialTick, bool useTick,
                       "no database configured");
   }
 
-  auto syncer = std::make_unique<arangodb::ContinuousSyncer>(
-      _server, _vocbase, &_configuration, initialTick, useTick, barrierId);
+  auto syncer = std::make_unique<arangodb::ContinuousSyncer>(_vocbase, &_configuration, initialTick, useTick, barrierId);
 
   // reset error
   if (_state._lastError._msg != nullptr) {
@@ -1037,7 +1055,7 @@ void TRI_replication_applier_t::stopInitialSynchronization(bool value) {
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_replication_applier_t::stop(bool resetError) {
-  if (_vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (_vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -1108,7 +1126,7 @@ int TRI_replication_applier_t::forget() {
 ////////////////////////////////////////////////////////////////////////////////
 
 int TRI_replication_applier_t::shutdown() {
-  if (_vocbase->_type == TRI_VOCBASE_TYPE_COORDINATOR) {
+  if (_vocbase->type() == TRI_VOCBASE_TYPE_COORDINATOR) {
     return TRI_ERROR_CLUSTER_UNSUPPORTED;
   }
 
@@ -1275,9 +1293,9 @@ void TRI_replication_applier_t::toVelocyPack(VPackBuilder& builder) const {
   // add server info
   builder.add("server", VPackValue(VPackValueType::Object));
   builder.add("version", VPackValue(ARANGODB_VERSION));
-  builder.add("serverId", VPackValue(std::to_string(TRI_GetIdServer())));
+  builder.add("serverId", VPackValue(std::to_string(ServerIdFeature::getId())));
   builder.close();  // server
-
+  
   if (!config._endpoint.empty()) {
     builder.add("endpoint", VPackValue(config._endpoint));
   }

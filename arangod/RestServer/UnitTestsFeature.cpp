@@ -43,7 +43,8 @@ UnitTestsFeature::UnitTestsFeature(application_features::ApplicationServer* serv
       _result(result) {
   startsAfter("Nonce");
   startsAfter("Server");
-  startsAfter("RestServer");
+  startsAfter("GeneralServer");
+  startsAfter("Bootstrap");
 }
 
 void UnitTestsFeature::start() {
@@ -62,7 +63,14 @@ int UnitTestsFeature::runUnitTests(std::vector<std::string> const& unitTests) {
   DatabaseFeature* database = 
       ApplicationServer::getFeature<DatabaseFeature>("Database");
   V8Context* context =
-      V8DealerFeature::DEALER->enterContext(database->vocbase(), true);
+      V8DealerFeature::DEALER->enterContext(database->systemDatabase(), true);
+
+  if (context == nullptr) {
+    LOG(FATAL) << "cannot acquire V8 context";
+    FATAL_ERROR_EXIT();
+  }
+
+  TRI_DEFER(V8DealerFeature::DEALER->exitContext(context));
 
   auto isolate = context->_isolate;
 
@@ -109,8 +117,6 @@ int UnitTestsFeature::runUnitTests(std::vector<std::string> const& unitTests) {
     }
     localContext->Exit();
   }
-
-  V8DealerFeature::DEALER->exitContext(context);
 
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

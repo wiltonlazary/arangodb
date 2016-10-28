@@ -28,19 +28,14 @@
 #include "RestHandler/RestVocbaseBaseHandler.h"
 
 namespace arangodb {
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief query request handler
-////////////////////////////////////////////////////////////////////////////////
-
 class RestQueryCacheHandler : public RestVocbaseBaseHandler {
  public:
-  explicit RestQueryCacheHandler(HttpRequest*);
+  explicit RestQueryCacheHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestQueryCacheHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
+  RestStatus execute() override;
 
  protected:
   //////////////////////////////////////////////////////////////////////////////

@@ -1630,7 +1630,7 @@ function ahuacatlFunctionsTestSuite () {
         { value: "foobaz", lookup: { foobar: "bar", foobaz: null }, expected: null, def: "foobaz" },
         { value: "foobaz", lookup: { foobar: "bar", foobaz: [ 1, 2, 3 ] }, expected: [ 1, 2, 3 ], def: null },
         { value: "foobaz", lookup: { foobar: "bar" }, expected: null, def: null },
-        { value: "foobaz", lookup: { }, expected: "FOXX", def: "FOXX" },
+        { value: "foobaz", lookup: { }, expected: "Foxx", def: "Foxx" },
         { value: "foobaz", lookup: { foobar: "bar", foobaz: { thefoxx: "is great" } }, expected: { thefoxx: "is great" }, def: null },
         { value: "one", lookup: { one: "two", two: "three", three: "four" }, expected: "two", def: "foo" },
         { value: null, lookup: { "foo": "one", " ": "bar", "empty": 3 }, expected: "bla", def: "bla" },
@@ -2440,6 +2440,26 @@ function ahuacatlFunctionsTestSuite () {
     },
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief test intersect function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testIntersection11 : function () {
+      var expected = [ 1, 3 ];
+      var actual = getQueryResults("RETURN INTERSECTION([ 1, 1, 2, 2, 3, 3, 3 ], [ 1, 1, 3 ])");
+      assertEqual(expected, actual[0].sort());
+    },
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test intersect function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testIntersection12 : function () {
+      var expected = [ 3 ];
+      var actual = getQueryResults("RETURN INTERSECTION([ 1, 1, 3 ], [ 2, 2, 3 ])");
+      assertEqual(expected, actual[0].sort());
+    },
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief test intersection function
 ////////////////////////////////////////////////////////////////////////////////
     
@@ -2539,6 +2559,26 @@ function ahuacatlFunctionsTestSuite () {
       assertEqual(expected, actual[0].sort());
     },
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test intersect function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testIntersectionCxx11 : function () {
+      var expected = [ 1, 3 ];
+      var actual = getQueryResults("RETURN NOOPT(INTERSECTION([ 1, 1, 2, 2, 3, 3, 3 ], [ 1, 1, 3 ]))");
+      assertEqual(expected, actual[0].sort());
+    },
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test intersect function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testIntersectionCxx12 : function () {
+      var expected = [ 3 ];
+      var actual = getQueryResults("RETURN NOOPT(INTERSECTION([ 1, 1, 3 ], [ 2, 2, 3 ]))");
+      assertEqual(expected, actual[0].sort());
+    },
+
     testIntersectionAllDocuments : function () {
       // Insert 10 elements
       for (var i = 0; i < 10; ++i) {
@@ -2571,7 +2611,42 @@ function ahuacatlFunctionsTestSuite () {
       assertEqual(actual.length, 10);
     },
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief test outersection function
+////////////////////////////////////////////////////////////////////////////////
+    
+    testOutersection : function () {
+      var queries = [
+        [ [ [ ], [ ], [ ], [ ] ], [ ] ],
+        [ [ [ 1 ], [ ] ], [ 1 ] ],
+        [ [ [ ], [ 1 ] ], [ 1 ] ],
+        [ [ [ 1 ], [ ], [ ], [ ] ], [ 1 ] ],
+        [ [ [ 1 ], [ -1 ] ], [ -1, 1 ] ],
+        [ [ [ 1, "a" ], [ 2, "b" ] ], [ 1, 2, "a", "b" ] ],
+        [ [ [ 1, 2, 3 ], [ 3, 4, 5 ], [ 5, 6, 7 ] ], [ 1, 2, 4, 6, 7 ] ], 
+        [ [ [ "a", "b", "c" ], [ "a", "b", "c" ], [ "a", "b", "c" ] ], [ ] ], 
+        [ [ [ "a", "b", "c" ], [ "a", "b", "c", "d" ], [ "a", "b", "c", "d", "e" ] ], [ "e" ] ], 
+        [ [ [ "a", "b", "c" ], [ "d", "e", "f" ], [ "g", "h", "i" ] ], [ "a", "b", "c", "d", "e", "f", "g", "h", "i" ] ], 
+        [ [ [ "a", "A" ], [ "b", "B" ] ], [ "A", "B", "a", "b" ] ], 
+        [ [ [ [ 1 ], 1, 2, [ 2 ] ], [ 3, [ 3 ] ] ], [ 1, 2, 3, [ 1 ], [ 2 ], [ 3 ] ] ],
+        [ [ [ [ 1 ], [ 1 ] ], [ [ 2 ], [ 2 ] ] ], [ ] ],
+        [ [ [ [ 1 ], [ 2 ] ], [ [ 3 ], [ 4 ] ] ], [ [ 1 ], [ 2 ], [ 3 ], [ 4 ] ] ],
+        [ [ [ [ 1 ], [ 2 ] ], [ [ 2 ], [ 4 ] ] ], [ [ 1 ], [ 4 ] ] ]
+      ];
 
+      var sorter = require("@arangodb/aql").RELATIONAL_CMP;
+
+      queries.forEach(function(query) {
+        var actual = getQueryResults("RETURN OUTERSECTION(" + JSON.stringify(query[0]).replace(/^\[(.*)\]$/, "$1") + ")");
+        assertEqual(query[1].sort(sorter), actual[0].sort(sorter));
+        
+        actual = getQueryResults("RETURN V8(OUTERSECTION(" + JSON.stringify(query[0]).replace(/^\[(.*)\]$/, "$1") + "))");
+        assertEqual(query[1].sort(sorter), actual[0].sort(sorter));
+        
+        actual = getQueryResults("RETURN NOOPT(OUTERSECTION(" + JSON.stringify(query[0]).replace(/^\[(.*)\]$/, "$1") + "))");
+        assertEqual(query[1].sort(sorter), actual[0].sort(sorter));
+      });
+    },
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief test flatten function

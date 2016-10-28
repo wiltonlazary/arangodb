@@ -1,8 +1,12 @@
-
 @startDocuBlock REST_DOCUMENT_CREATE
 @brief creates documents
 
-@RESTHEADER{POST /_api/document/{collection},Create document}
+@RESTHEADER{POST /_api/document/{collection}, Create document}
+
+@RESTURLPARAMETERS
+
+@RESTURLPARAM{collection,string,required}
+The *collection* in which the collection is to be created.
 
 @RESTALLBODYPARAM{data,json,required}
 A JSON representation of a single document or of an array of documents.
@@ -19,8 +23,13 @@ the recommended way is to specify the collection in the URL path.
 Wait until document has been synced to disk.
 
 @RESTQUERYPARAM{returnNew,boolean,optional}
-Return additionally the complete new document under the attribute *new*
+Additionally return the complete new document under the attribute *new*
 in the result.
+
+@RESTQUERYPARAM{silent,boolean,optional}
+If set to *true*, an empty object will be returned as response. No meta-data 
+will be returned for the created document. This option can be used to
+save some network traffic.
 
 @RESTDESCRIPTION
 Creates a new document from the document given in the body, unless there
@@ -43,8 +52,8 @@ contains the path to the newly created document. The *ETag* header field
 contains the revision of the document. Both are only set in the single
 document case.
 
-The body of the response contains a JSON object (single document case)
-with the following attributes:
+If *silent* is not set to *true*, the body of the response contains a 
+JSON object (single document case) with the following attributes:
 
   - *_id* contains the document handle of the newly created document
   - *_key* contains the document key
@@ -121,7 +130,7 @@ key.
     assert(response.code === 201);
 
     logJsonResponse(response);
-  ~ db._drop(cn);
+    db._drop(cn);
 @END_EXAMPLE_ARANGOSH_RUN
 
 Create a document in a collection named *products* with a collection-level
@@ -140,7 +149,7 @@ Create a document in a collection named *products* with a collection-level
     assert(response.code === 202);
 
     logJsonResponse(response);
-  ~ db._drop(cn);
+    db._drop(cn);
 @END_EXAMPLE_ARANGOSH_RUN
 
 Create a document in a collection with a collection-level *waitForSync*
@@ -151,7 +160,7 @@ value of *false*, but using the *waitForSync* query parameter.
     db._drop(cn);
     db._create(cn, { waitForSync: false });
 
-    var url = "/_api/document/" + cn + "&waitForSync=true";
+    var url = "/_api/document/" + cn + "?waitForSync=true";
     var body = '{ "Hello": "World" }';
 
     var response = logCurlRequest('POST', url, body);
@@ -159,14 +168,13 @@ value of *false*, but using the *waitForSync* query parameter.
     assert(response.code === 201);
 
     logJsonResponse(response);
-  ~ db._drop(cn);
+    db._drop(cn);
 @END_EXAMPLE_ARANGOSH_RUN
 
 Unknown collection name
 
 @EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostUnknownCollection1}
     var cn = "products";
-    db._drop(cn);
 
     var url = "/_api/document/" + cn;
     var body = '{ "Hello": "World" }';
@@ -183,6 +191,7 @@ Illegal document
 @EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostBadJson1}
     var cn = "products";
     db._drop(cn);
+    db._create(cn);
 
     var url = "/_api/document/" + cn;
     var body = '{ 1: "World" }';
@@ -192,40 +201,43 @@ Illegal document
     assert(response.code === 400);
 
     logJsonResponse(response);
+    db._drop(cn);
 @END_EXAMPLE_ARANGOSH_RUN
 
 Insert multiple documents:
- ###!TODO, make this example work.
 
-  EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostMulti}
+@EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostMulti1}
     var cn = "products";
     db._drop(cn);
+    db._create(cn);
 
     var url = "/_api/document/" + cn;
     var body = '[{"Hello":"Earth"}, {"Hello":"Venus"}, {"Hello":"Mars"}]';
 
     var response = logCurlRequest('POST', url, body);
 
-    assert(response.code === 200);
+    assert(response.code === 202);
 
     logJsonResponse(response);
-  ND_EXAMPLE_ARANGOSH_RUN
+    db._drop(cn);
+@END_EXAMPLE_ARANGOSH_RUN
 
 Use of returnNew:
- ###!TODO, make this example work.
 
-  EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostMulti}
+@EXAMPLE_ARANGOSH_RUN{RestDocumentHandlerPostMulti2}
     var cn = "products";
     db._drop(cn);
+    db._create(cn);
 
     var url = "/_api/document/" + cn + "?returnNew=true";
     var body = '{"Hello":"World"}';
 
     var response = logCurlRequest('POST', url, body);
 
-    assert(response.code === 200);
+    assert(response.code === 202);
 
     logJsonResponse(response);
-   END_EXAMPLE_ARANGOSH_RUN
+    db._drop(cn);
+@END_EXAMPLE_ARANGOSH_RUN
 @endDocuBlock
 

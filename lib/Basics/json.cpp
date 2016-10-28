@@ -78,27 +78,17 @@ static int StringifyJson(TRI_memory_zone_t* zone, TRI_string_buffer_t* buffer,
 
     case TRI_JSON_STRING:
     case TRI_JSON_STRING_REFERENCE: {
-      res = TRI_AppendCharStringBuffer(buffer, '\"');
-
-      if (res != TRI_ERROR_NO_ERROR) {
-        return res;
-      }
-
       if (object->_value._string.length > 0) {
         // optimisation for the empty string
         res = TRI_AppendJsonEncodedStringStringBuffer(
             buffer, object->_value._string.data,
             object->_value._string.length - 1, false);
-
-        if (res != TRI_ERROR_NO_ERROR) {
-          return TRI_ERROR_OUT_OF_MEMORY;
-        }
+      } else {
+        res = TRI_AppendString2StringBuffer(buffer, "\"\"", 2);
       }
-
-      res = TRI_AppendCharStringBuffer(buffer, '\"');
-
+        
       if (res != TRI_ERROR_NO_ERROR) {
-        return res;
+        return TRI_ERROR_OUT_OF_MEMORY;
       }
 
       break;
@@ -566,8 +556,8 @@ bool TRI_IsStringJson(TRI_json_t const* json) { return IsString(json); }
 /// @brief adds a new sub-object to an array, copying it
 ////////////////////////////////////////////////////////////////////////////////
 
-void TRI_PushBackArrayJson(TRI_memory_zone_t* zone, TRI_json_t* array,
-                           TRI_json_t const* object) {
+int TRI_PushBackArrayJson(TRI_memory_zone_t* zone, TRI_json_t* array,
+                          TRI_json_t const* object) {
   TRI_ASSERT(array->_type == TRI_JSON_ARRAY);
 
   TRI_json_t* dst =
@@ -575,11 +565,11 @@ void TRI_PushBackArrayJson(TRI_memory_zone_t* zone, TRI_json_t* array,
 
   if (dst == nullptr) {
     // out of memory
-    return;
+    return TRI_ERROR_OUT_OF_MEMORY;
   }
 
   // directly copy value into the obtained address
-  TRI_CopyToJson(zone, dst, object);
+  return TRI_CopyToJson(zone, dst, object);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

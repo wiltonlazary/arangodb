@@ -30,25 +30,25 @@
 #include "Aql/CollectOptions.h"
 #include "Aql/EnumerateCollectionBlock.h"
 #include "Aql/EnumerateListBlock.h"
-#include "Aql/ExecutionBlock.h"
 #include "Aql/ExecutionNode.h"
-#include "Aql/ExecutionPlan.h"
 #include "Aql/IndexBlock.h"
 #include "Aql/ModificationBlocks.h"
-#include "Aql/QueryRegistry.h"
 #include "Aql/SortBlock.h"
 #include "Aql/SubqueryBlock.h"
 #include "Aql/TraversalBlock.h"
+#include "Aql/ShortestPathBlock.h"
+#include "Aql/ShortestPathNode.h"
 #include "Aql/WalkerWorker.h"
 #include "Basics/Exceptions.h"
 #include "Basics/VelocyPackHelper.h"
 #include "Cluster/ClusterComm.h"
+#include "Cluster/ClusterInfo.h"
+#include "Cluster/TraverserEngineRegistry.h"
 #include "Logger/Logger.h"
-#include "VocBase/server.h"
+#include "VocBase/ticks.h"
 
+using namespace arangodb;
 using namespace arangodb::aql;
-
-using Json = arangodb::basics::Json;
 
 /// @brief helper function to create a block
 static ExecutionBlock* CreateBlock(
@@ -71,6 +71,9 @@ static ExecutionBlock* CreateBlock(
     }
     case ExecutionNode::TRAVERSAL: {
       return new TraversalBlock(engine, static_cast<TraversalNode const*>(en));
+    }
+    case ExecutionNode::SHORTEST_PATH: {
+      return new ShortestPathBlock(engine, static_cast<ShortestPathNode const*>(en));
     }
     case ExecutionNode::CALCULATION: {
       return new CalculationBlock(engine,
@@ -201,6 +204,10 @@ struct Instanciator final : public WalkerWorker<ExecutionNode> {
   virtual void after(ExecutionNode* en) override final {
     ExecutionBlock* block = nullptr;
     {
+      if (en->getType() == ExecutionNode::TRAVERSAL) {
+        // We have to prepare the options before we build the block
+        static_cast<TraversalNode*>(en)->prepareOptions();
+      }
       std::unique_ptr<ExecutionBlock> eb(CreateBlock(engine, en, cache));
 
       if (eb == nullptr) {
@@ -232,6 +239,7 @@ struct Instanciator final : public WalkerWorker<ExecutionNode> {
     for (auto const& it : en->getDependencies()) {
       auto it2 = cache.find(it);
       TRI_ASSERT(it2 != cache.end());
+      TRI_ASSERT(it2->second != nullptr);
       block->addDependency(it2->second);
     }
 
@@ -381,6 +389,7 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
   // names of sharded collections that we have already seen on a DBserver
   // this is relevant to decide whether or not the engine there is a main
   // query or a dependent one.
+
   std::unordered_map<std::string, std::string> queryIds;
   // this map allows to find the queries which are the parts of the big
   // query. There are two cases, the first is for the remote queries on
@@ -398,6 +407,15 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
   // DBservers and used when we instantiate the ones on the
   // coordinator. Note that the main query and engine is not put into
   // this map at all.
+
+  std::unordered_map<traverser::TraverserEngineID, std::unordered_set<std::string>> traverserEngines;
+  // This map allows to find all traverser engine parts of the query.
+  // The first value is the engine id. The second value is a list of
+  // shards this engine is responsible for.
+  // All shards that are not yet in queryIds have to be locked by
+  // one of the traverserEngines.
+  // TraverserEngines will always give the PART_MAIN to other parts
+  // of the queries if they desire them.
 
   CoordinatorInstanciator(Query* query, QueryRegistry* queryRegistry)
       : query(query),
@@ -438,7 +456,7 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
         // initializeCursor and shutDown requests
         // for simplicity, we always use the first remote block if we have more
         // than one
-        static_cast<RemoteNode*>(clone)->isResponsibleForInitCursor(nr == 0);
+        static_cast<RemoteNode*>(clone)->isResponsibleForInitializeCursor(nr == 0);
       }
 
       if (previous != nullptr) {
@@ -456,44 +474,52 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
   void distributePlanToShard(arangodb::CoordTransactionID& coordTransactionID,
                              EngineInfo const& info, Collection* collection,
                              QueryId& connectedId, std::string const& shardId,
-                             TRI_json_t* jsonPlan) {
-    // create a JSON representation of the plan
-    Json result(Json::Object);
-
+                             VPackSlice const& planSlice) {
     // inject the current shard id into the collection
     collection->setCurrentShard(shardId);
 
-    Json jsonNodesList(TRI_UNKNOWN_MEM_ZONE, jsonPlan, Json::NOFREE);
+    // create a JSON representation of the plan
+    VPackBuilder result;
+    result.openObject();
 
-    // add the collection
-    Json jsonCollectionsList(Json::Array);
-    Json json(Json::Object);
-    jsonCollectionsList(json("name", Json(collection->getName()))(
-        "type", Json(TRI_TransactionTypeGetStr(collection->accessType))));
-
-    jsonNodesList.set("collections", jsonCollectionsList);
-
+    result.add("plan", VPackValue(VPackValueType::Object));
+    
     VPackBuilder tmp;
     query->ast()->variables()->toVelocyPack(tmp);
-    jsonNodesList.set("variables", arangodb::basics::VelocyPackHelper::velocyPackToJson(tmp.slice()));
+    result.add("variables", tmp.slice());
 
-    result.set("plan", jsonNodesList);
+    result.add("collections", VPackValue(VPackValueType::Array));
+    // add the collection
+    result.openObject();
+    result.add("name", VPackValue(collection->getName()));
+    result.add("type", VPackValue(TRI_TransactionTypeGetStr(collection->accessType)));
+    result.close();
+    result.close(); // collections
+    
+    result.add(VPackObjectIterator(planSlice));
+    result.close(); // plan
+
     if (info.part == arangodb::aql::PART_MAIN) {
-      result.set("part", Json("main"));
+      result.add("part", VPackValue("main"));
     } else {
-      result.set("part", Json("dependent"));
+      result.add("part", VPackValue("dependent"));
     }
 
-    Json optimizerOptionsRules(Json::Array);
-    Json optimizerOptions(Json::Object);
+    result.add("options", VPackValue(VPackValueType::Object));
+    result.add("optimizer", VPackValue(VPackValueType::Object));
+    result.add("rules", VPackValue(VPackValueType::Array));
+    result.add(VPackValue("-all"));
+    result.close(); // options.optimizer.rules
+    result.close(); // options.optimizer
+    double tracing = query->getNumericOption("tracing", 0);
+    result.add("tracing", VPackValue(tracing));
+    result.close(); // options
 
-    Json options(Json::Object);
-    optimizerOptionsRules.add(Json("-all"));
-    optimizerOptions.set("rules", optimizerOptionsRules);
-    options.set("optimizer", optimizerOptions);
-    result.set("options", options);
-    auto body = std::make_shared<std::string const>(
-        arangodb::basics::JsonHelper::toString(result.json()));
+    result.close();
+
+    TRI_ASSERT(result.isClosed());
+
+    auto body = std::make_shared<std::string const>(result.slice().toJson());
 
     // std::cout << "GENERATED A PLAN FOR THE REMOTE SERVERS: " << *(body.get())
     // << "\n";
@@ -501,14 +527,14 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
     auto cc = arangodb::ClusterComm::instance();
 
     std::string const url("/_db/" + arangodb::basics::StringUtils::urlEncode(
-                                        collection->vocbase->_name) +
+                                        collection->vocbase->name()) +
                           "/_api/aql/instantiate");
 
     auto headers = std::make_unique<std::unordered_map<std::string, std::string>>();
     (*headers)["X-Arango-Nolock"] = shardId;  // Prevent locking
-    auto res = cc->asyncRequest("", coordTransactionID, "shard:" + shardId,
-                                arangodb::GeneralRequest::RequestType::POST,
-                                url, body, headers, nullptr, 30.0);
+    cc->asyncRequest("", coordTransactionID, "shard:" + shardId,
+                     arangodb::rest::RequestType::POST,
+                     url, body, headers, nullptr, 30.0);
   }
 
   /// @brief aggregateQueryIds, get answers for all shards in a Scatter/Gather
@@ -521,22 +547,22 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
     std::string error;
     int count = 0;
     int nrok = 0;
+    int errorCode = TRI_ERROR_NO_ERROR;
     for (count = (int)shardIds->size(); count > 0; count--) {
       auto res = cc->wait("", coordTransactionID, 0, "", 30.0);
 
       if (res.status == arangodb::CL_COMM_RECEIVED) {
-        if (res.answer_code == arangodb::GeneralResponse::ResponseCode::OK ||
-            res.answer_code == arangodb::GeneralResponse::ResponseCode::CREATED ||
-            res.answer_code == arangodb::GeneralResponse::ResponseCode::ACCEPTED) {
+        if (res.answer_code == arangodb::rest::ResponseCode::OK ||
+            res.answer_code == arangodb::rest::ResponseCode::CREATED ||
+            res.answer_code == arangodb::rest::ResponseCode::ACCEPTED) {
           // query instantiated without problems
           nrok++;
 
-          // pick up query id from response
-          arangodb::basics::Json response(
-              TRI_UNKNOWN_MEM_ZONE,
-              arangodb::basics::JsonHelper::fromString(res.answer->body()));
-          std::string queryId = arangodb::basics::JsonHelper::getStringValue(
-              response.json(), "queryId", "");
+          VPackSlice tmp = res.answer->payload().get("queryId");
+          std::string queryId;
+          if (tmp.isString()) {
+            queryId = tmp.copyString();
+          }
 
           // std::cout << "DB SERVER ANSWERED WITHOUT ERROR: " <<
           // res.answer->body() << ", REMOTENODEID: " << info.idOfRemoteNode <<
@@ -551,21 +577,24 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
           }
         } else {
           error += "DB SERVER ANSWERED WITH ERROR: ";
-          error += res.answer->body();
+          error += res.answer->payload().toJson();
           error += "\n";
         }
       } else {
-        error += std::string("Communication with shard '") +
-                 std::string(res.shardID) + std::string("' on cluster node '") +
-                 std::string(res.serverID) + std::string("' failed : ") +
-                 res.errorMessage;
+        error += res.stringifyErrorMessage();
+        if (errorCode == TRI_ERROR_NO_ERROR) {
+          errorCode = res.getErrorCode();
+        }
       }
     }
 
     // std::cout << "GOT ALL RESPONSES FROM DB SERVERS: " << nrok << "\n";
 
     if (nrok != (int)shardIds->size()) {
-      THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, error);
+      if (errorCode == TRI_ERROR_NO_ERROR) {
+        errorCode = TRI_ERROR_INTERNAL; // must have an error
+      }
+      THROW_ARANGO_EXCEPTION_MESSAGE(errorCode, error);
     }
   }
 
@@ -587,10 +616,8 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
       VPackBuilder b;
       generatePlanForOneShard(b, nr++, info, connectedId, shardId, true);
 
-      std::unique_ptr<TRI_json_t> tmp(arangodb::basics::VelocyPackHelper::velocyPackToJson(b.slice()));
-
       distributePlanToShard(coordTransactionID, info, collection, connectedId,
-                            shardId, tmp.release());
+                            shardId, b.slice());
     }
 
     // fix collection
@@ -646,6 +673,7 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
 
           if (d != cache.end()) {
             // add regular dependencies
+            TRI_ASSERT((*d).second != nullptr);
             eb->addDependency((*d).second);
           }
         }
@@ -689,6 +717,7 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
               throw;
             }
 
+            TRI_ASSERT(r != nullptr);
             eb->addDependency(r);
           }
         }
@@ -710,6 +739,219 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
         delete localQuery;
       }
       throw;
+    }
+  }
+
+  /// @brief Build traverser engines on DBServers. Coordinator still uses
+  ///        traversal block.
+  void buildTraverserEnginesForNode(TraversalNode* en) {
+    // We have to initialize all options. After this point the node
+    // is not cloneable any more.
+    en->prepareOptions();
+    VPackBuilder optsBuilder;
+    auto opts = en->options();
+    opts->buildEngineInfo(optsBuilder);
+    // All info in opts is identical for each traverser engine.
+    // Only the shards are different.
+    std::vector<std::unique_ptr<arangodb::aql::Collection>> const& edges = en->edgeColls();
+
+    // Here we create a mapping
+    // ServerID => ResponsibleShards
+    // Where Responsible shards is divided in edgeCollections and vertexCollections
+    // For edgeCollections the Ordering is important for the index access.
+    // Also the same edgeCollection can be included twice (iff direction is ANY)
+    auto clusterInfo = arangodb::ClusterInfo::instance();
+    std::unordered_map<
+        ServerID,
+        std::pair<std::vector<std::vector<ShardID>>,
+                  std::unordered_map<std::string, std::vector<ShardID>>>>
+        mappingServerToCollections;
+    auto servers = clusterInfo->getCurrentDBServers();
+    size_t length = edges.size();
+
+    // Initialize on engine for every server known to this cluster
+    // Thanks to locking mechanism we cannot leave any out, even it
+    // is not responsible for anything...
+    for (auto s : servers) {
+      // We insert at lease an empty vector for every edge collection
+      // Used in the traverser.
+      auto& info = mappingServerToCollections[s];
+      // We need to exactly maintain the ordering.
+      // A server my be responsible for a shard in edge collection 1 but not 0 or 2.
+      info.first.resize(length);
+    }
+    for (size_t i = 0; i < length; ++i) {
+      auto shardIds = edges[i]->shardIds();
+      for (auto const& shard : *shardIds) {
+        auto serverList = clusterInfo->getResponsibleServer(shard);
+        TRI_ASSERT(!serverList->empty());
+        auto& pair = mappingServerToCollections[(*serverList)[0]];
+        pair.first[i].emplace_back(shard);
+      }
+    }
+
+    std::vector<std::unique_ptr<arangodb::aql::Collection>> const& vertices =
+        en->vertexColls();
+    if (vertices.empty()) {
+      std::unordered_set<std::string> knownEdges;
+      for (auto const& it : edges) {
+        knownEdges.emplace(it->getName());
+      }
+      // This case indicates we do not have a named graph. We simply use
+      // ALL collections known to this query.
+      auto cs = query->collections()->collections();
+      for (auto const& collection : (*cs)) {
+        for (auto& entry : mappingServerToCollections) {
+          entry.second.second.emplace(collection.second->getName(),
+                                      std::vector<ShardID>());
+        }
+        if (knownEdges.find(collection.second->getName()) == knownEdges.end()) {
+          // This collection is not one of the edge collections used in this
+          // graph.
+          auto shardIds = collection.second->shardIds();
+          for (auto const& shard : *shardIds) {
+            auto serverList = clusterInfo->getResponsibleServer(shard);
+            TRI_ASSERT(!serverList->empty());
+            auto& pair = mappingServerToCollections[(*serverList)[0]];
+            pair.second[collection.second->getName()].emplace_back(shard);
+          }
+        }
+      }
+    } else {
+      // This Traversal is started with a GRAPH. It knows all relevant collections.
+      for (auto const& it : vertices) {
+        for (auto& entry : mappingServerToCollections) {
+          entry.second.second.emplace(it->getName(),
+                                      std::vector<ShardID>());
+        }
+        auto shardIds = it->shardIds();
+        for (auto const& shard : *shardIds) {
+          auto serverList = clusterInfo->getResponsibleServer(shard);
+          TRI_ASSERT(!serverList->empty());
+          auto& pair = mappingServerToCollections[(*serverList)[0]];
+          pair.second[it->getName()].emplace_back(shard);
+        }
+      }
+    }
+
+    // Now we create a VPack Object containing the relevant information
+    // for the Traverser Engines.
+    // First the options (which are identical for all engines.
+    // Second the list of shards this engine is responsible for.
+    // Shards are not overlapping between Engines as there is exactly
+    // one engine per server.
+    //
+    // The resulting JSON is a s follows:
+    //
+    // {
+    //   "options": <options.toVelocyPack>,
+    //   "variables": [<vars used in conditions>], // optional
+    //   "shards": {
+    //     "edges" : [
+    //       [ <shards of edge collection 1> ],
+    //       [ <shards of edge collection 2> ]
+    //     ],
+    //     "vertices" : {
+    //       "v1": [<shards of v1>], // may be empty
+    //       "v2": [<shards of v2>]  // may be empty
+    //     }
+    //   }
+    // }
+
+    std::string const url("/_db/" + arangodb::basics::StringUtils::urlEncode(
+                                        query->vocbase()->name()) +
+                          "/_internal/traverser");
+    auto cc = arangodb::ClusterComm::instance();
+    bool hasVars = false;
+    VPackBuilder varInfo;
+    std::vector<aql::Variable const*> vars;
+    en->getConditionVariables(vars);
+    if (!vars.empty()) {
+      hasVars = true;
+      varInfo.openArray();
+      for (auto v : vars) {
+        v->toVelocyPack(varInfo);
+      }
+      varInfo.close();
+    }
+
+    VPackBuilder engineInfo;
+    for (auto const& list : mappingServerToCollections) {
+      std::unordered_set<std::string> shardSet;
+      engineInfo.clear();
+      engineInfo.openObject();
+      engineInfo.add(VPackValue("options"));
+      engineInfo.add(optsBuilder.slice());
+      if (hasVars) {
+        engineInfo.add(VPackValue("variables"));
+        engineInfo.add(varInfo.slice());
+      }
+
+      engineInfo.add(VPackValue("shards"));
+      engineInfo.openObject();
+      engineInfo.add(VPackValue("vertices"));
+      engineInfo.openObject();
+      for (auto const& col : list.second.second) {
+        engineInfo.add(VPackValue(col.first));
+        engineInfo.openArray();
+        for (auto const& v : col.second) {
+          shardSet.emplace(v);
+          engineInfo.add(VPackValue(v));
+        }
+        engineInfo.close(); // this collection
+      }
+      engineInfo.close(); // vertices
+
+      engineInfo.add(VPackValue("edges"));
+      engineInfo.openArray();
+      for (auto const& edgeShards : list.second.first) {
+        engineInfo.openArray();
+        for (auto const& e : edgeShards) {
+          shardSet.emplace(e);
+          engineInfo.add(VPackValue(e));
+        }
+        engineInfo.close();
+      }
+      engineInfo.close(); // edges
+
+      engineInfo.close(); // shards
+
+      en->enhanceEngineInfo(engineInfo);
+
+      engineInfo.close(); // base
+
+      if (!shardSet.empty()) {
+        arangodb::CoordTransactionID coordTransactionID = TRI_NewTickServer();
+        std::unordered_map<std::string, std::string> headers;
+
+        auto res = cc->syncRequest("", coordTransactionID, "server:" + list.first,
+                                   RequestType::POST, url, engineInfo.toJson(),
+                                   headers, 30.0);
+        if (res->status != CL_COMM_SENT) {
+          // Note If there was an error on server side we do not have CL_COMM_SENT
+          std::string message("could not start all traversal engines");
+          if (res->errorMessage.length() > 0) {
+            message += std::string(" : ") + res->errorMessage;
+          }
+          THROW_ARANGO_EXCEPTION_MESSAGE(
+              TRI_ERROR_QUERY_COLLECTION_LOCK_FAILED, message);
+        } else {
+          // Only if the result was successful we will get here
+          arangodb::basics::StringBuffer& body = res->result->getBody();
+
+          std::shared_ptr<VPackBuilder> builder =
+              VPackParser::fromJson(body.c_str(), body.length());
+          VPackSlice resultSlice = builder->slice();
+          if (!resultSlice.isNumber()) {
+            THROW_ARANGO_EXCEPTION_MESSAGE(
+                TRI_ERROR_INTERNAL, "got unexpected response from engine lock request");
+          }
+          auto engineId = resultSlice.getNumericValue<traverser::TraverserEngineID>();
+          TRI_ASSERT(engineId != 0);
+          traverserEngines.emplace(engineId, shardSet);
+          en->addEngine(engineId, list.first);
+        }
+      }
     }
   }
 
@@ -742,7 +984,7 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
             std::string queryId = arangodb::basics::StringUtils::itoa(id);
             std::string theID =
                 arangodb::basics::StringUtils::itoa(it->idOfRemoteNode) + "/" +
-                engine->getQuery()->vocbase()->_name;
+                engine->getQuery()->vocbase()->name();
             queryIds.emplace(theID, queryId);
           } catch (...) {
             queryRegistry->destroy(engine->getQuery()->vocbase(), id,
@@ -794,6 +1036,10 @@ struct CoordinatorInstanciator : public WalkerWorker<ExecutionNode> {
       engines.emplace_back(currentLocation, currentEngineId, part, en->id());
     }
 
+    if (nodeType == ExecutionNode::TRAVERSAL) {
+      buildTraverserEnginesForNode(static_cast<TraversalNode*>(en));
+    }
+
     return false;
   }
 
@@ -820,7 +1066,7 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
   bool const isCoordinator =
       arangodb::ServerState::instance()->isCoordinator(role);
   bool const isDBServer = arangodb::ServerState::instance()->isDBServer(role);
-      
+
   TRI_ASSERT(queryRegistry != nullptr);
 
   ExecutionEngine* engine = nullptr;
@@ -841,17 +1087,6 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
           std::make_unique<CoordinatorInstanciator>(query, queryRegistry);
       plan->root()->walk(inst.get());
 
-#if 0
-      // Just for debugging
-      for (auto& ei : inst->engines) {
-        std::cout << "EngineInfo: id=" << ei.id 
-                  << " Location=" << ei.location << std::endl;
-        for (auto& n : ei.nodes) {
-          std::cout << "Node: type=" << n->getTypeString() << std::endl;
-        }
-      }
-#endif
-
       try {
         engine = inst.get()->buildEngines();
         root = engine->root();
@@ -864,7 +1099,7 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
           engine->_lockedShards = new std::unordered_set<std::string>();
           engine->_previouslyLockedShards = nullptr;
         }
-        std::map<std::string, std::string> forLocking;
+        std::map<std::string, std::pair<std::string, bool>> forLocking;
         for (auto& q : inst.get()->queryIds) {
           std::string theId = q.first;
           std::string queryId = q.second;
@@ -877,10 +1112,23 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
               queryId.pop_back();
               std::string shardId = theId.substr(pos + 1);
               engine->_lockedShards->insert(shardId);
-              forLocking.emplace(shardId, queryId);
+              forLocking.emplace(shardId, std::make_pair(queryId, false));
             }
           }
         }
+
+        // TODO is this enough? Do we have to somehow inform the other engines?
+        for (auto& te : inst.get()->traverserEngines) {
+          std::string traverserId = arangodb::basics::StringUtils::itoa(te.first);
+          for (auto const& shardId : te.second) {
+            if (forLocking.find(shardId) == forLocking.end()) {
+              // No other node stated that it is responsible for locking this shard.
+              // So the traverser engine has to step in.
+              forLocking.emplace(shardId, std::make_pair(traverserId, true));
+            }
+          }
+        }
+
         // Second round, this time we deal with the coordinator pieces
         // and tell them the lockedShards as well, we need to copy, since
         // they want to delete independently:
@@ -905,20 +1153,29 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
         // Now lock them all in the right order:
         for (auto& p : forLocking) {
           std::string const& shardId = p.first;
-          std::string const& queryId = p.second;
+          std::string const& queryId = p.second.first;
+          bool isTraverserEngine = p.second.second;
           // Lock shard on DBserver:
           arangodb::CoordTransactionID coordTransactionID = TRI_NewTickServer();
           auto cc = arangodb::ClusterComm::instance();
           TRI_vocbase_t* vocbase = query->vocbase();
-          std::string const url(
-              "/_db/" +
-              arangodb::basics::StringUtils::urlEncode(vocbase->_name) +
-              "/_api/aql/lock/" + queryId);
+          std::unique_ptr<ClusterCommResult> res;
           std::unordered_map<std::string, std::string> headers;
-          auto res =
-              cc->syncRequest("", coordTransactionID, "shard:" + shardId,
-                              arangodb::GeneralRequest::RequestType::PUT,
-                              url, "{}", headers, 30.0);
+          if (isTraverserEngine) {
+            std::string const url(
+                "/_db/" +
+                arangodb::basics::StringUtils::urlEncode(vocbase->name()) +
+                "/_internal/traverser/lock/" + queryId + "/" + shardId);
+            res = cc->syncRequest("", coordTransactionID, "shard:" + shardId,
+                                  RequestType::PUT, url, "", headers, 30.0);
+          } else {
+            std::string const url(
+                "/_db/" +
+                arangodb::basics::StringUtils::urlEncode(vocbase->name()) +
+                "/_api/aql/lock/" + queryId);
+            res = cc->syncRequest("", coordTransactionID, "shard:" + shardId,
+                                  RequestType::PUT, url, "{}", headers, 30.0);
+          }
           if (res->status != CL_COMM_SENT) {
             std::string message("could not lock all shards");
             if (res->errorMessage.length() > 0) {
@@ -934,6 +1191,7 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
         // into the QueryRegistry as well as those that we have pushed to
         // the DBservers via HTTP:
         TRI_vocbase_t* vocbase = query->vocbase();
+        auto cc = arangodb::ClusterComm::instance();
         for (auto& q : inst.get()->queryIds) {
           std::string theId = q.first;
           std::string queryId = q.second;
@@ -944,26 +1202,24 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
             // Remove query from DBserver:
             arangodb::CoordTransactionID coordTransactionID =
                 TRI_NewTickServer();
-            auto cc = arangodb::ClusterComm::instance();
             if (queryId.back() == '*') {
               queryId.pop_back();
             }
             std::string const url(
                 "/_db/" +
-                arangodb::basics::StringUtils::urlEncode(vocbase->_name) +
+                arangodb::basics::StringUtils::urlEncode(vocbase->name()) +
                 "/_api/aql/shutdown/" + queryId);
             std::unordered_map<std::string, std::string> headers;
             auto res =
                 cc->syncRequest("", coordTransactionID, "shard:" + shardId,
-                                arangodb::GeneralRequest::RequestType::PUT,
+                                arangodb::rest::RequestType::PUT,
                                 url, "{\"code\": 0}", headers, 120.0);
             // Ignore result, we need to try to remove all.
             // However, log the incident if we have an errorMessage.
-            if (res->errorMessage.length() > 0) {
+            if (!res->errorMessage.empty()) {
               std::string msg("while trying to unregister query ");
-              msg += queryId + std::string("from shard: ") + shardId +
-                     std::string("communication failed: ") + res->errorMessage;
-              LOG(WARN) << "" << msg;
+              msg += queryId + ": " + res->stringifyErrorMessage();
+              LOG(WARN) << msg;
             }
           } else {
             // Remove query from registry:
@@ -973,6 +1229,33 @@ ExecutionEngine* ExecutionEngine::instantiateFromPlan(
                   TRI_ERROR_INTERNAL);
             } catch (...) {
               // Ignore problems
+            }
+          }
+        }
+        // Also we need to destroy all traverser engines that have been pushed to DBServers
+        {
+
+          std::string const url(
+              "/_db/" +
+              arangodb::basics::StringUtils::urlEncode(vocbase->name()) +
+              "/_internal/traverser/");
+          for (auto& te : inst.get()->traverserEngines) {
+            std::string traverserId = arangodb::basics::StringUtils::itoa(te.first);
+            arangodb::CoordTransactionID coordTransactionID =
+                TRI_NewTickServer();
+            std::unordered_map<std::string, std::string> headers;
+            // NOTE: te.second is the list of shards. So we just send delete
+            // to the first of those shards
+            auto res = cc->syncRequest(
+                "", coordTransactionID, "shard:" + *(te.second.begin()),
+                RequestType::DELETE_REQ, url + traverserId, "", headers, 30.0);
+
+            // Ignore result, we need to try to remove all.
+            // However, log the incident if we have an errorMessage.
+            if (!res->errorMessage.empty()) {
+              std::string msg("while trying to unregister traverser engine ");
+              msg += traverserId + ": " + res->stringifyErrorMessage();
+              LOG(WARN) << msg;
             }
           }
         }

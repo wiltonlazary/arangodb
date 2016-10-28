@@ -68,6 +68,11 @@ class ExecutionEngine {
   int initializeCursor(AqlItemBlock* items, size_t pos) {
     return _root->initializeCursor(items, pos);
   }
+  
+  /// @brief initialize
+  int initialize() {
+    return _root->initialize();
+  }
 
   /// @brief shutdown, will be called exactly once for the whole query
   int shutdown(int errorCode) {
@@ -106,7 +111,9 @@ class ExecutionEngine {
   AqlItemBlock* getOne() { return _root->getSome(1, 1); }
 
   /// @brief skip
-  bool skip(size_t number) { return _root->skip(number); }
+  bool skip(size_t number, size_t& actuallySkipped) { 
+    return _root->skip(number, actuallySkipped); 
+  }
 
   /// @brief hasMore
   inline bool hasMore() const { return _root->hasMore(); }

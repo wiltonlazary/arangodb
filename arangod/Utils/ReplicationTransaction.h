@@ -24,10 +24,9 @@
 #ifndef ARANGOD_UTILS_REPLICATION_TRANSACTION_H
 #define ARANGOD_UTILS_REPLICATION_TRANSACTION_H 1
 
-#include "Basics/Common.h"
 #include "Utils/StandaloneTransactionContext.h"
 #include "Utils/Transaction.h"
-#include "VocBase/server.h"
+#include "VocBase/ticks.h"
 #include "VocBase/transaction.h"
 
 struct TRI_vocbase_t;
@@ -36,30 +35,17 @@ namespace arangodb {
 
 class ReplicationTransaction : public Transaction {
  public:
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief create the transaction
-  //////////////////////////////////////////////////////////////////////////////
+  ReplicationTransaction(TRI_vocbase_t* vocbase)
+      : Transaction(StandaloneTransactionContext::Create(vocbase)) {
 
-  ReplicationTransaction(TRI_server_t* server, TRI_vocbase_t* vocbase,
-                         TRI_voc_tid_t externalId)
-      : Transaction(StandaloneTransactionContext::Create(vocbase), externalId),
-        _server(server),
-        _externalId(externalId) {
-    TRI_UseDatabaseServer(_server, vocbase->_name);
+    _vocbase->use();
   }
 
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief end the transaction
-  //////////////////////////////////////////////////////////////////////////////
-
-  ~ReplicationTransaction() { TRI_ReleaseDatabaseServer(_server, vocbase()); }
+  ~ReplicationTransaction() { _vocbase->release(); }
 
  public:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief return the remote (external) id of the transaction
-  //////////////////////////////////////////////////////////////////////////////
-
-  inline TRI_voc_tid_t externalId() const { return _externalId; }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief get a collection by id
@@ -90,11 +76,6 @@ class ReplicationTransaction : public Transaction {
 
     return trxCollection;
   }
-
- private:
-  TRI_server_t* _server;
-
-  TRI_voc_tid_t _externalId;
 };
 }
 

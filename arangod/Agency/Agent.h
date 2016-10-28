@@ -25,14 +25,15 @@
 #define ARANGOD_CONSENSUS_AGENT_H 1
 
 #include "Agency/AgencyCommon.h"
-#include "Agency/AgentConfiguration.h"
+#include "Agency/AgentActivator.h"
 #include "Agency/AgentCallback.h"
+#include "Agency/AgentConfiguration.h"
 #include "Agency/Constituent.h"
-#include "Agency/Supervision.h"
+#include "Agency/Inception.h"
 #include "Agency/State.h"
 #include "Agency/Store.h"
+#include "Agency/Supervision.h"
 
-struct TRI_server_t;
 struct TRI_vocbase_t;
 
 namespace arangodb {
@@ -49,20 +50,20 @@ class Agent : public arangodb::Thread {
   term_t term() const;
 
   /// @brief Get current term
-  arangodb::consensus::id_t id() const;
+  std::string id() const;
 
   /// @brief Vote request
-  priv_rpc_ret_t requestVote(term_t, arangodb::consensus::id_t, index_t,
-                             index_t, query_t const&);
+  priv_rpc_ret_t requestVote(term_t, std::string const&, index_t, index_t,
+                             query_t const&);
 
   /// @brief Provide configuration
-  config_t const& config() const;
+  config_t const config() const;
 
   /// @brief Start thread
   bool start();
 
   /// @brief My endpoint
-  std::string const& endpoint() const;
+  std::string endpoint() const;
 
   /// @brief Verbose print of myself
   void print(arangodb::LoggerStream&) const;
@@ -71,7 +72,10 @@ class Agent : public arangodb::Thread {
   bool fitness() const;
 
   /// @brief Leader ID
-  arangodb::consensus::id_t leaderID() const;
+  arangodb::consensus::index_t lastCommitted() const;
+
+  /// @brief Leader ID
+  std::string leaderID() const;
 
   /// @brief Are we leading?
   bool leading() const;
@@ -86,27 +90,45 @@ class Agent : public arangodb::Thread {
   write_ret_t write(query_t const&);
 
   /// @brief Read from agency
-  read_ret_t read(query_t const&) const;
+  read_ret_t read(query_t const&);
 
   /// @brief Received by followers to replicate log entries ($5.3);
   ///        also used as heartbeat ($5.2).
-  bool recvAppendEntriesRPC(term_t term, arangodb::consensus::id_t leaderId,
+  bool recvAppendEntriesRPC(term_t term, std::string const& leaderId,
                             index_t prevIndex, term_t prevTerm,
                             index_t lastCommitIndex, query_t const& queries);
 
   /// @brief Invoked by leader to replicate log entries ($5.3);
   ///        also used as heartbeat ($5.2).
-  append_entries_t sendAppendEntriesRPC(arangodb::consensus::id_t slave_id);
+  void sendAppendEntriesRPC();
 
   /// @brief 1. Deal with appendEntries to slaves.
   ///        2. Report success of write processes.
   void run() override final;
 
+  /// @brief Are we still booting?
+  bool booting();
+
+  /// @brief Gossip in
+  query_t gossip(query_t const&, bool callback = false);
+
+  /// @brief Persisted agents
+  bool persistedAgents();
+
+  /// @brief Activate new agent in pool to replace failed
+  void reportActivated(std::string const&, std::string const&, query_t);
+
+  /// @brief Activate new agent in pool to replace failed
+  void failedActivation(std::string const&, std::string const&);
+
+  /// @brief Gossip in
+  bool activeAgency();
+
   /// @brief Start orderly shutdown of threads
   void beginShutdown() override final;
 
   /// @brief Report appended entries from AgentCallback
-  void reportIn(arangodb::consensus::id_t id, index_t idx);
+  void reportIn(std::string const& id, index_t idx);
 
   /// @brief Wait for slaves to confirm appended entries
   bool waitFor(index_t last_entry, double timeout = 2.0);
@@ -118,10 +140,7 @@ class Agent : public arangodb::Thread {
   bool rebuildDBs();
 
   /// @brief Last log entry
-  log_t const& lastLog() const;
-
-  /// @brief Persist term
-  void persist(term_t, arangodb::consensus::id_t);
+  log_t lastLog() const;
 
   /// @brief State machine
   State const& state() const;
@@ -132,13 +151,62 @@ class Agent : public arangodb::Thread {
   /// @brief Get spearhead store
   Store const& spearhead() const;
 
+  /// @brief Serve active agent interface
+  bool serveActiveAgent();
+
+  /// @brief Start constituent
+  void startConstituent();
+
+  /// @brief Get notification as inactive pool member
+  void notify(query_t const&);
+
+  /// @brief Detect active agent failures
+  void detectActiveAgentFailures();
+
+  /// @brief All there is in the state machine
+  query_t allLogs() const;
+
+  /// @brief Last contact with followers
+  query_t lastAckedAgo() const;
+
+  /// @brief Am I active agent
+  bool active() const;
+
+  /// @brief Am I active agent
+  query_t activate(query_t const&);
+
+  /// @brief Inception thread still done?
+  bool ready() const;
+  void ready(bool b);
+
+  /// @brief State reads persisted state and prepares the agent
   friend class State;
 
  private:
+
+  /// @brief Update my configuration as passive agent
+  void updateConfiguration();
+  
+  /// @brief Find out, if we've had acknowledged RPCs recent enough
+  bool challengeLeadership();
+
+  /// @brief Notify inactive pool members of changes in configuration
+  void notifyInactive() const;
+
+  /// @brief Activate this agent in single agent mode.
+  bool activateAgency();
+
+  /// @brief Assignment of persisted state
   Agent& operator=(VPackSlice const&);
 
-  /// @brief This server (need endpoint)
-  TRI_server_t* _server;
+  /// @brief Get current term
+  bool id(std::string const&);
+
+  /// @brief Get current term
+  bool mergeConfiguration(VPackSlice const&);
+
+  /// @brief Leader ID
+  void lastCommitted(arangodb::consensus::index_t);
 
   /// @brief Vocbase for agency persistence
   TRI_vocbase_t* _vocbase;
@@ -164,7 +232,7 @@ class Agent : public arangodb::Thread {
   /// @brief Spearhead (write) kv-store
   Store _spearhead;
 
-  /// @brief Commited (read) kv-store
+  /// @brief Committed (read) kv-store
   Store _readDB;
 
   /// @brief Condition variable for appendEntries
@@ -174,11 +242,33 @@ class Agent : public arangodb::Thread {
   arangodb::basics::ConditionVariable _waitForCV;
 
   /// @brief Confirmed indices of all members of agency
-  std::vector<index_t> _confirmed;
-  arangodb::Mutex _ioLock; /**< @brief Read/Write lock */
+  std::map<std::string, index_t> _confirmed;
+  std::map<std::string, index_t> _lastHighest;
+
+  std::map<std::string, TimePoint> _lastAcked;
+  std::map<std::string, TimePoint> _lastSent;
+
+  /**< @brief RAFT consistency lock:
+     _spearhead
+     _read_db
+     _lastCommitedIndex (log index)
+     _lastAcked
+     _confirmed
+     _nextCompactionAfter
+   */
+  mutable arangodb::Mutex _ioLock;
+
+  // @brief guard _activator 
+  mutable arangodb::Mutex _activatorLock;
 
   /// @brief Next compaction after
   arangodb::consensus::index_t _nextCompationAfter;
+
+  std::unique_ptr<Inception> _inception;
+  std::unique_ptr<AgentActivator> _activator;
+
+  std::atomic<bool> _ready;
+  
 };
 }
 }

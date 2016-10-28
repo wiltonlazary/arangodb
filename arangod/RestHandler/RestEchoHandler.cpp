@@ -33,18 +33,18 @@ using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-RestEchoHandler::RestEchoHandler(HttpRequest* request)
-    : RestVocbaseBaseHandler(request) {}
+RestEchoHandler::RestEchoHandler(GeneralRequest* request, GeneralResponse* response)
+  : RestVocbaseBaseHandler(request, response) {}
 
-HttpHandler::status_t RestEchoHandler::execute() {
+RestStatus RestEchoHandler::execute() {
   bool parseSuccess = true;
   std::shared_ptr<VPackBuilder> parsedBody =
       parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
 
   if (parseSuccess) {
     VPackBuilder result;
-    generateResult(GeneralResponse::ResponseCode::OK, parsedBody->slice());
+    generateResult(rest::ResponseCode::OK, parsedBody->slice());
   }
 
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

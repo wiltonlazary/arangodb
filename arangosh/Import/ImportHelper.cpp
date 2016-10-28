@@ -143,6 +143,7 @@ ImportHelper::ImportHelper(httpclient::SimpleHttpClient* client,
       _quote("\""),
       _createCollectionType("document"),
       _useBackslash(false),
+      _convert(true),
       _createCollection(false),
       _overwrite(false),
       _progress(false),
@@ -154,6 +155,7 @@ ImportHelper::ImportHelper(httpclient::SimpleHttpClient* client,
       _numberIgnored(0),
       _rowsRead(0),
       _rowOffset(0),
+      _rowsToSkip(0),
       _onDuplicateAction("error"),
       _collectionName(),
       _lineBuffer(TRI_UNKNOWN_MEM_ZONE),
@@ -451,7 +453,7 @@ void ImportHelper::beginLine(size_t row) {
 
   ++_numberLines;
 
-  if (row > 0) {
+  if (row > 0 + _rowsToSkip) {
     _lineBuffer.appendChar('\n');
   }
   _lineBuffer.appendChar('[');
@@ -464,8 +466,13 @@ void ImportHelper::beginLine(size_t row) {
 void ImportHelper::ProcessCsvAdd(TRI_csv_parser_t* parser, char const* field,
                                  size_t fieldLength, size_t row, size_t column,
                                  bool escaped) {
-  static_cast<ImportHelper*>(parser->_dataAdd)
-      ->addField(field, fieldLength, row, column, escaped);
+  auto importHelper = static_cast<ImportHelper*>(parser->_dataAdd);
+
+  if (importHelper->getRowsRead() < importHelper->getRowsToSkip()) {
+    return;
+  }
+    
+  importHelper->addField(field, fieldLength, row, column, escaped);
 }
 
 void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
@@ -474,11 +481,14 @@ void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
     _lineBuffer.appendChar(',');
   }
 
-  if (row == 0 || escaped) {
+  if (row == 0 + _rowsToSkip || escaped) {
     // head line or escaped value
-    _lineBuffer.appendChar('"');
-    _lineBuffer.appendJsonEncoded(field);
-    _lineBuffer.appendChar('"');
+    _lineBuffer.appendJsonEncoded(field, fieldLength);
+    return;
+  }
+    
+  if (!_convert) {
+    _lineBuffer.appendText(field, fieldLength);
     return;
   }
 
@@ -505,7 +515,7 @@ void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
       if (fieldLength > 8) {
         // long integer numbers might be problematic. check if we get out of
         // range
-        std::stoll(std::string(
+        (void) std::stoll(std::string(
             field,
             fieldLength));  // this will fail if the number cannot be converted
       }
@@ -514,19 +524,21 @@ void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
       _lineBuffer.appendInteger(num);
     } catch (...) {
       // conversion failed
-      _lineBuffer.appendChar('"');
-      _lineBuffer.appendJsonEncoded(field);
-      _lineBuffer.appendChar('"');
+      _lineBuffer.appendJsonEncoded(field, fieldLength);
     }
   } else if (IsDecimal(field, fieldLength)) {
     // double value
     // conversion might fail with out-of-range error
     try {
-      double num = StringUtils::doubleDecimal(field, fieldLength);
-      bool failed = (num != num || num == HUGE_VAL || num == -HUGE_VAL);
-      if (!failed) {
-        _lineBuffer.appendDecimal(num);
-        return;
+      std::string tmp(field, fieldLength);
+      size_t pos = 0;
+      double num = std::stod(tmp, &pos);
+      if (pos == fieldLength) {
+        bool failed = (num != num || num == HUGE_VAL || num == -HUGE_VAL);
+        if (!failed) {
+          _lineBuffer.appendDecimal(num);
+          return;
+        }
       }
       // NaN, +inf, -inf
       // fall-through to appending the number as a string
@@ -539,9 +551,7 @@ void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
     _lineBuffer.appendText(field, fieldLength);
     _lineBuffer.appendChar('"');
   } else {
-    _lineBuffer.appendChar('"');
-    _lineBuffer.appendJsonEncoded(field);
-    _lineBuffer.appendChar('"');
+    _lineBuffer.appendJsonEncoded(field, fieldLength);
   }
 }
 
@@ -552,12 +562,15 @@ void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
 void ImportHelper::ProcessCsvEnd(TRI_csv_parser_t* parser, char const* field,
                                  size_t fieldLength, size_t row, size_t column,
                                  bool escaped) {
-  ImportHelper* ih = static_cast<ImportHelper*>(parser->_dataAdd);
-
-  if (ih) {
-    ih->addLastField(field, fieldLength, row, column, escaped);
-    ih->incRowsRead();
+  auto importHelper = static_cast<ImportHelper*>(parser->_dataAdd);
+  
+  if (importHelper->getRowsRead() < importHelper->getRowsToSkip()) {
+    importHelper->incRowsRead();
+    return;
   }
+    
+  importHelper->addLastField(field, fieldLength, row, column, escaped);
+  importHelper->incRowsRead();
 }
 
 void ImportHelper::addLastField(char const* field, size_t fieldLength,
@@ -572,10 +585,10 @@ void ImportHelper::addLastField(char const* field, size_t fieldLength,
 
   _lineBuffer.appendChar(']');
 
-  if (row == 0) {
+  if (row == _rowsToSkip) {
     // save the first line
     _firstLine = _lineBuffer.c_str();
-  } else if (row > 0 && _firstLine.empty()) {
+  } else if (row > _rowsToSkip && _firstLine.empty()) {
     // error
     ++_numberErrors;
     _lineBuffer.reset();
@@ -619,18 +632,18 @@ bool ImportHelper::checkCreateCollection() {
   
   std::unordered_map<std::string, std::string> headerFields;
   std::unique_ptr<SimpleHttpResult> result(_client->request(
-      GeneralRequest::RequestType::POST, url, data.c_str(),
+      rest::RequestType::POST, url, data.c_str(),
       data.size(), headerFields));
 
   if (result == nullptr) {
     return false;
   }
 
-  auto code = static_cast<GeneralResponse::ResponseCode>(result->getHttpReturnCode());
-  if (code == GeneralResponse::ResponseCode::CONFLICT ||
-      code == GeneralResponse::ResponseCode::OK ||
-      code == GeneralResponse::ResponseCode::CREATED ||
-      code == GeneralResponse::ResponseCode::ACCEPTED) {
+  auto code = static_cast<rest::ResponseCode>(result->getHttpReturnCode());
+  if (code == rest::ResponseCode::CONFLICT ||
+      code == rest::ResponseCode::OK ||
+      code == rest::ResponseCode::CREATED ||
+      code == rest::ResponseCode::ACCEPTED) {
     // collection already exists or was created successfully
     return true;
   }
@@ -648,7 +661,7 @@ void ImportHelper::sendCsvBuffer() {
   if (!checkCreateCollection()) {
     return;
   }
-
+    
   std::unordered_map<std::string, std::string> headerFields;
   std::string url("/_api/import?" + getCollectionUrlPart() + "&line=" +
                   StringUtils::itoa(_rowOffset) + "&details=true&onDuplicate=" +
@@ -667,7 +680,7 @@ void ImportHelper::sendCsvBuffer() {
   _firstChunk = false;
 
   std::unique_ptr<SimpleHttpResult> result(_client->request(
-      GeneralRequest::RequestType::POST, url, _outputBuffer.c_str(),
+      rest::RequestType::POST, url, _outputBuffer.c_str(),
       _outputBuffer.length(), headerFields));
 
   handleResult(result.get());
@@ -709,7 +722,7 @@ void ImportHelper::sendJsonBuffer(char const* str, size_t len, bool isObject) {
 
   std::unordered_map<std::string, std::string> headerFields;
   std::unique_ptr<SimpleHttpResult> result(_client->request(
-      GeneralRequest::RequestType::POST, url, str, len, headerFields));
+      rest::RequestType::POST, url, str, len, headerFields));
 
   handleResult(result.get());
 }

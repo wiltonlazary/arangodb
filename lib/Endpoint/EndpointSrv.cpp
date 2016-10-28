@@ -28,9 +28,9 @@
 #define BIND_4_COMPAT 1  // LINUX
 #define BIND_8_COMPAT 1  // MACOSX
 
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <netinet/in.h>
 #include <resolv.h>
 
 #include "Basics/StringUtils.h"
@@ -58,7 +58,7 @@ struct SrvRecord {
   std::string name;
 };
 
-std::vector<SrvRecord> srvRecords(std::string specification) {
+static std::vector<SrvRecord> srvRecords(std::string const& specification) {
   res_init();
 
   char const* dname = specification.c_str();
@@ -172,7 +172,9 @@ std::vector<SrvRecord> srvRecords(std::string specification) {
 
 #else
 
-std::vector<SrvRecord> srvRecords(std::string specification) { return {}; }
+static std::vector<SrvRecord> srvRecords(std::string const& specification) {
+  return {};
+}
 
 #endif
 

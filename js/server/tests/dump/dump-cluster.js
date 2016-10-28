@@ -61,9 +61,6 @@ function dumpTestSuite () {
     
     testEmpty : function () {
       var c = db._collection("UnitTestsDumpEmpty");
-	require("internal").print("_______________+++++++");
-
-	require("internal").print(c);
       var p = c.properties();
 
       assertEqual(2, c.type()); // document
@@ -93,8 +90,13 @@ function dumpTestSuite () {
       assertEqual(100000, c.count());
 
       // test all documents
-      for (var i = 0; i < 100000; ++i) {
-        var doc = c.document("test" + i);
+      var r = db._query(`FOR d IN ${c.name()} RETURN d`).toArray();
+      var rr = new Map();
+      for (let i = 0; i < r.length; ++i) {
+        rr.set(r[i]._key, r[i]);
+      }
+      for (let i = 0; i < 100000; ++i) {
+        var doc = rr.get("test" + i);
         assertEqual(i, doc.value1);
         assertEqual("this is a test", doc.value2);
         assertEqual("test" + i, doc.value3);

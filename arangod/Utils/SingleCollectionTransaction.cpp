@@ -26,7 +26,7 @@
 #include "Utils/Transaction.h"
 #include "Utils/TransactionContext.h"
 #include "VocBase/Ditch.h"
-#include "VocBase/document-collection.h"
+#include "VocBase/LogicalCollection.h"
 #include "VocBase/transaction.h"
 
 using namespace arangodb;
@@ -38,7 +38,7 @@ using namespace arangodb;
 SingleCollectionTransaction::SingleCollectionTransaction(
   std::shared_ptr<TransactionContext> transactionContext, TRI_voc_cid_t cid, 
   TRI_transaction_type_e accessType)
-      : Transaction(transactionContext, 0),
+      : Transaction(transactionContext),
         _cid(cid),
         _trxCollection(nullptr),
         _documentCollection(nullptr),
@@ -57,7 +57,7 @@ SingleCollectionTransaction::SingleCollectionTransaction(
 SingleCollectionTransaction::SingleCollectionTransaction(
   std::shared_ptr<TransactionContext> transactionContext,
   std::string const& name, TRI_transaction_type_e accessType)
-      : Transaction(transactionContext, 0),
+      : Transaction(transactionContext),
         _cid(0),
         _trxCollection(nullptr),
         _documentCollection(nullptr),
@@ -65,7 +65,7 @@ SingleCollectionTransaction::SingleCollectionTransaction(
   // add the (sole) collection
   if (setupState() == TRI_ERROR_NO_ERROR) {
     _cid = resolver()->getCollectionId(name);
-    addCollection(_cid, _accessType);
+    addCollection(_cid, name.c_str(), _accessType);
   }
 }
 
@@ -80,10 +80,9 @@ TRI_transaction_collection_t* SingleCollectionTransaction::trxCollection() {
     _trxCollection =
         TRI_GetCollectionTransaction(_trx, _cid, _accessType);
 
-    if (_trxCollection != nullptr &&
-        _trxCollection->_collection != nullptr) {
+    if (_trxCollection != nullptr) {
       _documentCollection =
-          _trxCollection->_collection->_collection;
+          _trxCollection->_collection;
     }
   }
 
@@ -97,7 +96,7 @@ TRI_transaction_collection_t* SingleCollectionTransaction::trxCollection() {
 /// in two different situations
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_document_collection_t* SingleCollectionTransaction::documentCollection() {
+LogicalCollection* SingleCollectionTransaction::documentCollection() {
   if (_documentCollection != nullptr) {
     return _documentCollection;
   }
@@ -139,7 +138,7 @@ std::string SingleCollectionTransaction::name() {
   trxCollection(); // will ensure we have the _trxCollection object set
   TRI_ASSERT(_trxCollection != nullptr);
   TRI_ASSERT(_trxCollection->_collection != nullptr);
-  return _trxCollection->_collection->_name; 
+  return _trxCollection->_collection->name(); 
 }
 
 ////////////////////////////////////////////////////////////////////////////////

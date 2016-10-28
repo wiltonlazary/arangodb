@@ -24,6 +24,7 @@
 #include "RestAdminLogHandler.h"
 
 #include <velocypack/Builder.h>
+#include <velocypack/Iterator.h>
 #include <velocypack/velocypack-aliases.h>
 
 #include "Basics/StringUtils.h"
@@ -35,16 +36,24 @@ using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-RestAdminLogHandler::RestAdminLogHandler(HttpRequest* request)
-    : RestBaseHandler(request) {}
+RestAdminLogHandler::RestAdminLogHandler(GeneralRequest* request,
+                                         GeneralResponse* response)
+    : RestBaseHandler(request, response) {}
 
 bool RestAdminLogHandler::isDirect() const { return true; }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock JSF_get_admin_modules_flush
-////////////////////////////////////////////////////////////////////////////////
+RestStatus RestAdminLogHandler::execute() {
+  size_t const len = _request->suffix().size();
 
-HttpHandler::status_t RestAdminLogHandler::execute() {
+  if (len == 0) {
+    reportLogs();
+  } else {
+    setLogLevel();
+  }
+  return RestStatus::DONE; 
+}
+
+void RestAdminLogHandler::reportLogs() {
   // check the maximal log level to report
   bool found1;
   std::string const& upto =
@@ -81,11 +90,11 @@ HttpHandler::status_t RestAdminLogHandler::execute() {
     } else if (logLevel == "trace" || logLevel == "5") {
       ul = LogLevel::TRACE;
     } else {
-      generateError(GeneralResponse::ResponseCode::BAD,
+      generateError(rest::ResponseCode::BAD,
                     TRI_ERROR_HTTP_BAD_PARAMETER,
                     std::string("unknown '") + (found2 ? "level" : "upto") +
                         "' log level: '" + logLevel + "'");
-      return status_t(HANDLER_DONE);
+      return;
     }
   }
 
@@ -239,12 +248,73 @@ HttpHandler::status_t RestAdminLogHandler::execute() {
 
     result.close();  // Close the result object
 
-    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
+    generateResult(rest::ResponseCode::OK, result.slice());
   } catch (...) {
     // Not Enough memory to build everything up
     // Has been ignored thus far
     // So ignore again
   }
+}
 
-  return status_t(HANDLER_DONE);
+void RestAdminLogHandler::setLogLevel() {
+  std::vector<std::string> const& suffix = _request->suffix();
+
+  // was validated earlier
+  TRI_ASSERT(suffix.size() > 0); 
+
+  if (suffix[0] != "level") {
+    generateError(rest::ResponseCode::BAD,
+                  TRI_ERROR_HTTP_SUPERFLUOUS_SUFFICES,
+                  "superfluous suffix, expecting /_admin/log/level");
+    return;
+  }
+
+  auto const type = _request->requestType();
+
+  if (type == rest::RequestType::GET) {
+    // report loglevel
+    VPackBuilder builder;
+    builder.openObject();
+    auto const& levels = Logger::logLevelTopics();
+    for (auto const& level : levels) {
+      builder.add(level.first, VPackValue(Logger::translateLogLevel(level.second)));
+    }
+    builder.close();
+
+    generateResult(rest::ResponseCode::OK, builder.slice());
+  } else if (type == rest::RequestType::PUT) { 
+    // set loglevel
+    bool parseSuccess = true;
+    std::shared_ptr<VPackBuilder> parsedBody = parseVelocyPackBody(&VPackOptions::Defaults, parseSuccess);
+    if (!parseSuccess) {
+      return;
+    }
+    
+    VPackSlice slice = parsedBody->slice();
+    if (slice.isString()) {
+      Logger::setLogLevel(slice.copyString());
+    } else if (slice.isObject()) {
+      for (auto const& it : VPackObjectIterator(slice)) {
+        if (it.value.isString()) {
+          std::string const l = it.key.copyString() + "=" + it.value.copyString();
+          Logger::setLogLevel(l);
+        }
+      }
+    }
+    
+    // now report current loglevel
+    VPackBuilder builder;
+    builder.openObject();
+    auto const& levels = Logger::logLevelTopics();
+    for (auto const& level : levels) {
+      builder.add(level.first, VPackValue(Logger::translateLogLevel(level.second)));
+    }
+    builder.close();
+
+    generateResult(rest::ResponseCode::OK, builder.slice());
+  } else {
+    // invalid method
+    generateError(rest::ResponseCode::METHOD_NOT_ALLOWED,
+                  TRI_ERROR_HTTP_METHOD_NOT_ALLOWED);
+  }
 }

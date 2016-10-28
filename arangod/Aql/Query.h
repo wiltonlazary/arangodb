@@ -35,13 +35,13 @@
 #include "Aql/ShortStringStorage.h"
 #include "Aql/types.h"
 #include "Basics/Common.h"
-#include "Utils/AqlTransaction.h"
 #include "V8Server/V8Context.h"
 #include "VocBase/voc-types.h"
 
 struct TRI_vocbase_t;
 
 namespace arangodb {
+class Transaction;
 class TransactionContext;
 
 namespace velocypack {
@@ -67,6 +67,7 @@ enum ExecutionState {
   INITIALIZATION = 0,
   PARSING,
   AST_OPTIMIZATION,
+  LOADING_COLLECTIONS,
   PLAN_INSTANTIATION,
   PLAN_OPTIMIZATION,
   EXECUTION,
@@ -117,6 +118,13 @@ class Query {
   Query* clone(QueryPart, bool);
 
  public:
+
+  /// @brief Inject a transaction from outside. Use with care!
+  void injectTransaction (arangodb::Transaction* trx) {
+    _trx = trx;
+    init();
+  }
+
   /// @brief return the start timestamp of the query
   double startTime () const { return _startTime; }
 
@@ -240,7 +248,7 @@ class Query {
   void engine(ExecutionEngine* engine) { _engine = engine; }
 
   /// @brief return the transaction, if prepared
-  inline arangodb::AqlTransaction* trx() { return _trx; }
+  inline arangodb::Transaction* trx() { return _trx; }
 
   /// @brief get the plan for the query
   ExecutionPlan* plan() const { return _plan; }
@@ -276,10 +284,18 @@ class Query {
 
   /// @brief fetch the global query tracking value
   static bool DisableQueryTracking() { return DoDisableQueryTracking; }
-
+  
   /// @brief turn off tracking globally
   static void DisableQueryTracking(bool value) {
     DoDisableQueryTracking = value;
+  }
+  
+  /// @brief fetch the global slow query threshold value
+  static double SlowQueryThreshold() { return SlowQueryThresholdValue; }
+  
+  /// @brief set global slow query threshold value
+  static void SlowQueryThreshold(double value) {
+    SlowQueryThresholdValue = value;
   }
 
   /// @brief get a description of the query's current state
@@ -304,8 +320,10 @@ class Query {
   bool canUseQueryCache() const;
 
   /// @brief fetch a numeric value from the options
+ public:
   double getNumericOption(char const*, double) const;
 
+ private:
   /// @brief read the "optimizer.inspectSimplePlans" section from the options
   bool inspectSimplePlans() const;
 
@@ -323,6 +341,9 @@ class Query {
 
   /// @brief create a TransactionContext
   std::shared_ptr<arangodb::TransactionContext> createTransactionContext();
+
+  /// @brief returns the next query id
+  static TRI_voc_tick_t NextId();
 
  private:
   /// @brief query id
@@ -388,7 +409,7 @@ class Query {
   /// @brief the transaction object, in a distributed query every part of
   /// the query has its own transaction object. The transaction object is
   /// created in the prepare method.
-  arangodb::AqlTransaction* _trx;
+  arangodb::Transaction* _trx;
 
   /// @brief the ExecutionEngine object, if the query is prepared
   ExecutionEngine* _engine;
@@ -413,6 +434,9 @@ class Query {
 
   /// @brief whether or not the query is a data modification query
   bool _isModificationQuery;
+
+  /// @brief global threshold value for slow queries
+  static double SlowQueryThresholdValue;
 
   /// @brief whether or not query tracking is disabled globally
   static bool DoDisableQueryTracking;

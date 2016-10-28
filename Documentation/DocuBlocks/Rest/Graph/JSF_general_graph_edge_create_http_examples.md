@@ -6,9 +6,9 @@
 
 @RESTDESCRIPTION
 Creates a new edge in the collection.
-Within the body the has to contain a *\_from* and *\_to* value referencing to valid vertices in the graph.
+Within the body the has to contain a *_from* and *_to* value referencing to valid vertices in the graph.
 Furthermore the edge has to be valid in the definition of this
-[edge collection](../Glossary/README.md#edge-collection).
+[edge collection](../../Manual/Appendix/Glossary.html#edge-collection).
 
 @RESTURLPARAMETERS
 
@@ -45,6 +45,10 @@ Returned if no graph with this name, no edge collection or no edge with this id 
 
 @EXAMPLE_ARANGOSH_RUN{HttpGharialAddEdge}
   var examples = require("@arangodb/graph-examples/example-graph.js");
+~ examples.dropGraph("social");
+~ require("internal").db._drop("relation");
+~ require("internal").db._drop("female");
+~ require("internal").db._drop("male");
   examples.loadGraph("social");
   var url = "/_api/gharial/social/edge/relation";
   body = {

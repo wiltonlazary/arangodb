@@ -24,8 +24,8 @@
 #ifndef ARANGOD_REST_HANDLER_REST_AGENCY_HANDLER_H
 #define ARANGOD_REST_HANDLER_REST_AGENCY_HANDLER_H 1
 
-#include "RestHandler/RestBaseHandler.h"
 #include "Agency/Agent.h"
+#include "RestHandler/RestBaseHandler.h"
 
 namespace arangodb {
 
@@ -35,24 +35,25 @@ namespace arangodb {
 
 class RestAgencyHandler : public RestBaseHandler {
  public:
-  RestAgencyHandler(HttpRequest*, consensus::Agent*);
+  RestAgencyHandler(GeneralRequest*, GeneralResponse*, consensus::Agent*);
 
+ public:
+  char const* name() const override final { return "RestAgencyHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
+  RestStatus execute() override;
 
  private:
-  status_t reportErrorEmptyRequest();
-  status_t reportTooManySuffices();
-  status_t reportUnknownMethod();
-  status_t handleStores();
-  status_t handleRead();
-  status_t handleWrite();
-  status_t handleConfig();
-  status_t reportMethodNotAllowed();
-  status_t handleState();
+  RestStatus reportErrorEmptyRequest();
+  RestStatus reportTooManySuffices();
+  RestStatus reportUnknownMethod();
+  RestStatus handleStores();
+  RestStatus handleRead();
+  RestStatus handleWrite();
+  RestStatus handleConfig();
+  RestStatus reportMethodNotAllowed();
+  RestStatus handleState();
 
-  void redirectRequest(arangodb::consensus::id_t leaderId);
+  void redirectRequest(std::string const& leaderId);
   consensus::Agent* _agent;
 };
 }

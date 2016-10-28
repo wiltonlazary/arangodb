@@ -2,11 +2,11 @@
 
 ## C/C++ Libraries
 
-### Boost 1.58.0
+### Boost 1.61.0
 
 * Project Home: http://www.boost.org/
 * License: Boost [boost software license](http://www.boost.org/LICENSE_1_0.txt)
-* License: argument_value_usage.hpp [free as-is license](https://raw.githubusercontent.com/arangodb/arangodb/devel/3rdParty/boost/1.58.0/boost/test/utils/runtime/cla/detail/argument_value_usage.hpp)
+* License: argument_value_usage.hpp [free as-is license](https://raw.githubusercontent.com/arangodb/arangodb/devel/3rdParty/boost/1.61.0/boost/test/utils/runtime/cla/detail/argument_value_usage.hpp)
 
 ### fpconv_dtoa
 
@@ -23,19 +23,29 @@
 * Project Home: https://github.com/Cyan4973/xxHash/
 * License: [BSD License](https://github.com/Cyan4973/xxHash/blob/master/LICENSE)
 
-### Google V8 4.3.61
+### short_alloc
 
-* Project Home: https://code.google.com/p/v8/
+* Project Home: https://howardhinnant.github.io/stack_alloc.html
+* License: [MIT License](https://howardhinnant.github.io/short_alloc.h/)
+
+### Google V8 5.0.71.39
+
+* Project Home: https://github.com/v8/v8/
 * GITHUB: https://github.com/v8/v8
-* License: V8 [BSD-style 3-Clause License](https://github.com/v8/v8/blob/4.3.61/LICENSE.v8)
-* License: strongtalk [BSD-style 3-Clause License](https://github.com/v8/v8/blob/4.3.61/LICENSE.strongtalk)
-* License: valgrind [BSD-style 4-Clause license](https://github.com/v8/v8/blob/4.3.61/LICENSE.valgrind)
-* License: vtune, Dual-License [BSD 3-Clause License](https://github.com/v8/v8/blob/4.3.61/src/third_party/vtune/v8-vtune.h)
-* License: gmock [BSD-style 3-Clause License](https://github.com/arangodb/arangodb/blob/devel/3rdParty/V8-4.3.61/testing/gmock/LICENSE)
-* License: gtest [BSD-style 3-Clause License](https://github.com/arangodb/arangodb/blob/devel/3rdParty/V8-4.3.61/testing/gtest/LICENSE)
-* License: fdlibm [free as-is license](https://github.com/v8/v8/blob/4.3.61/src/third_party/fdlibm/LICENSE)
-* License: PCRE [BSD 3-Clause license](https://github.com/v8/v8/blob/4.3.61/test/mjsunit/third_party/regexp-pcre.js)
-* License: object-keys [BSD-style 3-Clause license](https://github.com/v8/v8/blob/4.3.61/test/mjsunit/third_party/object-keys.js) 
+* License: V8 [BSD-style 3-Clause License](https://github.com/v8/v8/blob/5.0.71.39/LICENSE.v8)
+* License: strongtalk [BSD-style 3-Clause License](https://github.com/v8/v8/blob/5.0.71.39/LICENSE.strongtalk)
+* License: valgrind [BSD-style 4-Clause license](https://github.com/v8/v8/blob/5.0.71.39/LICENSE.valgrind)
+* License: vtune, Dual-License [BSD 3-Clause License](https://github.com/v8/v8/blob/5.0.71.39/src/third_party/vtune/v8-vtune.h)
+* License: gmock [BSD-style 3-Clause License](https://github.com/arangodb/arangodb/blob/devel/3rdParty/V8-5.0.71.39/testing/gmock/LICENSE)
+* License: gtest [BSD-style 3-Clause License](https://github.com/arangodb/arangodb/blob/devel/3rdParty/V8-5.0.71.39/testing/gtest/LICENSE)
+* License: fdlibm [free as-is license](https://github.com/v8/v8/blob/5.0.71.39/src/third_party/fdlibm/LICENSE)
+* License: PCRE [BSD 3-Clause license](https://github.com/v8/v8/blob/5.0.71.39/test/mjsunit/third_party/regexp-pcre.js)
+* License: object-keys [BSD-style 3-Clause license](https://github.com/v8/v8/blob/5.0.71.39/test/mjsunit/third_party/object-keys.js) 
+
+### RocksDB 4.8.0
+
+* Project Home: https://github.com/facebook/rocksdb
+* License: [BSD License](https://github.com/facebook/rocksdb/blob/master/LICENSE)
 
 ### ICU 54.1
 
@@ -65,18 +75,10 @@
 
 ## Programs
 
-### autoconf
+### cmake
 
-* Project Home: http://www.gnu.org/software/autoconf/autoconf.html
-* only used to generate code, not part of the distribution
-* License: configure [free as-is license](https://github.com/arangodb/arangodb/blob/master/configure#L11)
-* License: ax_cxx_compile_stdcxx_11.m4 [free as-is license](https://github.com/arangodb/arangodb/blob/master/m4/ax_cxx_compile_stdcxx_11.m4#L25)
-
-### automake
-
-* Project Home: https://www.gnu.org/software/automake/
-* only used to generate code, not part of the distribution
-* License: Makefile.in [free as-is license](https://raw.githubusercontent.com/arangodb/arangodb/master/Makefile.in)
+* Project Home: https://cmake.org/
+* License OSI-approved BSD 3-clause License [https://cmake.org/licensing/]
 
 ### Bison 3.0
 
@@ -158,7 +160,12 @@
 * GITHUB: https://github.com/jshttp/http-errors
 * License: [MIT License](https://github.com/jshttp/http-errors/blob/master/LICENSE)
 
-#### inflect
+#### iconv-lite
+
+* GITHUB: https://github.com/ashtuchkin/iconv-lite
+* License: [MIT-style License](https://github.com/ashtuchkin/iconv-lite/blob/master/LICENSE)
+
+#### i (inflect)
 
 * GITHUB: https://github.com/pksunkara/inflect
 * License: [MIT-style License](https://github.com/pksunkara/inflect/blob/master/LICENSE)
@@ -177,12 +184,6 @@
 
 * GITHUB: https://github.com/nodeca/js-yaml
 * License: [MIT License](https://github.com/nodeca/js-yaml/blob/master/LICENSE)
-
-#### JSHint
-
-* Project Home: http://jshint.com
-* GITHUB: https://github.com/jshint/jshint
-* License: [MIT-style License](https://github.com/jshint/jshint/blob/master/LICENSE)
 
 #### JSUnity
 
@@ -216,11 +217,6 @@
 * GITHUB: https://github.com/mochajs/mocha
 * License: [MIT License](https://github.com/mochajs/mocha/blob/master/LICENSE)
 
-#### node-semver
-
-* GITHUB: https://github.com/npm/node-semver
-* License: [ISC License](https://github.com/npm/node-semver/blob/master/LICENSE)
-
 #### qs
 
 * GITHUB: https://github.com/hapijs/qs
@@ -247,6 +243,11 @@
 
 * GITHUB: https://github.com/jshttp/statuses
 * License: [MIT License](https://github.com/jshttp/statuses/blob/master/LICENSE)
+
+#### timezone
+
+* GITHUB: https://github.com/bigeasy/timezone
+* License: [MIT License](https://github.com/bigeasy/timezone/blob/master/LICENSE)
 
 #### type-is
 
@@ -399,3 +400,13 @@
 * Project Home: http://swagger.io
 * GITHUB: https://github.com/swagger-api/swagger-ui
 * License: [Apache 2 license](https://github.com/swagger-api/swagger-ui/blob/master/LICENSE)
+
+#### sigma.js
+
+* GITHUB: https://github.com/jacomyal/sigma.js
+* License: [MIT License](https://github.com/jacomyal/sigma.js/blob/master/LICENSE.txt)
+
+#### wheelnav.js
+
+* GITHUB: https://github.com/softwaretailoring/wheelnav
+* License: [MIT License](https://github.com/softwaretailoring/wheelnav/blob/master/LICENSE)

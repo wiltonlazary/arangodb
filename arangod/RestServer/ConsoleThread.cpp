@@ -23,8 +23,8 @@
 
 #include "ConsoleThread.h"
 
-#include <iostream>
 #include <v8.h>
+#include <iostream>
 
 #include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/MutexLocker.h"
@@ -63,6 +63,13 @@ void ConsoleThread::run() {
   // enter V8 context
   _context = V8DealerFeature::DEALER->enterContext(_vocbase, true);
 
+  if (_context == nullptr) {
+    LOG(FATAL) << "cannot acquire V8 context";
+    FATAL_ERROR_EXIT();
+  }
+
+  TRI_DEFER(V8DealerFeature::DEALER->exitContext(_context));
+
   // work
   try {
     inner();
@@ -71,14 +78,11 @@ void ConsoleThread::run() {
       LOG(ERR) << error;
     }
   } catch (...) {
-    V8DealerFeature::DEALER->exitContext(_context);
     _applicationServer->beginShutdown();
-
     throw;
   }
 
   // exit context
-  V8DealerFeature::DEALER->exitContext(_context);
   _applicationServer->beginShutdown();
 }
 
@@ -153,13 +157,19 @@ start_pretty_print();
     }
 
     while (!isStopping() && !_userAborted.load()) {
-      if (nrCommands >= gcInterval) {
+      if (nrCommands >= gcInterval ||
+          V8PlatformFeature::isOutOfMemory(isolate)) {
         TRI_RunGarbageCollectionV8(isolate, 0.5);
         nrCommands = 0;
+
+        // needs to be reset after the garbage collection
+        V8PlatformFeature::resetOutOfMemory(isolate);
       }
 
       std::string input;
       bool eof;
+
+      isolate->CancelTerminateExecution();
 
       {
         MUTEX_LOCKER(mutexLocker, serverConsoleMutex);

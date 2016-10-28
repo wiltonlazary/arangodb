@@ -38,16 +38,12 @@ class Dispatcher;
 
 class RestShardHandler : public RestBaseHandler {
  public:
-  explicit RestShardHandler(HttpRequest* request);
+  explicit RestShardHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestShardHandler"; }
   bool isDirect() const override;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief executes the handler
-  //////////////////////////////////////////////////////////////////////////////
-
-  status_t execute() override;
+  RestStatus execute() override;
 };
 }
 

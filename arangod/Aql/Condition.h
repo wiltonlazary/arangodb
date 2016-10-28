@@ -27,8 +27,9 @@
 #include "Basics/Common.h"
 #include "Aql/AstNode.h"
 #include "Basics/AttributeNameParser.h"
-#include "Basics/JsonHelper.h"
 #include "Utils/Transaction.h"
+
+#include <velocypack/Slice.h>
 
 namespace arangodb {
 namespace aql {
@@ -147,7 +148,7 @@ struct ConditionPart {
   }
 
   /// @brief true if the condition is completely covered by the other condition
-  bool isCoveredBy(ConditionPart const&) const;
+  bool isCoveredBy(ConditionPart const&, bool) const;
 
   Variable const* variable;
   std::string attributeName;
@@ -193,20 +194,11 @@ class Condition {
   /// relevant if the condition consists of multiple ORs)
   inline bool isSorted() const { return _isSorted; }
 
-  /// @brief return the condition as a Json object
-  arangodb::basics::Json toJson(TRI_memory_zone_t* zone, bool verbose) const {
-    if (_root == nullptr) {
-      return arangodb::basics::Json(arangodb::basics::Json::Object);
-    }
-
-    return arangodb::basics::Json(zone, _root->toJson(zone, verbose));
-  }
-
   /// @brief export the condition as VelocyPack
   void toVelocyPack(arangodb::velocypack::Builder&, bool) const;
 
-  /// @brief create a condition from JSON
-  static Condition* fromJson(ExecutionPlan*, arangodb::basics::Json const&);
+  /// @brief create a condition from VPack
+  static Condition* fromVPack(ExecutionPlan*, arangodb::velocypack::Slice const&);
 
   /// @brief clone the condition
   Condition* clone() const;
@@ -226,7 +218,7 @@ class Condition {
   void normalize();
 
   /// @brief removes condition parts from another
-  AstNode* removeIndexCondition(Variable const*, AstNode*);
+  AstNode* removeIndexCondition(ExecutionPlan const*, Variable const*, AstNode*);
 
   /// @brief remove (now) invalid variables from the condition
   bool removeInvalidVariables(std::unordered_set<Variable const*> const&);
@@ -252,8 +244,9 @@ class Condition {
 
   /// @brief registers an attribute access for a particular (collection)
   /// variable
-  void storeAttributeAccess(VariableUsageType&, AstNode const*, size_t,
-                            AttributeSideType);
+  void storeAttributeAccess(
+      std::pair<Variable const*, std::vector<arangodb::basics::AttributeName>>& varAccess,
+      VariableUsageType&, AstNode const*, size_t, AttributeSideType);
 
 /// @brief validate the condition's AST
 #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
@@ -261,14 +254,14 @@ class Condition {
 #endif
 
   /// @brief checks if the current condition covers the other
-  bool canRemove(ConditionPart const&, AstNode const*) const;
+  bool canRemove(ExecutionPlan const*, ConditionPart const&, AstNode const*) const;
 
   /// @brief deduplicate IN condition values
   /// this may modify the node in place
   void deduplicateInOperation(AstNode*);
 
   /// @brief merge the values from two IN operations
-  AstNode* mergeInOperations(AstNode const*, AstNode const*);
+  AstNode* mergeInOperations(arangodb::Transaction* trx, AstNode const*, AstNode const*);
 
   /// @brief merges the current node with the sub nodes of same type
   AstNode* collapse(AstNode const*);

@@ -26,15 +26,15 @@
 
 #include "Basics/Common.h"
 #include "VocBase/replication-applier.h"
-#include "VocBase/server.h"
+#include "VocBase/ticks.h"
 #include "VocBase/transaction.h"
 
 class TRI_replication_applier_configuration_t;
 struct TRI_vocbase_t;
-class TRI_vocbase_col_t;
 
 namespace arangodb {
 class Endpoint;
+class LogicalCollection;
 
 namespace velocypack {
 class Slice;
@@ -120,6 +120,13 @@ class Syncer {
 
   std::string getCName(arangodb::velocypack::Slice const&) const;
 
+  ///////////////////////////////////////////////////////////////////////////////
+  /// @brief extract the collection by either id or name, may return nullptr!
+  ////////////////////////////////////////////////////////////////////////////////
+
+  arangodb::LogicalCollection* getCollectionByIdOrName(TRI_voc_cid_t cid,
+                                                       std::string const& name);
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief apply a single marker from the collection dump
   //////////////////////////////////////////////////////////////////////////////
@@ -135,7 +142,8 @@ class Syncer {
   /// @brief creates a collection, based on the VelocyPack provided
   //////////////////////////////////////////////////////////////////////////////
 
-  int createCollection(arangodb::velocypack::Slice const&, TRI_vocbase_col_t**);
+  int createCollection(arangodb::velocypack::Slice const&,
+                       arangodb::LogicalCollection**);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief drops a collection, based on the VelocyPack provided
@@ -247,6 +255,12 @@ class Syncer {
   //////////////////////////////////////////////////////////////////////////////
 
   int _barrierTtl;
+  
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief whether or not to use collection ids in replication
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool _useCollectionId;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief base url of the replication API

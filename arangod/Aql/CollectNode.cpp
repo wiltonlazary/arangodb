@@ -29,7 +29,7 @@
 using namespace arangodb::aql;
 
 CollectNode::CollectNode(
-    ExecutionPlan* plan, arangodb::basics::Json const& base,
+    ExecutionPlan* plan, arangodb::velocypack::Slice const& base,
     Variable const* expressionVariable, Variable const* outVariable,
     std::vector<Variable const*> const& keepVariables,
     std::unordered_map<VariableId, std::string const> const& variableMap,
@@ -192,6 +192,7 @@ struct UserVarFinder final : public WalkerWorker<ExecutionNode> {
                en->getType() == ExecutionNode::INDEX ||
                en->getType() == ExecutionNode::ENUMERATE_LIST ||
                en->getType() == ExecutionNode::TRAVERSAL ||
+               en->getType() == ExecutionNode::SHORTEST_PATH ||
                en->getType() == ExecutionNode::COLLECT) {
       depth += 1;
     }

@@ -24,51 +24,54 @@
 #ifndef ARANGOD_REST_HANDLER_REST_BASE_HANDLER_H
 #define ARANGOD_REST_HANDLER_REST_BASE_HANDLER_H 1
 
-#include "HttpServer/HttpHandler.h"
+#include "GeneralServer/RestHandler.h"
 
-#include "Rest/HttpResponse.h"
+#include "Rest/GeneralResponse.h"
 
 namespace arangodb {
 class TransactionContext;
 
 namespace velocypack {
+class Builder;
 struct Options;
 class Slice;
 }
 
-class RestBaseHandler : public rest::HttpHandler {
+class RestBaseHandler : public rest::RestHandler {
  public:
-  explicit RestBaseHandler(HttpRequest* request);
+  explicit RestBaseHandler(GeneralRequest*, GeneralResponse*);
 
   void handleError(basics::Exception const&) override;
 
  public:
   // generates a result from VelocyPack
-  void generateResult(GeneralResponse::ResponseCode,
-                      arangodb::velocypack::Slice const& slice);
+  template <typename Payload>
+  void generateResult(rest::ResponseCode, Payload&&);
 
   // generates a result from VelocyPack
-  void generateResult(GeneralResponse::ResponseCode,
-                      arangodb::velocypack::Slice const& slice,
+  template <typename Payload>
+  void generateResult(rest::ResponseCode, Payload&&, VPackOptions const*);
+
+  // generates a result from VelocyPack
+  template <typename Payload>
+  void generateResult(rest::ResponseCode, Payload&&,
                       std::shared_ptr<arangodb::TransactionContext> context);
 
   // generates an error
-  void generateError(GeneralResponse::ResponseCode, int);
+  void generateError(rest::ResponseCode, int);
 
   // generates an error
-  void generateError(GeneralResponse::ResponseCode, int, std::string const&);
-
-  // generates an out of memory error
-  void generateOOMError();
+  void generateError(rest::ResponseCode, int, std::string const&);
 
   // generates a canceled message
   void generateCanceled();
 
  protected:
-  // write result back to client
-  void writeResult(arangodb::velocypack::Slice const& slice, 
-                   arangodb::velocypack::Options const& options);
+  /// @brief parses the body as VelocyPack
+  std::shared_ptr<arangodb::velocypack::Builder> parseVelocyPackBody(arangodb::velocypack::Options const*, bool&);
 
+  template <typename Payload>
+  void writeResult(Payload&&, arangodb::velocypack::Options const& options);
 };
 }
 

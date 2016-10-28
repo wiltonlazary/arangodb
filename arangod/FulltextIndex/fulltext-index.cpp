@@ -24,12 +24,13 @@
 #include "fulltext-index.h"
 
 #include "Basics/locks.h"
+#include "Basics/Exceptions.h"
 #include "Logger/Logger.h"
 
-#include "fulltext-handles.h"
-#include "fulltext-list.h"
-#include "fulltext-query.h"
-#include "fulltext-result.h"
+#include "FulltextIndex/fulltext-handles.h"
+#include "FulltextIndex/fulltext-list.h"
+#include "FulltextIndex/fulltext-query.h"
+#include "FulltextIndex/fulltext-result.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief use padding for pointers in binary data
@@ -1113,6 +1114,7 @@ static TRI_fulltext_result_t* MakeListResult(index__t* const idx,
   TRI_fulltext_result_t* result;
   TRI_fulltext_list_entry_t* listEntries;
   uint32_t numResults;
+  uint32_t originalNumResults;
   uint32_t i, pos;
 
   if (list == nullptr) {
@@ -1122,6 +1124,7 @@ static TRI_fulltext_result_t* MakeListResult(index__t* const idx,
   // we have a list of handles
   // now turn the handles into documents and exclude deleted ones on the fly
   numResults = TRI_NumEntriesListFulltextIndex(list);
+  originalNumResults = numResults;
   if (static_cast<size_t>(numResults) > maxResults && maxResults > 0) {
     // cap the number of results
     numResults = static_cast<uint32_t>(maxResults);
@@ -1135,7 +1138,7 @@ static TRI_fulltext_result_t* MakeListResult(index__t* const idx,
   pos = 0;
   listEntries = TRI_StartListFulltextIndex(list);
 
-  for (i = 0; i < numResults; ++i) {
+  for (i = 0; i < originalNumResults; ++i) {
     TRI_fulltext_handle_t handle;
     TRI_fulltext_doc_t doc;
 
@@ -1148,6 +1151,9 @@ static TRI_fulltext_result_t* MakeListResult(index__t* const idx,
     }
 
     result->_documents[pos++] = doc;
+    if (pos >= numResults) {
+      break;
+    }
   }
 
   result->_numDocuments = pos;
@@ -1285,6 +1291,45 @@ void TRI_FreeFtsIndex(TRI_fts_index_t* ftx) {
 
   // free index itself
   TRI_Free(TRI_UNKNOWN_MEM_ZONE, idx);
+}
+
+void TRI_TruncateFulltextIndex(TRI_fts_index_t* ftx) {
+  index__t* idx = (index__t*)ftx;
+
+  // free root node (this will recursively free all other nodes)
+  FreeNode(idx, idx->_root);
+  
+  // free handles
+  TRI_FreeHandlesFulltextIndex(idx->_handles);
+  idx->_handles = nullptr;
+  
+  idx->_memoryAllocated = sizeof(index__t);
+#if TRI_FULLTEXT_DEBUG
+  idx->_memoryBase = sizeof(index__t);
+  idx->_memoryNodes = 0;
+  idx->_memoryFollowers = 0;
+  idx->_nodesAllocated = 0;
+#endif
+  
+  // create the root node
+  idx->_root = CreateNode(idx);
+  if (idx->_root == nullptr) {
+    // out of memory
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+
+  // create an instance for managing document handles
+  idx->_handles = TRI_CreateHandlesFulltextIndex(2048);
+  if (idx->_handles == nullptr) {
+    // out of memory
+    TRI_Free(TRI_UNKNOWN_MEM_ZONE, idx->_root);
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+
+  idx->_memoryAllocated += sizeof(TRI_fulltext_handles_t);
+#if TRI_FULLTEXT_DEBUG
+  idx->_memoryBase += sizeof(TRI_fulltext_handles_t);
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1551,8 +1596,6 @@ TRI_fulltext_result_t* TRI_QueryFulltextIndex(TRI_fts_index_t* const ftx,
     }
   }
 
-  TRI_ReadUnlockReadWriteLock(&idx->_lock);
-
   TRI_FreeQueryFulltextIndex(query);
 
   if (result == nullptr) {
@@ -1562,7 +1605,10 @@ TRI_fulltext_result_t* TRI_QueryFulltextIndex(TRI_fts_index_t* const ftx,
 
   // now convert the handle list into a result (this will also filter out
   // deleted documents)
-  return MakeListResult(idx, result, maxResults);
+  TRI_fulltext_result_t* r = MakeListResult(idx, result, maxResults);
+  TRI_ReadUnlockReadWriteLock(&idx->_lock);
+
+  return r;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

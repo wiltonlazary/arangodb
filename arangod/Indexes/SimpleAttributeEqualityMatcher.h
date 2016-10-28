@@ -107,14 +107,16 @@ class SimpleAttributeEqualityMatcher {
   bool accessFitsIndex(arangodb::Index const*, arangodb::aql::AstNode const*,
                        arangodb::aql::AstNode const*,
                        arangodb::aql::AstNode const*,
-                       arangodb::aql::Variable const*, bool);
+                       arangodb::aql::Variable const*, 
+                       std::unordered_set<std::string>& nonNullAttributes,
+                       bool);
 
  private:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief array of attributes used for comparisons
   //////////////////////////////////////////////////////////////////////////////
 
-  std::vector<std::vector<arangodb::basics::AttributeName>> const _attributes;
+  std::vector<std::vector<arangodb::basics::AttributeName>> const& _attributes;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief an internal map to mark which condition parts were useful and

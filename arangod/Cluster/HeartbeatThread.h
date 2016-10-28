@@ -28,35 +28,31 @@
 
 #include "Basics/ConditionVariable.h"
 #include "Basics/Mutex.h"
+#include "Basics/asio-helper.h"
 #include "Cluster/AgencyComm.h"
+#include "Cluster/DBServerAgencySync.h"
 #include "Logger/Logger.h"
-#include "Cluster/ServerJob.h"
-
-struct TRI_server_t;
-struct TRI_vocbase_t;
 
 namespace arangodb {
 
 struct AgencyVersions {
   uint64_t plan;
   uint64_t current;
-  
-  AgencyVersions(uint64_t _plan, uint64_t _current) : plan(_plan), current(_plan) {}
 
-  explicit AgencyVersions(const ServerJobResult& result)
-    : plan(result.planVersion),
-    current(result.currentVersion) {
-  }
+  AgencyVersions(uint64_t _plan, uint64_t _current)
+      : plan(_plan), current(_plan) {}
+
+  explicit AgencyVersions(const DBServerAgencySyncResult& result)
+      : plan(result.planVersion), current(result.currentVersion) {}
 };
 
 class AgencyCallbackRegistry;
 
-class HeartbeatThread : public Thread {
-  HeartbeatThread(HeartbeatThread const&) = delete;
-  HeartbeatThread& operator=(HeartbeatThread const&) = delete;
-
+class HeartbeatThread : public Thread,
+                        public std::enable_shared_from_this<HeartbeatThread> {
  public:
-  HeartbeatThread(TRI_server_t*, AgencyCallbackRegistry*, uint64_t, uint64_t);
+  HeartbeatThread(AgencyCallbackRegistry*, uint64_t interval,
+                  uint64_t maxFailsBeforeWarning, boost::asio::io_service*);
   ~HeartbeatThread();
 
  public:
@@ -78,19 +74,14 @@ class HeartbeatThread : public Thread {
 
   void setReady() { _ready.store(true); }
 
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief decrement the counter for a dispatched job, the argument is true
-  /// if the job was finished successfully and false otherwise
-  //////////////////////////////////////////////////////////////////////////////
-
-  void removeDispatchedJob(ServerJobResult);
+  void dispatchedJobResult(DBServerAgencySyncResult);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief whether or not the thread has run at least once.
   /// this is used on the coordinator only
   //////////////////////////////////////////////////////////////////////////////
 
-  static bool hasRunOnce() { return (HasRunOnce == 1); }
+  static bool hasRunOnce() { return HasRunOnce.load(); }
 
  protected:
   //////////////////////////////////////////////////////////////////////////////
@@ -137,24 +128,12 @@ class HeartbeatThread : public Thread {
   bool sendState();
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief fetch users for a database (run on coordinator only)
-  //////////////////////////////////////////////////////////////////////////////
-
-  bool fetchUsers(TRI_vocbase_t*);
-  
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief bring the db server in sync with the desired state
   //////////////////////////////////////////////////////////////////////////////
-  
+
   bool syncDBServerStatusQuo();
 
  private:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief server
-  //////////////////////////////////////////////////////////////////////////////
-
-  TRI_server_t* _server;
-
   //////////////////////////////////////////////////////////////////////////////
   /// @brief AgencyCallbackRegistry
   //////////////////////////////////////////////////////////////////////////////
@@ -178,13 +157,6 @@ class HeartbeatThread : public Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   arangodb::basics::ConditionVariable _condition;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief users for these databases will be re-fetched the next time the
-  /// heartbeat thread runs
-  //////////////////////////////////////////////////////////////////////////////
-
-  std::unordered_set<TRI_vocbase_t*> _refetchUsers;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief this server's id
@@ -225,7 +197,7 @@ class HeartbeatThread : public Thread {
   //////////////////////////////////////////////////////////////////////////////
   /// @brief current plan version
   //////////////////////////////////////////////////////////////////////////////
-  
+
   uint64_t _currentPlanVersion;
 
   //////////////////////////////////////////////////////////////////////////////
@@ -239,19 +211,21 @@ class HeartbeatThread : public Thread {
   /// this is used on the coordinator only
   //////////////////////////////////////////////////////////////////////////////
 
-  static volatile sig_atomic_t HasRunOnce;
+  static std::atomic<bool> HasRunOnce;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief keeps track of the currently installed versions
   //////////////////////////////////////////////////////////////////////////////
   AgencyVersions _currentVersions;
-  
+
   //////////////////////////////////////////////////////////////////////////////
   /// @brief keeps track of the currently desired versions
   //////////////////////////////////////////////////////////////////////////////
   AgencyVersions _desiredVersions;
 
   bool _wasNotified;
+
+  std::unique_ptr<boost::asio::io_service::strand> _strand;
 };
 }
 

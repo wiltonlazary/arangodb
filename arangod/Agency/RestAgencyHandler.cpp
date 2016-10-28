@@ -32,6 +32,8 @@
 #include "Rest/HttpRequest.h"
 #include "Rest/Version.h"
 
+#include <thread>
+
 using namespace arangodb;
 
 using namespace arangodb::basics;
@@ -42,48 +44,50 @@ using namespace arangodb::consensus;
 /// @brief ArangoDB server
 ////////////////////////////////////////////////////////////////////////////////
 
-RestAgencyHandler::RestAgencyHandler(HttpRequest* request, Agent* agent)
-    : RestBaseHandler(request), _agent(agent) {}
+RestAgencyHandler::RestAgencyHandler(GeneralRequest* request,
+                                     GeneralResponse* response, Agent* agent)
+    : RestBaseHandler(request, response), _agent(agent) {}
 
 bool RestAgencyHandler::isDirect() const { return false; }
 
-inline HttpHandler::status_t RestAgencyHandler::reportErrorEmptyRequest() {
+inline RestStatus RestAgencyHandler::reportErrorEmptyRequest() {
   LOG_TOPIC(WARN, Logger::AGENCY)
       << "Empty request to public agency interface.";
-  generateError(GeneralResponse::ResponseCode::NOT_FOUND, 404);
-  return HttpHandler::status_t(HANDLER_DONE);
+  generateError(rest::ResponseCode::NOT_FOUND, 404);
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyHandler::reportTooManySuffices() {
+inline RestStatus RestAgencyHandler::reportTooManySuffices() {
   LOG_TOPIC(WARN, Logger::AGENCY)
       << "Too many suffixes. Agency public interface takes one path.";
-  generateError(GeneralResponse::ResponseCode::NOT_FOUND, 404);
-  return HttpHandler::status_t(HANDLER_DONE);
+  generateError(rest::ResponseCode::NOT_FOUND, 404);
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyHandler::reportUnknownMethod() {
+inline RestStatus RestAgencyHandler::reportUnknownMethod() {
   LOG_TOPIC(WARN, Logger::AGENCY) << "Public REST interface has no method "
                                   << _request->suffix()[0];
-  generateError(GeneralResponse::ResponseCode::NOT_FOUND, 405);
-  return HttpHandler::status_t(HANDLER_DONE);
+  generateError(rest::ResponseCode::NOT_FOUND, 405);
+  return RestStatus::DONE;
 }
 
-void RestAgencyHandler::redirectRequest(arangodb::consensus::id_t leaderId) {
+void RestAgencyHandler::redirectRequest(std::string const& leaderId) {
   try {
-    std::string url =
-        Endpoint::uriForm(_agent->config().endpoints.at(leaderId)) +
-        _request->requestPath();
-    createResponse(GeneralResponse::ResponseCode::TEMPORARY_REDIRECT);
+    std::string url = Endpoint::uriForm(_agent->config().poolAt(leaderId)) +
+                      _request->requestPath();
+    _response->setResponseCode(rest::ResponseCode::TEMPORARY_REDIRECT);
     _response->setHeaderNC(StaticStrings::Location, url);
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << "Sending 307 redirect to " << url;
   } catch (std::exception const& e) {
-    LOG_TOPIC(WARN, Logger::AGENCY) << e.what();
-    generateError(GeneralResponse::ResponseCode::SERVER_ERROR,
-                  TRI_ERROR_INTERNAL, e.what());
+    LOG_TOPIC(WARN, Logger::AGENCY) << e.what() << " " << __FILE__ << ":"
+                                    << __LINE__;
+    generateError(rest::ResponseCode::SERVER_ERROR, TRI_ERROR_INTERNAL,
+                  e.what());
   }
 }
 
-HttpHandler::status_t RestAgencyHandler::handleStores() {
-  if (_request->requestType() == GeneralRequest::RequestType::GET) {
+RestStatus RestAgencyHandler::handleStores() {
+  if (_request->requestType() == rest::RequestType::GET) {
     Builder body;
     body.openObject();
     body.add("spearhead", VPackValue(VPackValueType::Array));
@@ -93,35 +97,87 @@ HttpHandler::status_t RestAgencyHandler::handleStores() {
     _agent->readDB().dumpToBuilder(body);
     body.close();
     body.close();
-    generateResult(GeneralResponse::ResponseCode::OK, body.slice());
+    generateResult(rest::ResponseCode::OK, body.slice());
   } else {
-    generateError(GeneralResponse::ResponseCode::BAD, 400);
+    generateError(rest::ResponseCode::BAD, 400);
   }
-  return HttpHandler::status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }
 
-HttpHandler::status_t RestAgencyHandler::handleWrite() {
+RestStatus RestAgencyHandler::handleWrite() {
   arangodb::velocypack::Options options;  // TODO: User not wait.
-  if (_request->requestType() == GeneralRequest::RequestType::POST) {
+  if (_request->requestType() == rest::RequestType::POST) {
     query_t query;
 
     try {
-      query = _request->toVelocyPack(&options);
+      query = _request->toVelocyPackBuilderPtr(&options);
     } catch (std::exception const& e) {
-      LOG_TOPIC(ERR, Logger::AGENCY) << e.what();
+      LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << ":"
+                                     << __LINE__;
       Builder body;
       body.openObject();
       body.add("message", VPackValue(e.what()));
       body.close();
-      generateResult(GeneralResponse::ResponseCode::BAD, body.slice());
-      return HttpHandler::status_t(HANDLER_DONE);
+      generateResult(rest::ResponseCode::BAD, body.slice());
+      return RestStatus::DONE;
     }
 
-    write_ret_t ret = _agent->write(query);
+    if (!query->slice().isArray()) {
+      Builder body;
+      body.openObject();
+      body.add("message",
+               VPackValue("Expecting array of arrays as body for writes"));
+      body.close();
+      generateResult(rest::ResponseCode::BAD, body.slice());
+      return RestStatus::DONE;
+    }
+
+    if (query->slice().length() == 0) {
+      Builder body;
+      body.openObject();
+      body.add("message", VPackValue("Empty request."));
+      body.close();
+      generateResult(rest::ResponseCode::BAD, body.slice());
+      return RestStatus::DONE;
+    }
+
+    auto s = std::chrono::system_clock::now();  // Leadership established?
+    std::chrono::duration<double> timeout(_agent->config().minPing());
+    while (_agent->size() > 1 && _agent->leaderID() == NO_LEADER) {
+      if ((std::chrono::system_clock::now() - s) > timeout) {
+        Builder body;
+        body.openObject();
+        body.add("message", VPackValue("No leader"));
+        body.close();
+        generateResult(rest::ResponseCode::SERVICE_UNAVAILABLE, body.slice());
+        LOG_TOPIC(DEBUG, Logger::AGENCY) << "We don't know who the leader is";
+        return RestStatus::DONE;
+      }
+      std::this_thread::sleep_for(duration_t(100));
+    }
+
+    write_ret_t ret;
+
+    try {
+      ret = _agent->write(query);
+    } catch (std::exception const& e) {
+      LOG_TOPIC(DEBUG, Logger::AGENCY) << "Malformed write query " << query;
+      Builder body;
+      body.openObject();
+      body.add("message",
+               VPackValue(std::string("Malformed write query") + e.what()));
+      body.close();
+      generateResult(rest::ResponseCode::BAD, body.slice());
+      return RestStatus::DONE;
+    }
 
     if (ret.accepted) {  // We're leading and handling the request
+      bool found;
+      std::string call_mode = _request->header("x-arangodb-agency-mode", found);
+      if (!found) {
+        call_mode = "waitForCommitted";
+      }
 
-      std::string const& call_mode = _request->header("x-arangodb-agency-mode");
       size_t errors = 0;
       Builder body;
       body.openObject();
@@ -139,8 +195,15 @@ HttpHandler::status_t RestAgencyHandler::handleWrite() {
 
         // Wait for commit of highest except if it is 0?
         if (!ret.indices.empty() && call_mode == "waitForCommitted") {
-          arangodb::consensus::index_t max_index =
-              *std::max_element(ret.indices.begin(), ret.indices.end());
+          arangodb::consensus::index_t max_index = 0;
+          try {
+            max_index =
+                *std::max_element(ret.indices.begin(), ret.indices.end());
+          } catch (std::exception const& e) {
+            LOG_TOPIC(WARN, Logger::AGENCY) << e.what() << " " << __FILE__
+                                            << ":" << __LINE__;
+          }
+
           if (max_index > 0) {
             _agent->waitFor(max_index);
           }
@@ -150,90 +213,122 @@ HttpHandler::status_t RestAgencyHandler::handleWrite() {
       body.close();
 
       if (errors > 0) {  // Some/all requests failed
-        generateResult(GeneralResponse::ResponseCode::PRECONDITION_FAILED,
-                       body.slice());
+        generateResult(rest::ResponseCode::PRECONDITION_FAILED, body.slice());
       } else {  // All good
-        generateResult(GeneralResponse::ResponseCode::OK, body.slice());
+        generateResult(rest::ResponseCode::OK, body.slice());
       }
     } else {  // Redirect to leader
-      redirectRequest(ret.redirect);
+      if (_agent->leaderID() == NO_LEADER) {
+        Builder body;
+        body.openObject();
+        body.add("message", VPackValue("No leader"));
+        body.close();
+        generateResult(rest::ResponseCode::SERVICE_UNAVAILABLE, body.slice());
+        LOG_TOPIC(DEBUG, Logger::AGENCY) << "We don't know who the leader is";
+        return RestStatus::DONE;
+      } else {
+        TRI_ASSERT(ret.redirect != _agent->id());
+        redirectRequest(ret.redirect);
+      }
     }
   } else {  // Unknown method
-    generateError(GeneralResponse::ResponseCode::METHOD_NOT_ALLOWED, 405);
+    generateError(rest::ResponseCode::METHOD_NOT_ALLOWED, 405);
   }
-  return HttpHandler::status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }
 
-/*inline HttpHandler::status_t RestAgencyHandler::handleReplicate () {
-  if (_request->requestType() == GeneralRequest::RequestType::POST) {
-
-  }
-  }*/
-
-inline HttpHandler::status_t RestAgencyHandler::handleRead() {
+inline RestStatus RestAgencyHandler::handleRead() {
   arangodb::velocypack::Options options;
-  if (_request->requestType() == GeneralRequest::RequestType::POST) {
+  if (_request->requestType() == rest::RequestType::POST) {
     query_t query;
     try {
-      query = _request->toVelocyPack(&options);
+      query = _request->toVelocyPackBuilderPtr(&options);
     } catch (std::exception const& e) {
-      LOG_TOPIC(WARN, Logger::AGENCY) << e.what();
-      generateError(GeneralResponse::ResponseCode::BAD, 400);
-      return HttpHandler::status_t(HANDLER_DONE);
+      LOG_TOPIC(DEBUG, Logger::AGENCY)
+        << e.what() << " " << __FILE__ << ":" << __LINE__;
+      generateError(rest::ResponseCode::BAD, 400);
+      return RestStatus::DONE;
     }
+
+    auto s = std::chrono::system_clock::now();  // Leadership established?
+    std::chrono::duration<double> timeout(_agent->config().minPing());
+    while (_agent->size() > 1 && _agent->leaderID() == NO_LEADER) {
+      if ((std::chrono::system_clock::now() - s) > timeout) {
+        Builder body;
+        body.openObject();
+        body.add("message", VPackValue("No leader"));
+        body.close();
+        generateResult(rest::ResponseCode::SERVICE_UNAVAILABLE, body.slice());
+        LOG_TOPIC(DEBUG, Logger::AGENCY) << "We don't know who the leader is";
+        return RestStatus::DONE;
+      }
+      std::this_thread::sleep_for(duration_t(100));
+    }
+
     read_ret_t ret = _agent->read(query);
 
     if (ret.accepted) {  // I am leading
       if (ret.success.size() == 1 && !ret.success.at(0)) {
-        generateResult(GeneralResponse::ResponseCode::I_AM_A_TEAPOT,
-                       ret.result->slice());
+        generateResult(rest::ResponseCode::I_AM_A_TEAPOT, ret.result->slice());
       } else {
-        generateResult(GeneralResponse::ResponseCode::OK, ret.result->slice());
+        generateResult(rest::ResponseCode::OK, ret.result->slice());
       }
     } else {  // Redirect to leader
-      redirectRequest(ret.redirect);
-      return HttpHandler::status_t(HANDLER_DONE);
+      if (_agent->leaderID() == NO_LEADER) {
+        Builder body;
+        body.openObject();
+        body.add("message", VPackValue("No leader"));
+        body.close();
+        generateResult(rest::ResponseCode::SERVICE_UNAVAILABLE, body.slice());
+        LOG_TOPIC(DEBUG, Logger::AGENCY) << "We don't know who the leader is";
+        return RestStatus::DONE;
+
+      } else {
+        redirectRequest(ret.redirect);
+      }
+      return RestStatus::DONE;
     }
   } else {
-    generateError(GeneralResponse::ResponseCode::METHOD_NOT_ALLOWED, 405);
-    return HttpHandler::status_t(HANDLER_DONE);
+    generateError(rest::ResponseCode::METHOD_NOT_ALLOWED, 405);
+    return RestStatus::DONE;
   }
-  return HttpHandler::status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }
 
-HttpHandler::status_t RestAgencyHandler::handleConfig() {
+RestStatus RestAgencyHandler::handleConfig() {
   Builder body;
   body.add(VPackValue(VPackValueType::Object));
   body.add("term", Value(_agent->term()));
   body.add("leaderId", Value(_agent->leaderID()));
+  body.add("lastCommitted", Value(_agent->lastCommitted()));
+  body.add("lastAcked", _agent->lastAckedAgo()->slice());
   body.add("configuration", _agent->config().toBuilder()->slice());
   body.close();
-  generateResult(GeneralResponse::ResponseCode::OK, body.slice());
-  return HttpHandler::status_t(HANDLER_DONE);
+  generateResult(rest::ResponseCode::OK, body.slice());
+  return RestStatus::DONE;
 }
 
-HttpHandler::status_t RestAgencyHandler::handleState() {
+RestStatus RestAgencyHandler::handleState() {
   Builder body;
   body.add(VPackValue(VPackValueType::Array));
   for (auto const& i : _agent->state().get()) {
     body.add(VPackValue(VPackValueType::Object));
     body.add("index", VPackValue(i.index));
     body.add("term", VPackValue(i.term));
-    body.add("leader", VPackValue(i.leaderId));
     body.add("query", VPackSlice(i.entry->data()));
     body.close();
   }
   body.close();
-  generateResult(GeneralResponse::ResponseCode::OK, body.slice());
-  return HttpHandler::status_t(HANDLER_DONE);
+  generateResult(rest::ResponseCode::OK, body.slice());
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyHandler::reportMethodNotAllowed() {
-  generateError(GeneralResponse::ResponseCode::METHOD_NOT_ALLOWED, 405);
-  return HttpHandler::status_t(HANDLER_DONE);
+inline RestStatus RestAgencyHandler::reportMethodNotAllowed() {
+  generateError(rest::ResponseCode::METHOD_NOT_ALLOWED, 405);
+  return RestStatus::DONE;
 }
 
-HttpHandler::status_t RestAgencyHandler::execute() {
+RestStatus RestAgencyHandler::execute() {
   try {
     if (_request->suffix().size() == 0) {  // Empty request
       return reportErrorEmptyRequest();
@@ -245,12 +340,12 @@ HttpHandler::status_t RestAgencyHandler::execute() {
       } else if (_request->suffix()[0] == "read") {
         return handleRead();
       } else if (_request->suffix()[0] == "config") {
-        if (_request->requestType() != GeneralRequest::RequestType::GET) {
+        if (_request->requestType() != rest::RequestType::GET) {
           return reportMethodNotAllowed();
         }
         return handleConfig();
       } else if (_request->suffix()[0] == "state") {
-        if (_request->requestType() != GeneralRequest::RequestType::GET) {
+        if (_request->requestType() != rest::RequestType::GET) {
           return reportMethodNotAllowed();
         }
         return handleState();
@@ -263,5 +358,5 @@ HttpHandler::status_t RestAgencyHandler::execute() {
   } catch (...) {
     // Ignore this error
   }
-  return HttpHandler::status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

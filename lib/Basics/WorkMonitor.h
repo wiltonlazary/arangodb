@@ -26,25 +26,26 @@
 
 #include "Basics/Thread.h"
 
+#include <boost/lockfree/queue.hpp>
+
+#include <velocypack/Buffer.h>
 #include <velocypack/Builder.h>
 #include <velocypack/velocypack-aliases.h>
 
+#include "Basics/ConditionVariable.h"
+#include "Basics/Mutex.h"
 #include "Basics/WorkDescription.h"
-#include "Basics/WorkItem.h"
 
 namespace arangodb {
 namespace velocypack {
 class Builder;
 }
 
+// -----------------------------------------------------------------------------
+// --SECTION--                                                       WorkMonitor
+// -----------------------------------------------------------------------------
+
 class WorkMonitor : public Thread {
- public:
-  WorkMonitor();
-  ~WorkMonitor() {shutdown();}
-
- public:
-  bool isSilent() override { return true; }
-
  public:
   static void freeWorkDescription(WorkDescription* desc);
   static bool pushThread(Thread* thread);
@@ -56,102 +57,134 @@ class WorkMonitor : public Thread {
   static void pushCustom(char const* type, char const* text, size_t length);
   static void pushCustom(char const* type, uint64_t id);
   static void popCustom();
-  static void pushHandler(arangodb::rest::HttpHandler*);
-  static WorkDescription* popHandler(arangodb::rest::HttpHandler*, bool free);
-  static void requestWorkOverview(uint64_t taskId);
+  static void pushHandler(std::shared_ptr<rest::RestHandler>);
+  static void popHandler();
+  static void requestWorkOverview(std::shared_ptr<rest::RestHandler>,
+                                  std::function<void()> next);
   static void cancelWork(uint64_t id);
 
- protected:
-  void run() override;
+ public:
+  static void initialize();
+  static void shutdown();
+  static void clearHandlers();
 
  private:
-  static void sendWorkOverview(uint64_t, std::string const&);
-  static bool cancelAql(WorkDescription*);
-  static void deleteHandler(WorkDescription* desc);
-  static void vpackHandler(arangodb::velocypack::Builder*,
-                           WorkDescription* desc);
-
   static WorkDescription* createWorkDescription(WorkType);
   static void deleteWorkDescription(WorkDescription*, bool stopped);
   static void activateWorkDescription(WorkDescription*);
   static WorkDescription* deactivateWorkDescription();
   static void vpackWorkDescription(VPackBuilder*, WorkDescription*);
   static void cancelWorkDescriptions(Thread* thread);
+
+  // implemented in WorkMonitorArangod.cpp
+  static void addWorkOverview(std::shared_ptr<rest::RestHandler>,
+                              std::shared_ptr<velocypack::Buffer<uint8_t>>);
+  static bool cancelAql(WorkDescription*);
+  static void deleteHandler(WorkDescription* desc);
+  static void vpackHandler(velocypack::Builder*, WorkDescription* desc);
+
+ private:
+  static std::atomic<bool> _stopped;
+
+  static boost::lockfree::queue<WorkDescription*> _emptyWorkDescription;
+  static boost::lockfree::queue<WorkDescription*> _freeableWorkDescription;
+  static boost::lockfree::queue<
+      std::pair<std::shared_ptr<rest::RestHandler>, std::function<void()>>*>
+      _workOverview;
+
+  static Mutex _cancelLock;
+  static std::set<uint64_t> _cancelIds;
+
+  static Mutex _threadsLock;
+  static std::set<Thread*> _threads;
+
+ public:
+  WorkMonitor() : Thread("WorkMonitor") {}
+
+  ~WorkMonitor() {
+    if (hasStarted()) {
+      Thread::shutdown();
+    }
+  }
+
+ public:
+  bool isSilent() override final { return true; }
+
+  void beginShutdown() override final {
+    Thread::beginShutdown();
+    _waiter.broadcast();
+  }
+
+ protected:
+  void run() override;
+
+ private:
+  void clearAllHandlers();
+
+ private:
+  basics::ConditionVariable _waiter;
 };
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief auto push and pop for HttpHandler
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// --SECTION--                                                  HandlerWorkStack
+// -----------------------------------------------------------------------------
 
 class HandlerWorkStack {
   HandlerWorkStack(const HandlerWorkStack&) = delete;
   HandlerWorkStack& operator=(const HandlerWorkStack&) = delete;
 
  public:
-  explicit HandlerWorkStack(arangodb::rest::HttpHandler*);
-
-  explicit HandlerWorkStack(WorkItem::uptr<arangodb::rest::HttpHandler>&);
-
+  explicit HandlerWorkStack(std::shared_ptr<rest::RestHandler>);
   ~HandlerWorkStack();
 
  public:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief returns the handler
-  //////////////////////////////////////////////////////////////////////////////
-
-  arangodb::rest::HttpHandler* handler() const { return _handler; }
+  rest::RestHandler* handler() const { return _handler.get(); }
+  rest::RestHandler* operator->() { return _handler.get(); }
 
  private:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief handler
-  //////////////////////////////////////////////////////////////////////////////
-
-  arangodb::rest::HttpHandler* _handler;
+  std::shared_ptr<rest::RestHandler> _handler;
 };
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief auto push and pop for Aql
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// --SECTION--                                                      AqlWorkStack
+// -----------------------------------------------------------------------------
 
 class AqlWorkStack {
   AqlWorkStack(const AqlWorkStack&) = delete;
   AqlWorkStack& operator=(const AqlWorkStack&) = delete;
 
  public:
-  AqlWorkStack(TRI_vocbase_t*, uint64_t id, char const* text, size_t length);
+  AqlWorkStack(TRI_vocbase_t* vocbase, uint64_t queryId, char const* text,
+               size_t length) {
+    WorkMonitor::pushAql(vocbase, queryId, text, length);
+  }
 
-  AqlWorkStack(TRI_vocbase_t*, uint64_t id);
+  AqlWorkStack(TRI_vocbase_t* vocbase, uint64_t queryId) {
+    WorkMonitor::pushAql(vocbase, queryId);
+  }
 
-  ~AqlWorkStack();
+  ~AqlWorkStack() { WorkMonitor::popAql(); }
 };
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief auto push and pop for Custom
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// --SECTION--                                                  CustomeWorkStack
+// -----------------------------------------------------------------------------
 
 class CustomWorkStack {
   CustomWorkStack(const CustomWorkStack&) = delete;
   CustomWorkStack& operator=(const CustomWorkStack&) = delete;
 
  public:
-  CustomWorkStack(char const* type, char const* text, size_t length);
+  CustomWorkStack(char const* type, char const* text, size_t length) {
+    WorkMonitor::pushCustom(type, text, length);
+  }
 
-  CustomWorkStack(char const* type, uint64_t id);
+  CustomWorkStack(char const* type, uint64_t id) {
+    WorkMonitor::pushCustom(type, id);
+  }
 
-  ~CustomWorkStack();
+  ~CustomWorkStack() { WorkMonitor::popCustom(); }
 };
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief starts the work monitor
-////////////////////////////////////////////////////////////////////////////////
-
-void InitializeWorkMonitor();
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief stops the work monitor
-////////////////////////////////////////////////////////////////////////////////
-
-void ShutdownWorkMonitor();
 }
 
 #endif

@@ -22,9 +22,10 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "Basics/Common.h"
+#include "Basics/directories.h"
 
-#include "ApplicationFeatures/ClientFeature.h"
 #include "ApplicationFeatures/ConfigFeature.h"
+#include "ApplicationFeatures/GreetingsFeature.h"
 #include "ApplicationFeatures/ShutdownFeature.h"
 #include "ApplicationFeatures/TempFeature.h"
 #include "ApplicationFeatures/VersionFeature.h"
@@ -33,32 +34,40 @@
 #include "ProgramOptions/ProgramOptions.h"
 #include "Random/RandomFeature.h"
 #include "Restore/RestoreFeature.h"
+#include "Shell/ClientFeature.h"
+#include "Ssl/SslFeature.h"
 
 using namespace arangodb;
 using namespace arangodb::application_features;
 
 int main(int argc, char* argv[]) {
-  ArangoGlobalContext context(argc, argv);
+  ArangoGlobalContext context(argc, argv, BIN_DIRECTORY);
   context.installHup();
 
   std::shared_ptr<options::ProgramOptions> options(new options::ProgramOptions(
-      argv[0], "Usage: arangorestore [<options>]", "For more information use:"));
+      argv[0], "Usage: arangorestore [<options>]", "For more information use:", BIN_DIRECTORY));
 
-  ApplicationServer server(options);
+  ApplicationServer server(options, BIN_DIRECTORY);
 
   int ret;
 
   server.addFeature(new ClientFeature(&server));
   server.addFeature(new ConfigFeature(&server, "arangorestore"));
+  server.addFeature(new GreetingsFeature(&server, "arangorestore"));
   server.addFeature(new LoggerFeature(&server, false));
   server.addFeature(new RandomFeature(&server));
   server.addFeature(new RestoreFeature(&server, &ret));
   server.addFeature(new ShutdownFeature(&server, {"Restore"}));
+  server.addFeature(new SslFeature(&server));
   server.addFeature(new TempFeature(&server, "arangorestore"));
   server.addFeature(new VersionFeature(&server));
 
   try {
     server.run(argc, argv);
+    if (server.helpShown()) {
+      // --help was displayed
+      ret = EXIT_SUCCESS;
+    }
   } catch (std::exception const& ex) {
     LOG(ERR) << "arangorestore terminated because of an unhandled exception: "
              << ex.what();

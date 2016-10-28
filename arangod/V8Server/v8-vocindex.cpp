@@ -23,17 +23,17 @@
 
 #include "v8-vocindex.h"
 #include "Basics/conversions.h"
+#include "Basics/ReadLocker.h"
 #include "Basics/StringUtils.h"
 #include "Basics/tri-strings.h"
 #include "Basics/VelocyPackHelper.h"
+#include "Cluster/ClusterInfo.h"
+#include "Cluster/ClusterMethods.h"
 #include "FulltextIndex/fulltext-index.h"
 #include "Indexes/EdgeIndex.h"
-#include "Indexes/FulltextIndex.h"
-#include "Indexes/GeoIndex2.h"
-#include "Indexes/HashIndex.h"
 #include "Indexes/Index.h"
 #include "Indexes/PrimaryIndex.h"
-#include "Indexes/SkiplistIndex.h"
+#include "Utils/Events.h"
 #include "Utils/SingleCollectionTransaction.h"
 #include "Utils/V8TransactionContext.h"
 #include "V8/v8-conv.h"
@@ -43,10 +43,10 @@
 #include "V8Server/v8-collection.h"
 #include "V8Server/v8-vocbase.h"
 #include "V8Server/v8-vocbaseprivate.h"
+#include "VocBase/modes.h"
+#include "VocBase/LogicalCollection.h"
 
-#ifdef ARANGODB_ENABLE_ROCKSDB
 #include "Indexes/RocksDBIndex.h"
-#endif
 
 #include <velocypack/Builder.h>
 #include <velocypack/Iterator.h>
@@ -371,7 +371,7 @@ static int EnhanceIndexJson(v8::FunctionCallbackInfo<v8::Value> const& args,
       }
     }
 
-    type = arangodb::Index::type(t.c_str());
+    type = arangodb::Index::type(t);
   }
 
   if (type == arangodb::Index::TRI_IDX_TYPE_UNKNOWN) {
@@ -394,9 +394,7 @@ static int EnhanceIndexJson(v8::FunctionCallbackInfo<v8::Value> const& args,
     if (obj->Has(TRI_V8_ASCII_STRING("id"))) {
       uint64_t id = TRI_ObjectToUInt64(obj->Get(TRI_V8_ASCII_STRING("id")), true);
       if (id > 0) {
-        char* idString = TRI_StringUInt64(id);
-        builder.add("id", VPackValue(idString));
-        TRI_FreeString(TRI_CORE_MEM_ZONE, idString);
+        builder.add("id", VPackValue(std::to_string(id)));
       }
     }
 
@@ -449,41 +447,14 @@ static int EnhanceIndexJson(v8::FunctionCallbackInfo<v8::Value> const& args,
 /// @brief ensures an index, coordinator case
 ////////////////////////////////////////////////////////////////////////////////
 
-static void EnsureIndexCoordinator(
-    v8::FunctionCallbackInfo<v8::Value> const& args,
-    TRI_vocbase_col_t const* collection, VPackSlice const slice, bool create) {
-  v8::Isolate* isolate = args.GetIsolate();
-  v8::HandleScope scope(isolate);
-
-  TRI_ASSERT(collection != nullptr);
+int EnsureIndexCoordinator(std::string const& databaseName,
+                           std::string const& cid,
+                           VPackSlice const slice, bool create,
+                           VPackBuilder& resultBuilder, std::string& errorMsg) {
   TRI_ASSERT(!slice.isNone());
-
-  std::string const databaseName(collection->_dbName);
-  std::string const cid = StringUtils::itoa(collection->_cid);
-  // TODO: protect against races on _name
-  std::string const collectionName(collection->_name);
-
-  VPackBuilder resultBuilder;
-  std::string errorMsg;
-  int res = ClusterInfo::instance()->ensureIndexCoordinator(
+  return ClusterInfo::instance()->ensureIndexCoordinator(
       databaseName, cid, slice, create, &arangodb::Index::Compare,
       resultBuilder, errorMsg, 360.0);
-
-  if (res != TRI_ERROR_NO_ERROR) {
-    TRI_V8_THROW_EXCEPTION_MESSAGE(res, errorMsg);
-  }
-
-  if (resultBuilder.slice().isNone()) {
-    if (!create) {
-      // did not find a suitable index
-      TRI_V8_RETURN_NULL();
-    }
-
-    TRI_V8_THROW_EXCEPTION_MEMORY();
-  }
-
-  v8::Handle<v8::Value> ret = IndexRep(isolate, collectionName, resultBuilder.slice());
-  TRI_V8_RETURN(ret);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -491,96 +462,17 @@ static void EnsureIndexCoordinator(
 ////////////////////////////////////////////////////////////////////////////////
 
 static void EnsureIndexLocal(v8::FunctionCallbackInfo<v8::Value> const& args,
-                             TRI_vocbase_col_t const* collection,
+                             arangodb::LogicalCollection* collection,
                              VPackSlice const& slice, bool create) {
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
 
   TRI_ASSERT(collection != nullptr);
-  if (!slice.isObject()) {
-    TRI_V8_THROW_EXCEPTION_MEMORY();
-  }
+  READ_LOCKER(readLocker, collection->vocbase()->_inventoryLock);
 
-  // extract type
-  VPackSlice value = slice.get("type");
-
-  if (!value.isString()) {
-    TRI_V8_THROW_EXCEPTION_MEMORY();
-  }
-
-  std::string tmp = value.copyString();
-  arangodb::Index::IndexType const type = arangodb::Index::type(tmp.c_str());
-
-  // extract unique flag
-  bool unique = arangodb::basics::VelocyPackHelper::getBooleanValue(
-      slice, "unique", false);
-
-  // extract sparse flag
-  bool sparse = false;
-  int sparsity = -1;  // not set
-  value = slice.get("sparse");
-  if (value.isBoolean()) {
-    sparse = value.getBoolean();
-    sparsity = sparse ? 1 : 0;
-  }
-
-  // extract id
-  TRI_idx_iid_t iid = 0;
-  value = slice.get("id");
-  if (value.isString()) {
-    std::string tmp = value.copyString();
-    iid = StringUtils::uint64(tmp);
-  }
-
-  std::vector<std::string> attributes;
-
-  // extract fields
-  value = slice.get("fields");
-  if (value.isArray()) {
-    // note: "fields" is not mandatory for all index types
-
-    // copy all field names (attributes)
-    for (auto const& v : VPackArrayIterator(value)) {
-      if (v.isString()) {
-        std::string val = v.copyString();
-
-        if (val.find("[*]") != std::string::npos) {
-          if (type != arangodb::Index::TRI_IDX_TYPE_HASH_INDEX &&
-              type != arangodb::Index::TRI_IDX_TYPE_SKIPLIST_INDEX &&
-              type != arangodb::Index::TRI_IDX_TYPE_ROCKSDB_INDEX) {
-            // expansion used in index type that does not support it
-            TRI_V8_THROW_EXCEPTION_MESSAGE(
-                TRI_ERROR_BAD_PARAMETER,
-                "cannot use [*] expansion for this type of index");
-          } else {
-            // expansion used in index type that supports it
-
-            // count number of [*] occurrences
-            size_t found = 0;
-            size_t offset = 0;
-
-            while ((offset = val.find("[*]", offset)) != std::string::npos) {
-              ++found;
-              offset += strlen("[*]");
-            }
-
-            // only one occurrence is allowed
-            if (found > 1) {
-              TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_BAD_PARAMETER,
-                                             "cannot use multiple [*] "
-                                             "expansions for a single index "
-                                             "field");
-            }
-          }
-        }
-        attributes.emplace_back(val);
-      }
-    }
-  }
-  
-  READ_LOCKER(readLocker, collection->_vocbase->_inventoryLock);
-
-  SingleCollectionTransaction trx(V8TransactionContext::Create(collection->_vocbase, true), collection->_cid, create ? TRI_TRANSACTION_WRITE : TRI_TRANSACTION_READ);
+  SingleCollectionTransaction trx(
+      V8TransactionContext::Create(collection->vocbase(), true),
+      collection->cid(), create ? TRI_TRANSACTION_WRITE : TRI_TRANSACTION_READ);
 
   int res = trx.begin();
 
@@ -588,180 +480,51 @@ static void EnsureIndexLocal(v8::FunctionCallbackInfo<v8::Value> const& args,
     TRI_V8_THROW_EXCEPTION(res);
   }
 
-  TRI_document_collection_t* document = trx.documentCollection();
-  std::string const& collectionName = std::string(collection->_name);
-
   // disallow index creation in read-only mode
-  if (!TRI_IsSystemNameCollection(collectionName.c_str()) && create &&
+  if (!collection->isSystem() && create &&
       TRI_GetOperationModeServer() == TRI_VOCBASE_MODE_NO_CREATE) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_READ_ONLY);
   }
 
   bool created = false;
-  arangodb::Index* idx = nullptr;
-
-  switch (type) {
-    case arangodb::Index::TRI_IDX_TYPE_UNKNOWN:
-    case arangodb::Index::TRI_IDX_TYPE_PRIMARY_INDEX:
-    case arangodb::Index::TRI_IDX_TYPE_EDGE_INDEX: {
-      // these indexes cannot be created directly
-      TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
+  std::shared_ptr<arangodb::Index> idx;
+  if (create) {
+    // TODO Encapsulate in try{}catch(){} instead of errno()
+    idx = collection->createIndex(&trx, slice, created);
+    if (idx == nullptr) {
+      // something went wrong during creation
+      int res = TRI_errno();
+      TRI_V8_THROW_EXCEPTION(res);
     }
-
-    case arangodb::Index::TRI_IDX_TYPE_GEO1_INDEX: {
-      if (attributes.size() != 1) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-      bool geoJson = arangodb::basics::VelocyPackHelper::getBooleanValue(
-          slice, "geoJson", false);
-
-      if (create) {
-        idx = static_cast<arangodb::GeoIndex2*>(
-            TRI_EnsureGeoIndex1DocumentCollection(
-                &trx, document, iid, attributes[0], geoJson, created));
-      } else {
-        std::vector<std::string> location =
-            arangodb::basics::StringUtils::split(attributes[0], ".");
-        idx = static_cast<arangodb::GeoIndex2*>(
-            TRI_LookupGeoIndex1DocumentCollection(document, location, geoJson));
-      }
-      break;
-    }
-
-    case arangodb::Index::TRI_IDX_TYPE_GEO2_INDEX: {
-      if (attributes.size() != 2) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-      if (create) {
-        idx = static_cast<arangodb::GeoIndex2*>(
-            TRI_EnsureGeoIndex2DocumentCollection(
-                &trx, document, iid, attributes[0], attributes[1], created));
-      } else {
-        std::vector<std::string> lat =
-            arangodb::basics::StringUtils::split(attributes[0], ".");
-        std::vector<std::string> lon =
-            arangodb::basics::StringUtils::split(attributes[0], ".");
-        idx = static_cast<arangodb::GeoIndex2*>(
-            TRI_LookupGeoIndex2DocumentCollection(document, lon, lat));
-      }
-      break;
-    }
-
-    case arangodb::Index::TRI_IDX_TYPE_HASH_INDEX: {
-      if (attributes.empty()) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-      if (create) {
-        idx = static_cast<arangodb::HashIndex*>(
-            TRI_EnsureHashIndexDocumentCollection(
-                &trx, document, iid, attributes, sparse, unique, created));
-      } else {
-        idx = static_cast<arangodb::HashIndex*>(
-            TRI_LookupHashIndexDocumentCollection(document, attributes,
-                                                  sparsity, unique));
-      }
-
-      break;
-    }
-
-    case arangodb::Index::TRI_IDX_TYPE_SKIPLIST_INDEX: {
-      if (attributes.empty()) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-      if (create) {
-        idx = static_cast<arangodb::SkiplistIndex*>(
-            TRI_EnsureSkiplistIndexDocumentCollection(
-                &trx, document, iid, attributes, sparse, unique, created));
-      } else {
-        idx = static_cast<arangodb::SkiplistIndex*>(
-            TRI_LookupSkiplistIndexDocumentCollection(document, attributes,
-                                                      sparsity, unique));
-      }
-      break;
-    }
-    
-    case arangodb::Index::TRI_IDX_TYPE_ROCKSDB_INDEX: {
-      if (attributes.empty()) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-#ifdef ARANGODB_ENABLE_ROCKSDB
-      if (create) {
-        idx = static_cast<arangodb::RocksDBIndex*>(
-            TRI_EnsureRocksDBIndexDocumentCollection(
-                &trx, document, iid, attributes, sparse, unique, created));
-      } else {
-        idx = static_cast<arangodb::RocksDBIndex*>(
-            TRI_LookupRocksDBIndexDocumentCollection(document, attributes,
-                                                     sparsity, unique));
-      }
-      break;
-#else
-      TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_NOT_IMPLEMENTED, "index type not supported in this build");
-#endif
-    }
-
-    case arangodb::Index::TRI_IDX_TYPE_FULLTEXT_INDEX: {
-      if (attributes.size() != 1) {
-        TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
-      }
-
-      int minWordLength = TRI_FULLTEXT_MIN_WORD_LENGTH_DEFAULT;
-      VPackSlice const value = slice.get("minLength");
-      if (value.isNumber()) {
-        minWordLength = value.getNumericValue<int>();
-      } else if (!value.isNone()) {
-        // minLength defined but no number
-        TRI_V8_THROW_EXCEPTION_PARAMETER("<minLength> must be a number");
-      }
-
-      if (create) {
-        idx = static_cast<arangodb::FulltextIndex*>(
-            TRI_EnsureFulltextIndexDocumentCollection(
-                &trx, document, iid, attributes[0], minWordLength, created));
-      } else {
-        idx = static_cast<arangodb::FulltextIndex*>(
-            TRI_LookupFulltextIndexDocumentCollection(document, attributes[0],
-                                                      minWordLength));
-      }
-      break;
+  } else {
+    idx = collection->lookupIndex(slice);
+    if (idx == nullptr) {
+      // Index not found
+      TRI_V8_RETURN_NULL();
     }
   }
 
-  if (idx == nullptr && create) {
-    // something went wrong during creation
-    int res = TRI_errno();
-
-    TRI_V8_THROW_EXCEPTION(res);
-  }
-
-  if (idx == nullptr && !create) {
-    // no index found
-    TRI_V8_RETURN_NULL();
-  }
-
-  // found some index to return
-  std::shared_ptr<VPackBuilder> indexVPack;
+  TransactionBuilderLeaser builder(&trx);
+  builder->openObject();
   try {
-    indexVPack = idx->toVelocyPack(false);
+    idx->toVelocyPack(*(builder.get()), false);
   } catch (...) {
     TRI_V8_THROW_EXCEPTION_MEMORY();
   }
-
-  if (indexVPack == nullptr) {
-    TRI_V8_THROW_EXCEPTION_MEMORY();
-  }
+  builder->close();
 
   v8::Handle<v8::Value> ret =
-      IndexRep(isolate, collectionName, indexVPack->slice());
+      IndexRep(isolate, collection->name(), builder->slice());
+
+  res = trx.commit();
+
+  if (res != TRI_ERROR_NO_ERROR) {
+    TRI_V8_THROW_EXCEPTION_MESSAGE(res, TRI_errno_string(res));
+  }
 
   if (ret->IsObject()) {
     ret->ToObject()->Set(TRI_V8_ASCII_STRING("isNewlyCreated"),
-                         v8::Boolean::New(isolate, create && created));
+                         v8::Boolean::New(isolate, created));
   }
 
   TRI_V8_RETURN(ret);
@@ -776,8 +539,8 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  arangodb::LogicalCollection* collection =
+      TRI_UnwrapClass<arangodb::LogicalCollection>(args.Holder(), WRP_VOCBASE_COL_TYPE);
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -795,18 +558,14 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
   if (res == TRI_ERROR_NO_ERROR && ServerState::instance()->isCoordinator()) {
     TRI_ASSERT(slice.isObject());
 
-    std::string const dbname(collection->_dbName);
-    // TODO: someone might rename the collection while we're reading its name...
-    std::string const collname(collection->_name);
-    std::shared_ptr<CollectionInfo> c =
-        ClusterInfo::instance()->getCollection(dbname, collname);
-
-    if (c->empty()) {
-      TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND);
-    }
+    std::string const dbname(collection->dbName());
+    std::string const collname(collection->name());
+    auto c = ClusterInfo::instance()->getCollection(dbname, collname);
 
     // check if there is an attempt to create a unique index on non-shard keys
     if (create) {
+      Index::validateFields(slice);
+
       VPackSlice v = slice.get("unique");
 
       if (v.isBoolean() && v.getBoolean()) {
@@ -826,7 +585,7 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
                 continue;
               } else {
                 std::string tmp = f.copyString();
-                if (!TRI_EqualString(tmp.c_str(), shardKeys[i].c_str())) {
+                if (tmp != shardKeys[i]) {
                   res = TRI_ERROR_CLUSTER_UNSUPPORTED;
                 }
               }
@@ -842,9 +601,34 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
   }
 
   TRI_ASSERT(!slice.isNone());
+  events::CreateIndex(collection->name(), slice);
+
   // ensure an index, coordinator case
   if (ServerState::instance()->isCoordinator()) {
-    EnsureIndexCoordinator(args, collection, slice, create);
+    VPackBuilder resultBuilder;
+    std::string errorMsg;
+#ifdef USE_ENTERPRISE
+    int res = EnsureIndexCoordinatorEnterprise(collection, slice, create,
+                                               resultBuilder, errorMsg);
+#else
+    std::string const databaseName(collection->dbName());
+    std::string const cid = collection->cid_as_string();
+    int res = EnsureIndexCoordinator(databaseName, cid, slice, create,
+                                     resultBuilder, errorMsg);
+#endif
+    if (res != TRI_ERROR_NO_ERROR) {
+      TRI_V8_THROW_EXCEPTION_MESSAGE(res, errorMsg);
+    }
+    if (resultBuilder.slice().isNone()) {
+      if (!create) {
+        // did not find a suitable index
+        TRI_V8_RETURN_NULL();
+      }
+
+      TRI_V8_THROW_EXCEPTION_MEMORY();
+    }
+    v8::Handle<v8::Value> ret = IndexRep(isolate, collection->name(), resultBuilder.slice());
+    TRI_V8_RETURN(ret);
   } else {
     EnsureIndexLocal(args, collection, slice, create);
   }
@@ -854,138 +638,22 @@ static void EnsureIndex(v8::FunctionCallbackInfo<v8::Value> const& args,
 /// @brief create a collection on the coordinator
 ////////////////////////////////////////////////////////////////////////////////
 
-static void CreateCollectionCoordinator(
-    v8::FunctionCallbackInfo<v8::Value> const& args,
-    TRI_col_type_e collectionType, std::string const& databaseName,
-    VocbaseCollectionInfo& parameters, TRI_vocbase_t* vocbase) {
-  v8::Isolate* isolate = args.GetIsolate();
-  v8::HandleScope scope(isolate);
-
-  std::string const name = TRI_ObjectToString(args[0]);
-
-  if (!TRI_IsAllowedNameCollection(parameters.isSystem(), name.c_str())) {
-    TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_ILLEGAL_NAME);
-  }
-
-  bool allowUserKeys = true;
-  uint64_t numberOfShards = 1;
-  std::vector<std::string> shardKeys;
-  uint64_t replicationFactor = 1;
-
-  // default shard key
-  shardKeys.push_back("_key");
-
-  std::string distributeShardsLike;
-
-  std::string cid = "";  // Could come from properties
-  if (2 <= args.Length()) {
-    if (!args[1]->IsObject()) {
-      TRI_V8_THROW_TYPE_ERROR("<properties> must be an object");
-    }
-
-    v8::Handle<v8::Object> p = args[1]->ToObject();
-
-    if (p->Has(TRI_V8_ASCII_STRING("keyOptions")) &&
-        p->Get(TRI_V8_ASCII_STRING("keyOptions"))->IsObject()) {
-      v8::Handle<v8::Object> o = v8::Handle<v8::Object>::Cast(
-          p->Get(TRI_V8_ASCII_STRING("keyOptions")));
-
-      if (o->Has(TRI_V8_ASCII_STRING("type"))) {
-        std::string const type =
-            TRI_ObjectToString(o->Get(TRI_V8_ASCII_STRING("type")));
-
-        if (type != "" && type != "traditional") {
-          // invalid key generator
-          TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_CLUSTER_UNSUPPORTED,
-                                         "non-traditional key generators are "
-                                         "not supported for sharded "
-                                         "collections");
-        }
-      }
-
-      if (o->Has(TRI_V8_ASCII_STRING("allowUserKeys"))) {
-        allowUserKeys =
-            TRI_ObjectToBoolean(o->Get(TRI_V8_ASCII_STRING("allowUserKeys")));
-      }
-    }
-
-    if (p->Has(TRI_V8_ASCII_STRING("numberOfShards"))) {
-      numberOfShards = TRI_ObjectToUInt64(
-          p->Get(TRI_V8_ASCII_STRING("numberOfShards")), false);
-    }
-
-    if (p->Has(TRI_V8_ASCII_STRING("shardKeys"))) {
-      shardKeys.clear();
-
-      if (p->Get(TRI_V8_ASCII_STRING("shardKeys"))->IsArray()) {
-        v8::Handle<v8::Array> k = v8::Handle<v8::Array>::Cast(
-            p->Get(TRI_V8_ASCII_STRING("shardKeys")));
-
-        for (uint32_t i = 0; i < k->Length(); ++i) {
-          v8::Handle<v8::Value> v = k->Get(i);
-          if (v->IsString()) {
-            std::string const key = TRI_ObjectToString(v);
-
-            // system attributes are not allowed (except _key)
-            if (!key.empty() && (key[0] != '_' || key == "_key")) {
-              shardKeys.push_back(key);
-            }
-          }
-        }
-      }
-    }
-
-    if (p->Has(TRI_V8_ASCII_STRING("distributeShardsLike")) &&
-        p->Get(TRI_V8_ASCII_STRING("distributeShardsLike"))->IsString()) {
-      distributeShardsLike = TRI_ObjectToString(
-          p->Get(TRI_V8_ASCII_STRING("distributeShardsLike")));
-    }
-
-    auto idKey = TRI_V8_ASCII_STRING("id");
-    if (p->Has(idKey) && p->Get(idKey)->IsString()) {
-      cid = TRI_ObjectToString(p->Get(idKey));
-    }
-
-    if (p->Has(TRI_V8_ASCII_STRING("replicationFactor"))) {
-      replicationFactor = TRI_ObjectToUInt64(p->Get(TRI_V8_ASCII_STRING("replicationFactor")), false);
-    }
-  }
-
-  if (numberOfShards == 0 || numberOfShards > 1000) {
-    TRI_V8_THROW_EXCEPTION_PARAMETER("invalid number of shards");
-  }
-
-  if (replicationFactor == 0 || replicationFactor > 10) {
-    TRI_V8_THROW_EXCEPTION_PARAMETER("invalid replicationFactor");
-  }
-
-  if (shardKeys.empty() || shardKeys.size() > 8) {
-    TRI_V8_THROW_EXCEPTION_PARAMETER("invalid number of shard keys");
-  }
-
-  ClusterInfo* ci = ClusterInfo::instance();
-
-  // fetch a unique id for the new collection plus one for each shard to create
-  uint64_t const id = ci->uniqid(1 + numberOfShards);
-  if (cid.empty()) {
-    // collection id is the first unique id we got
-    cid = StringUtils::itoa(id);
-    // if id was given, the first unique id is wasted, this does not matter
-  }
+std::unique_ptr<LogicalCollection> CreateCollectionCoordinator(LogicalCollection* parameters) {
+  std::string distributeShardsLike = parameters->distributeShardsLike();
 
   std::vector<std::string> dbServers;
 
-  bool done = false;
+  ClusterInfo* ci = ClusterInfo::instance();
   if (!distributeShardsLike.empty()) {
-    CollectionNameResolver resolver(vocbase);
+    CollectionNameResolver resolver(parameters->vocbase());
     TRI_voc_cid_t otherCid =
         resolver.getCollectionIdCluster(distributeShardsLike);
     if (otherCid != 0) {
       std::string otherCidString 
           = arangodb::basics::StringUtils::itoa(otherCid);
-      std::shared_ptr<CollectionInfo> collInfo =
-          ci->getCollection(databaseName, otherCidString);
-      if (!collInfo->empty()) {
+      try {
+        std::shared_ptr<LogicalCollection> collInfo =
+            ci->getCollection(parameters->dbName(), otherCidString);
         auto shards = collInfo->shardIds();
         auto shardList = ci->getShardList(otherCidString);
         for (auto const& s : *shardList) {
@@ -996,135 +664,48 @@ static void CreateCollectionCoordinator(
             }
           }
         }
-        done = true;
+      } catch (...) {
       }
+      parameters->distributeShardsLike(otherCidString);
     }
   }
+  
+  // If the list dbServers is still empty, it will be filled in
+  // distributeShards below.
 
-  if (!done) {
-    // fetch list of available servers in cluster, and shuffle them randomly
-    dbServers = ci->getCurrentDBServers();
-
-    if (dbServers.empty()) {
-      TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
-                                     "no database servers found in cluster");
-    }
-
-    random_shuffle(dbServers.begin(), dbServers.end());
+  // Now create the shards:
+  auto shards = std::make_shared<
+      std::unordered_map<std::string, std::vector<std::string>>>(
+      arangodb::distributeShards(parameters->numberOfShards(),
+                                 parameters->replicationFactor(), dbServers));
+  if (shards->empty() && !parameters->isSmart()) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
+                                   "no database servers found in cluster");
   }
+  parameters->setShardMap(shards);
 
-  // now create the shards
-  std::map<std::string, std::vector<std::string>> shards;
-  size_t count = 0;
-  for (uint64_t i = 0; i < numberOfShards; ++i) {
-    // determine responsible server(s)
-    std::vector<std::string> serverIds;
-    for (uint64_t j = 0; j < replicationFactor; ++j) {
-      std::string candidate;
-      size_t count2 = 0;
-      bool found = true;
-      do {
-        candidate = dbServers[count++];
-        if (count >= dbServers.size()) {
-          count = 0;
-        }
-        if (++count2 == dbServers.size() + 1) {
-          LOG(WARN) << "createCollectionCoordinator: replicationFactor is "
-                       "too large for the number of DBservers";
-          found = false;
-          break;
-        }
-      } while (std::find(serverIds.begin(), serverIds.end(), candidate) != 
-               serverIds.end());
-      if (found) {
-        serverIds.push_back(candidate);
-      }
-    }
-
-    // determine shard id
-    std::string shardId = "s" + StringUtils::itoa(id + 1 + i);
-
-    shards.insert(std::make_pair(shardId, serverIds));
-  }
-
-  // now create the VelocyPack for the collection
-  arangodb::velocypack::Builder velocy;
-  using arangodb::velocypack::Value;
-  using arangodb::velocypack::ValueType;
-  using arangodb::velocypack::ObjectBuilder;
-  using arangodb::velocypack::ArrayBuilder;
-
-  {
-    ObjectBuilder ob(&velocy);
-    velocy("id",           Value(cid))
-          ("name",         Value(name))
-          ("type",         Value((int) collectionType))
-          ("status",       Value((int) TRI_VOC_COL_STATUS_LOADED))
-          ("deleted",      Value(parameters.deleted()))
-          ("doCompact",    Value(parameters.doCompact()))
-          ("isSystem",     Value(parameters.isSystem()))
-          ("isVolatile",   Value(parameters.isVolatile()))
-          ("waitForSync",  Value(parameters.waitForSync()))
-          ("journalSize",  Value(parameters.maximalSize()))
-          ("indexBuckets", Value(parameters.indexBuckets()))
-          ("replicationFactor", Value(replicationFactor))
-          ("keyOptions",   Value(ValueType::Object))
-              ("type",          Value("traditional"))
-              ("allowUserKeys", Value(allowUserKeys))
-           .close();
-
-    {
-      ArrayBuilder ab(&velocy, "shardKeys");
-      for (auto const& sk : shardKeys) {
-        velocy(Value(sk));
-      }
-    }
-
-    {
-      ObjectBuilder ob(&velocy, "shards");
-      for (auto const& p : shards) {
-        ArrayBuilder ab(&velocy, p.first);
-        for (auto const& s : p.second) {
-          velocy(Value(s));
-        }
-      }
-    }
-
-    {
-      ArrayBuilder ab(&velocy, "indexes");
-
-      // create a dummy primary index
-      TRI_document_collection_t* doc = nullptr;
-      std::unique_ptr<arangodb::PrimaryIndex> primaryIndex(
-          new arangodb::PrimaryIndex(doc));
-
-      velocy.openObject();
-      primaryIndex->toVelocyPack(velocy, false);
-      velocy.close();
-
-      if (collectionType == TRI_COL_TYPE_EDGE) {
-        // create a dummy edge index
-        auto edgeIndex = std::make_unique<arangodb::EdgeIndex>(id, nullptr);
-
-        velocy.openObject();
-        edgeIndex->toVelocyPack(velocy, false);
-        velocy.close();
-      }
-    }
-  }
+  VPackBuilder velocy;
+  parameters->toVelocyPackForAgency(velocy);
 
   std::string errorMsg;
   int myerrno = ci->createCollectionCoordinator(
-      databaseName, cid, numberOfShards, velocy.slice(), errorMsg, 240.0);
+      parameters->dbName(), parameters->cid_as_string(),
+      parameters->numberOfShards(), velocy.slice(), errorMsg, 240.0);
 
   if (myerrno != TRI_ERROR_NO_ERROR) {
-    TRI_V8_THROW_EXCEPTION_MESSAGE(myerrno, errorMsg);
+    if (errorMsg.empty()) {
+      errorMsg = TRI_errno_string(myerrno);
+    }
+    THROW_ARANGO_EXCEPTION_MESSAGE(myerrno, errorMsg);
   }
   ci->loadPlan();
 
-  std::shared_ptr<CollectionInfo> c = ci->getCollection(databaseName, cid);
-  TRI_vocbase_col_t* newcoll = CoordinatorCollection(vocbase, *c);
-  TRI_V8_RETURN(WrapCollection(isolate, newcoll));
+  auto c = ci->getCollection(parameters->dbName(), parameters->cid_as_string());
+  // We never get a nullptr here because an exception is thrown if the
+  // collection does not exist. Also, the create collection should have
+  // failed before.
+  TRI_ASSERT(c != nullptr);
+  return c->clone();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1158,54 +739,15 @@ static void JS_LookupIndexVocbaseCol(
 /// @brief drops an index, coordinator case
 ////////////////////////////////////////////////////////////////////////////////
 
-static void DropIndexCoordinator(
-    v8::FunctionCallbackInfo<v8::Value> const& args,
-    TRI_vocbase_col_t const* collection, v8::Handle<v8::Value> const val) {
-  v8::Isolate* isolate = args.GetIsolate();
-  v8::HandleScope scope(isolate);
-
-  std::string collectionName;
-  TRI_idx_iid_t iid = 0;
-
-  // extract the index identifier from a string
-  if (val->IsString() || val->IsStringObject() || val->IsNumber()) {
-    if (!IsIndexHandle(val, collectionName, iid)) {
-      TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_INDEX_HANDLE_BAD);
-    }
-  }
-
-  // extract the index identifier from an object
-  else if (val->IsObject()) {
-    TRI_GET_GLOBALS();
-
-    v8::Handle<v8::Object> obj = val->ToObject();
-    TRI_GET_GLOBAL_STRING(IdKey);
-    v8::Handle<v8::Value> iidVal = obj->Get(IdKey);
-
-    if (!IsIndexHandle(iidVal, collectionName, iid)) {
-      TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_INDEX_HANDLE_BAD);
-    }
-  }
-
-  if (!collectionName.empty()) {
-    CollectionNameResolver resolver(collection->_vocbase);
-
-    if (!EqualCollection(&resolver, collectionName, collection)) {
-      TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_CROSS_COLLECTION_REQUEST);
-    }
-  }
-
-  std::string const databaseName(collection->_dbName);
-  std::string const cid = StringUtils::itoa(collection->_cid);
+int DropIndexCoordinator(
+    std::string const& databaseName,
+    std::string const& cid,
+    TRI_idx_iid_t const iid) {
   std::string errorMsg;
 
-  int res = ClusterInfo::instance()->dropIndexCoordinator(databaseName, cid,
-                                                          iid, errorMsg, 0.0);
+  return ClusterInfo::instance()->dropIndexCoordinator(databaseName, cid,
+                                                       iid, errorMsg, 0.0);
 
-  if (res == TRI_ERROR_NO_ERROR) {
-    TRI_V8_RETURN_TRUE();
-  }
-  TRI_V8_RETURN_FALSE();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1219,8 +761,8 @@ static void JS_DropIndexVocbaseCol(
 
   PREVENT_EMBEDDED_TRANSACTION();
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  arangodb::LogicalCollection* collection =
+      TRI_UnwrapClass<arangodb::LogicalCollection>(args.Holder(), WRP_VOCBASE_COL_TYPE);
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
@@ -1231,13 +773,56 @@ static void JS_DropIndexVocbaseCol(
   }
 
   if (ServerState::instance()->isCoordinator()) {
-    DropIndexCoordinator(args, collection, args[0]);
-    return;
+    std::string collectionName;
+    TRI_idx_iid_t iid = 0;
+    v8::Handle<v8::Value> const val = args[0];
+
+    // extract the index identifier from a string
+    if (val->IsString() || val->IsStringObject() || val->IsNumber()) {
+      if (!IsIndexHandle(val, collectionName, iid)) {
+        TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_INDEX_HANDLE_BAD);
+      }
+    }
+
+    // extract the index identifier from an object
+    else if (val->IsObject()) {
+      TRI_GET_GLOBALS();
+
+      v8::Handle<v8::Object> obj = val->ToObject();
+      TRI_GET_GLOBAL_STRING(IdKey);
+      v8::Handle<v8::Value> iidVal = obj->Get(IdKey);
+
+      if (!IsIndexHandle(iidVal, collectionName, iid)) {
+        TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_INDEX_HANDLE_BAD);
+      }
+    }
+
+    if (!collectionName.empty()) {
+      CollectionNameResolver resolver(collection->vocbase());
+
+      if (!EqualCollection(&resolver, collectionName, collection)) {
+        TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_CROSS_COLLECTION_REQUEST);
+      }
+    }
+
+#ifdef USE_ENTERPRISE
+    int res = DropIndexCoordinatorEnterprise(collection, iid);
+#else
+    std::string const databaseName(collection->dbName());
+    std::string const cid = collection->cid_as_string();
+    int res = DropIndexCoordinator(databaseName, cid, iid);
+#endif
+    if (res == TRI_ERROR_NO_ERROR) {
+      TRI_V8_RETURN_TRUE();
+    }
+    TRI_V8_RETURN_FALSE();
   }
   
-  READ_LOCKER(readLocker, collection->_vocbase->_inventoryLock);
+  READ_LOCKER(readLocker, collection->vocbase()->_inventoryLock);
 
-  SingleCollectionTransaction trx(V8TransactionContext::Create(collection->_vocbase, true), collection->_cid, TRI_TRANSACTION_WRITE);
+  SingleCollectionTransaction trx(
+      V8TransactionContext::Create(collection->vocbase(), true),
+      collection->cid(), TRI_TRANSACTION_WRITE);
 
   int res = trx.begin();
 
@@ -1245,7 +830,7 @@ static void JS_DropIndexVocbaseCol(
     TRI_V8_THROW_EXCEPTION(res);
   }
 
-  TRI_document_collection_t* document = trx.documentCollection();
+  LogicalCollection* col = trx.documentCollection();
 
   auto idx = TRI_LookupIndexByHandle(isolate, trx.resolver(), collection,
                                      args[0], true);
@@ -1258,7 +843,7 @@ static void JS_DropIndexVocbaseCol(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_FORBIDDEN);
   }
 
-  bool ok = TRI_DropIndexDocumentCollection(document, idx->id(), true);
+  bool ok = col->dropIndex(idx->id(), true);
 
   if (ok) {
     TRI_V8_RETURN_TRUE();
@@ -1274,24 +859,22 @@ static void JS_DropIndexVocbaseCol(
 
 static void GetIndexesCoordinator(
     v8::FunctionCallbackInfo<v8::Value> const& args,
-    TRI_vocbase_col_t const* collection) {
+    arangodb::LogicalCollection const* collection, bool withFigures) {
+  // warning This may be obsolete.
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
 
-  std::string const databaseName(collection->_dbName);
-  std::string const cid = StringUtils::itoa(collection->_cid);
-  std::string const collectionName(collection->_name);
+  std::string const databaseName(collection->dbName());
+  std::string const cid = collection->cid_as_string();
+  std::string const collectionName(collection->name());
 
-  std::shared_ptr<CollectionInfo> c =
-      ClusterInfo::instance()->getCollection(databaseName, cid);
-
-  if ((*c).empty()) {
-    TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND);
-  }
+  auto c = ClusterInfo::instance()->getCollection(databaseName, cid);
 
   v8::Handle<v8::Array> ret = v8::Array::New(isolate);
 
-  VPackSlice slice = c->getIndexes();
+  VPackBuilder tmp;
+  c->getIndexesVPack(tmp, withFigures);
+  VPackSlice slice = tmp.slice();
 
   if (slice.isArray()) {
     uint32_t j = 0;
@@ -1314,24 +897,26 @@ static void JS_GetIndexesVocbaseCol(
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  TRI_vocbase_col_t* collection =
-      TRI_UnwrapClass<TRI_vocbase_col_t>(args.Holder(), WRP_VOCBASE_COL_TYPE);
+  arangodb::LogicalCollection* collection =
+      TRI_UnwrapClass<arangodb::LogicalCollection>(args.Holder(), WRP_VOCBASE_COL_TYPE);
 
   if (collection == nullptr) {
     TRI_V8_THROW_EXCEPTION_INTERNAL("cannot extract collection");
   }
-
-  if (ServerState::instance()->isCoordinator()) {
-    GetIndexesCoordinator(args, collection);
-    return;
-  }
-
+  
   bool withFigures = false;
   if (args.Length() > 0) {
     withFigures = TRI_ObjectToBoolean(args[0]);
   }
 
-  SingleCollectionTransaction trx(V8TransactionContext::Create(collection->_vocbase, true), collection->_cid, TRI_TRANSACTION_READ);
+  if (ServerState::instance()->isCoordinator()) {
+    GetIndexesCoordinator(args, collection, withFigures);
+    return;
+  }
+
+  SingleCollectionTransaction trx(
+      V8TransactionContext::Create(collection->vocbase(), true),
+      collection->cid(), TRI_TRANSACTION_READ);
 
   int res = trx.begin();
 
@@ -1342,11 +927,12 @@ static void JS_GetIndexesVocbaseCol(
   // READ-LOCK start
   trx.lockRead();
 
-  TRI_document_collection_t* document = trx.documentCollection();
-  std::string const& collectionName = std::string(collection->_name);
+  arangodb::LogicalCollection* col = trx.documentCollection();
+  std::string const collectionName(col->name());
 
   // get list of indexes
-  auto indexes(TRI_IndexesDocumentCollection(document, withFigures));
+  TransactionBuilderLeaser builder(&trx);
+  auto indexes = col->getIndexes();
 
   trx.finish(res);
   // READ-LOCK end
@@ -1356,9 +942,12 @@ static void JS_GetIndexesVocbaseCol(
 
   for (size_t i = 0; i < n; ++i) {
     auto const& idx = indexes[i];
-
+    builder->clear();
+    builder->openObject();
+    idx->toVelocyPack(*(builder.get()), withFigures);
+    builder->close();
     result->Set(static_cast<uint32_t>(i),
-                IndexRep(isolate, collectionName, idx->slice()));
+                IndexRep(isolate, collectionName, builder->slice()));
   }
 
   TRI_V8_RETURN(result);
@@ -1369,17 +958,16 @@ static void JS_GetIndexesVocbaseCol(
 /// @brief looks up an index identifier
 ////////////////////////////////////////////////////////////////////////////////
 
-arangodb::Index* TRI_LookupIndexByHandle(
+std::shared_ptr<arangodb::Index> TRI_LookupIndexByHandle(
     v8::Isolate* isolate, arangodb::CollectionNameResolver const* resolver,
-    TRI_vocbase_col_t const* collection, v8::Handle<v8::Value> const val,
-    bool ignoreNotFound) {
+    arangodb::LogicalCollection const* collection,
+    v8::Handle<v8::Value> const val, bool ignoreNotFound) {
   // reset the collection identifier
   std::string collectionName;
   TRI_idx_iid_t iid = 0;
 
   // assume we are already loaded
   TRI_ASSERT(collection != nullptr);
-  TRI_ASSERT(collection->_collection != nullptr);
 
   // extract the index identifier from a string
   if (val->IsString() || val->IsStringObject() || val->IsNumber()) {
@@ -1412,7 +1000,7 @@ arangodb::Index* TRI_LookupIndexByHandle(
     }
   }
 
-  auto idx = collection->_collection->lookupIndex(iid);
+  auto idx = collection->lookupIndex(iid);
 
   if (idx == nullptr) {
     if (!ignoreNotFound) {
@@ -1472,39 +1060,60 @@ static void CreateVocBase(v8::FunctionCallbackInfo<v8::Value> const& args,
     if (!args[1]->IsObject()) {
       TRI_V8_THROW_TYPE_ERROR("<properties> must be an object");
     }
+    v8::Handle<v8::Object> obj = args[1]->ToObject();
+    // Add the type and name into the object. Easier in v8 than in VPack
+    obj->Set(TRI_V8_ASCII_STRING("type"),
+             v8::Number::New(isolate, static_cast<int>(collectionType)));
+    obj->Set(TRI_V8_ASCII_STRING("name"), TRI_V8_STD_STRING(name));
 
-    int res = TRI_V8ToVPack(isolate, builder, args[1], false);
+    int res = TRI_V8ToVPack(isolate, builder, obj, false);
 
     if (res != TRI_ERROR_NO_ERROR) {
       TRI_V8_THROW_EXCEPTION(res);
     }
 
-    infoSlice = builder.slice();
+  } else {
+    // create an empty properties object
+    builder.openObject();
+    builder.add("type", VPackValue(static_cast<int>(collectionType)));
+    builder.add("name", VPackValue(name));
+    builder.close();
   }
-
-  VocbaseCollectionInfo parameters(vocbase, name.c_str(), collectionType,
-                                   infoSlice);
+    
+  infoSlice = builder.slice();
 
   if (ServerState::instance()->isCoordinator()) {
-    CreateCollectionCoordinator(args, collectionType, vocbase->_name,
-                                parameters, vocbase);
-    return;
+#ifndef USE_ENTERPRISE
+    auto parameters = std::make_unique<LogicalCollection>(vocbase, infoSlice, false);
+    TRI_V8_RETURN(
+        WrapCollection(isolate, CreateCollectionCoordinator(parameters.get()).release()));
+#else
+    TRI_V8_RETURN(
+        WrapCollection(isolate, CreateCollectionCoordinatorEnterprise(
+                                    collectionType, vocbase, infoSlice).release()));
+#endif
   }
 
-  TRI_vocbase_col_t const* collection =
-      TRI_CreateCollectionVocBase(vocbase, parameters, parameters.id(), true);
+  try {
+    TRI_voc_cid_t cid = 0;
+    arangodb::LogicalCollection const* collection =
+        vocbase->createCollection(infoSlice, cid, true);
 
-  if (collection == nullptr) {
-    TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_errno(), "cannot create collection");
+    TRI_ASSERT(collection != nullptr);
+
+    v8::Handle<v8::Value> result = WrapCollection(isolate, collection);
+    if (result.IsEmpty()) {
+      TRI_V8_THROW_EXCEPTION_MEMORY();
+    }
+
+    TRI_V8_RETURN(result);
+  } catch (basics::Exception const& ex) {
+    TRI_V8_THROW_EXCEPTION_MESSAGE(ex.code(), ex.what());
+  } catch (std::exception const& ex) {
+    TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, ex.what());
+  } catch (...) {
+    TRI_V8_THROW_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "cannot create collection");
   }
-
-  v8::Handle<v8::Value> result = WrapCollection(isolate, collection);
-
-  if (result.IsEmpty()) {
-    TRI_V8_THROW_EXCEPTION_MEMORY();
-  }
-
-  TRI_V8_RETURN(result);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

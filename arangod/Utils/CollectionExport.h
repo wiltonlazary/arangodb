@@ -26,15 +26,16 @@
 
 #include "Basics/Common.h"
 #include "Utils/CollectionNameResolver.h"
+#include "VocBase/ManagedDocumentResult.h"
 #include "VocBase/voc-types.h"
 
-struct TRI_document_collection_t;
 struct TRI_vocbase_t;
 
 namespace arangodb {
 
 class CollectionGuard;
 class DocumentDitch;
+class RevisionCacheChunk;
 
 class CollectionExport {
   friend class ExportCursor;
@@ -61,13 +62,14 @@ class CollectionExport {
   void run(uint64_t, size_t);
 
  private:
-  arangodb::CollectionGuard* _guard;
-  struct TRI_document_collection_t* _document;
+  std::unique_ptr<arangodb::CollectionGuard> _guard;
+  LogicalCollection* _collection;
   arangodb::DocumentDitch* _ditch;
   std::string const _name;
   arangodb::CollectionNameResolver _resolver;
   Restrictions _restrictions;
-  std::vector<void const*>* _documents;
+  std::vector<uint8_t const*> _vpack;
+  std::unordered_set<RevisionCacheChunk*> _chunks;
 };
 }
 

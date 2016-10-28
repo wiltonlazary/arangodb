@@ -30,7 +30,7 @@
 #include "Aql/ModificationOptions.h"
 #include "Aql/Query.h"
 #include "Aql/types.h"
-#include "Basics/json.h"
+#include "Basics/SmallVector.h"
 
 namespace arangodb {
 namespace aql {
@@ -67,11 +67,7 @@ class ExecutionPlan {
   /// @brief create an execution plan identical to this one
   ///   keep the memory of the plan on the query object specified.
   ExecutionPlan* clone(Query const&);
-
-  /// @brief export to JSON, returns an AUTOFREE Json object
-  arangodb::basics::Json toJson(Ast* ast, TRI_memory_zone_t* zone,
-                                bool verbose) const;
-
+  
   /// @brief export to VelocyPack
   std::shared_ptr<arangodb::velocypack::Builder> toVelocyPack(Ast*, bool) const;
   
@@ -142,15 +138,17 @@ class ExecutionPlan {
   }
 
   /// @brief find nodes of a certain type
-  std::vector<ExecutionNode*> findNodesOfType(ExecutionNode::NodeType,
-                                              bool enterSubqueries);
+  void findNodesOfType(SmallVector<ExecutionNode*>& result,
+                       ExecutionNode::NodeType,
+                       bool enterSubqueries);
 
   /// @brief find nodes of a certain types
-  std::vector<ExecutionNode*> findNodesOfType(
+  void findNodesOfType(SmallVector<ExecutionNode*>& result,
       std::vector<ExecutionNode::NodeType> const&, bool enterSubqueries);
 
   /// @brief find all end nodes in a plan
-  std::vector<ExecutionNode*> findEndNodes(bool enterSubqueries) const;
+  void findEndNodes(SmallVector<ExecutionNode*>& result,
+                    bool enterSubqueries) const;
 
 /// @brief check linkage
 #if 0
@@ -233,6 +231,9 @@ class ExecutionPlan {
   /// @brief create an execution plan element from an AST TRAVERAL node
   ExecutionNode* fromNodeTraversal(ExecutionNode*, AstNode const*);
 
+  /// @brief create an execution plan element from an AST SHORTEST PATH node
+  ExecutionNode* fromNodeShortestPath(ExecutionNode*, AstNode const*);
+
   /// @brief create an execution plan element from an AST FILTER node
   ExecutionNode* fromNodeFilter(ExecutionNode*, AstNode const*);
 
@@ -276,8 +277,11 @@ class ExecutionPlan {
   /// @brief create an execution plan from an abstract syntax tree node
   ExecutionNode* fromNode(AstNode const*);
 
-  /// @brief create an execution plan from JSON
-  ExecutionNode* fromJson(arangodb::basics::Json const& Json);
+  /// @brief create an execution plan from VPack
+  ExecutionNode* fromSlice(VPackSlice const& slice);
+
+  /// @brief create an vertex element for graph nodes
+  AstNode const* parseTraversalVertexNode(ExecutionNode*&, AstNode const*);
 
  private:
   /// @brief map from node id to the actual node

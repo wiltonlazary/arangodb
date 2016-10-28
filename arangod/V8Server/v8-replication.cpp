@@ -23,8 +23,11 @@
 
 #include "v8-replication.h"
 #include "Basics/ReadLocker.h"
+#include "Cluster/ClusterComm.h"
+#include "Cluster/ClusterFeature.h"
 #include "Replication/InitialSyncer.h"
 #include "Rest/Version.h"
+#include "RestServer/ServerIdFeature.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-globals.h"
 #include "V8/v8-utils.h"
@@ -69,7 +72,7 @@ static void JS_StateLoggerReplication(
   server->Set(TRI_V8_ASCII_STRING("version"),
               TRI_V8_ASCII_STRING(ARANGODB_VERSION));
   server->Set(TRI_V8_ASCII_STRING("serverId"),
-              TRI_V8_STD_STRING(StringUtils::itoa(TRI_GetIdServer())));
+              TRI_V8_STD_STRING(StringUtils::itoa(ServerIdFeature::getId())));
   result->Set(TRI_V8_ASCII_STRING("server"), server);
 
   v8::Handle<v8::Object> clients = v8::Object::New(isolate);
@@ -184,6 +187,33 @@ static void JS_LastLoggerReplication(
   TRI_V8_TRY_CATCH_END
 }
 
+void addReplicationAuthentication(v8::Isolate* isolate,
+    v8::Handle<v8::Object> object,
+    TRI_replication_applier_configuration_t &config) {
+  bool hasUsernamePassword = false;
+  if (object->Has(TRI_V8_ASCII_STRING("username"))) {
+    if (object->Get(TRI_V8_ASCII_STRING("username"))->IsString()) {
+      hasUsernamePassword = true;
+      config._username =
+        TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("username")));
+    }
+  }
+
+  if (object->Has(TRI_V8_ASCII_STRING("password"))) {
+    if (object->Get(TRI_V8_ASCII_STRING("password"))->IsString()) {
+      hasUsernamePassword = true;
+      config._password =
+        TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("password")));
+    }
+  }
+  if (!hasUsernamePassword) {
+    auto cluster = application_features::ApplicationServer::getFeature<ClusterFeature>("Cluster");
+    if (cluster->isEnabled()) {
+      config._jwt = ClusterComm::instance()->jwt();
+    }
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief sync data from a remote master
 ////////////////////////////////////////////////////////////////////////////////
@@ -215,18 +245,9 @@ static void JS_SynchronizeReplication(
   if (object->Has(TRI_V8_ASCII_STRING("database"))) {
     database = TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("database")));
   } else {
-    database = std::string(vocbase->_name);
+    database = vocbase->name();
   }
 
-  std::string username;
-  if (object->Has(TRI_V8_ASCII_STRING("username"))) {
-    username = TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("username")));
-  }
-
-  std::string password;
-  if (object->Has(TRI_V8_ASCII_STRING("password"))) {
-    password = TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("password")));
-  }
 
   std::unordered_map<std::string, bool> restrictCollections;
   if (object->Has(TRI_V8_ASCII_STRING("restrictCollections")) &&
@@ -272,8 +293,8 @@ static void JS_SynchronizeReplication(
   TRI_replication_applier_configuration_t config;
   config._endpoint = endpoint;
   config._database = database;
-  config._username = username;
-  config._password = password;
+
+  addReplicationAuthentication(isolate, object, config);
 
   if (object->Has(TRI_V8_ASCII_STRING("chunkSize"))) {
     if (object->Get(TRI_V8_ASCII_STRING("chunkSize"))->IsNumber()) {
@@ -308,6 +329,11 @@ static void JS_SynchronizeReplication(
   if (object->Has(TRI_V8_ASCII_STRING("keepBarrier"))) {
     keepBarrier =
         TRI_ObjectToBoolean(object->Get(TRI_V8_ASCII_STRING("keepBarrier")));
+  }
+
+  if (object->Has(TRI_V8_ASCII_STRING("useCollectionId"))) {
+    config._useCollectionId =
+        TRI_ObjectToBoolean(object->Get(TRI_V8_ASCII_STRING("useCollectionId")));
   }
 
   std::string errorMsg = "";
@@ -373,7 +399,7 @@ static void JS_ServerIdReplication(
   TRI_V8_TRY_CATCH_BEGIN(isolate);
   v8::HandleScope scope(isolate);
 
-  std::string const serverId = StringUtils::itoa(TRI_GetIdServer());
+  std::string const serverId = StringUtils::itoa(ServerIdFeature::getId());
   TRI_V8_RETURN_STD_STRING(serverId);
   TRI_V8_TRY_CATCH_END
 }
@@ -393,7 +419,7 @@ static void JS_ConfigureApplierReplication(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND);
   }
 
-  if (vocbase->_replicationApplier == nullptr) {
+  if (vocbase->replicationApplier() == nullptr) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
@@ -403,8 +429,8 @@ static void JS_ConfigureApplierReplication(
     TRI_replication_applier_configuration_t config;
 
     {
-      READ_LOCKER(readLocker, vocbase->_replicationApplier->_statusLock);
-      config.update(&vocbase->_replicationApplier->_configuration);
+      READ_LOCKER(readLocker, vocbase->replicationApplier()->_statusLock);
+      config.update(&vocbase->replicationApplier()->_configuration);
     }
 
     std::shared_ptr<VPackBuilder> builder = config.toVelocyPack(true);
@@ -426,8 +452,8 @@ static void JS_ConfigureApplierReplication(
 
     // fill with previous configuration
     {
-      READ_LOCKER(readLocker, vocbase->_replicationApplier->_statusLock);
-      config.update(&vocbase->_replicationApplier->_configuration);
+      READ_LOCKER(readLocker, vocbase->replicationApplier()->_statusLock);
+      config.update(&vocbase->replicationApplier()->_configuration);
     }
 
     // treat the argument as an object from now on
@@ -448,23 +474,10 @@ static void JS_ConfigureApplierReplication(
     } else {
       if (config._database.empty()) {
         // no database set, use current
-        config._database = std::string(vocbase->_name);
+        config._database = vocbase->name();
       }
     }
-
-    if (object->Has(TRI_V8_ASCII_STRING("username"))) {
-      if (object->Get(TRI_V8_ASCII_STRING("username"))->IsString()) {
-        config._username =
-            TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("username")));
-      }
-    }
-
-    if (object->Has(TRI_V8_ASCII_STRING("password"))) {
-      if (object->Get(TRI_V8_ASCII_STRING("password"))->IsString()) {
-        config._password =
-            TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("password")));
-      }
-    }
+    addReplicationAuthentication(isolate, object, config);
 
     if (object->Has(TRI_V8_ASCII_STRING("requestTimeout"))) {
       if (object->Get(TRI_V8_ASCII_STRING("requestTimeout"))->IsNumber()) {
@@ -645,7 +658,7 @@ static void JS_ConfigureApplierReplication(
     }
 
     int res =
-        TRI_ConfigureReplicationApplier(vocbase->_replicationApplier, &config);
+        TRI_ConfigureReplicationApplier(vocbase->replicationApplier(), &config);
 
     if (res != TRI_ERROR_NO_ERROR) {
       TRI_V8_THROW_EXCEPTION(res);
@@ -675,7 +688,7 @@ static void JS_StartApplierReplication(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND);
   }
 
-  if (vocbase->_replicationApplier == nullptr) {
+  if (vocbase->replicationApplier() == nullptr) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
@@ -697,7 +710,7 @@ static void JS_StartApplierReplication(
   }
 
   int res =
-      vocbase->_replicationApplier->start(initialTick, useTick, barrierId);
+      vocbase->replicationApplier()->start(initialTick, useTick, barrierId);
 
   if (res != TRI_ERROR_NO_ERROR) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(res, "cannot start replication applier");
@@ -726,11 +739,11 @@ static void JS_ShutdownApplierReplication(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND);
   }
 
-  if (vocbase->_replicationApplier == nullptr) {
+  if (vocbase->replicationApplier() == nullptr) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
-  int res = vocbase->_replicationApplier->shutdown();
+  int res = vocbase->replicationApplier()->shutdown();
 
   if (res != TRI_ERROR_NO_ERROR) {
     TRI_V8_THROW_EXCEPTION_MESSAGE(res, "cannot shut down replication applier");
@@ -759,11 +772,11 @@ static void JS_StateApplierReplication(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND);
   }
 
-  if (vocbase->_replicationApplier == nullptr) {
+  if (vocbase->replicationApplier() == nullptr) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
-  std::shared_ptr<VPackBuilder> builder = vocbase->_replicationApplier->toVelocyPack();
+  std::shared_ptr<VPackBuilder> builder = vocbase->replicationApplier()->toVelocyPack();
 
   v8::Handle<v8::Value> result = TRI_VPackToV8(isolate, builder->slice());
 
@@ -790,11 +803,11 @@ static void JS_ForgetApplierReplication(
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND);
   }
 
-  if (vocbase->_replicationApplier == nullptr) {
+  if (vocbase->replicationApplier() == nullptr) {
     TRI_V8_THROW_EXCEPTION(TRI_ERROR_INTERNAL);
   }
 
-  int res = vocbase->_replicationApplier->forget();
+  int res = vocbase->replicationApplier()->forget();
 
   if (res != TRI_ERROR_NO_ERROR) {
     TRI_V8_THROW_EXCEPTION(res);
@@ -806,7 +819,7 @@ static void JS_ForgetApplierReplication(
 
 void TRI_InitV8Replication(v8::Isolate* isolate,
                            v8::Handle<v8::Context> context,
-                           TRI_server_t* server, TRI_vocbase_t* vocbase,
+                           TRI_vocbase_t* vocbase,
                            size_t threadNumber, TRI_v8_global_t* v8g) {
   // replication functions. not intended to be used by end users
   TRI_AddGlobalFunctionVocbase(isolate, context,

@@ -25,7 +25,7 @@
 #define ARANGOD_REST_HANDLER_REST_JOB_HANDLER_H 1
 
 #include "Basics/Common.h"
-#include "HttpServer/AsyncJobManager.h"
+#include "GeneralServer/AsyncJobManager.h"
 #include "RestHandler/RestBaseHandler.h"
 
 namespace arangodb {
@@ -40,16 +40,18 @@ class Dispatcher;
 
 class RestJobHandler : public RestBaseHandler {
  public:
-  RestJobHandler(HttpRequest* request, rest::AsyncJobManager*);
+  RestJobHandler(GeneralRequest*, GeneralResponse*, rest::AsyncJobManager*);
 
  public:
+  char const* name() const override final { return "RestJobHandler"; }
+
   bool isDirect() const override;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief executes the handler
   //////////////////////////////////////////////////////////////////////////////
 
-  status_t execute() override;
+  RestStatus execute() override;
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief put handler

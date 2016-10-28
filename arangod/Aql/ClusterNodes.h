@@ -27,9 +27,8 @@
 #include "Basics/Common.h"
 #include "Aql/Ast.h"
 #include "Aql/ExecutionNode.h"
-#include "Aql/Query.h"
 #include "Aql/Variable.h"
-#include "Basics/JsonHelper.h"
+#include "Aql/types.h"
 #include "VocBase/voc-types.h"
 #include "VocBase/vocbase.h"
 
@@ -55,23 +54,23 @@ class RemoteNode : public ExecutionNode {
         _server(server),
         _ownName(ownName),
         _queryId(queryId),
-        _isResponsibleForInitCursor(true) {
+        _isResponsibleForInitializeCursor(true) {
     // note: server, ownName and queryId may be empty and filled later
   }
 
   /// @brief whether or not this node will forward initializeCursor or shutDown
   /// requests
-  void isResponsibleForInitCursor(bool value) {
-    _isResponsibleForInitCursor = value;
+  void isResponsibleForInitializeCursor(bool value) {
+    _isResponsibleForInitializeCursor = value;
   }
 
   /// @brief whether or not this node will forward initializeCursor or shutDown
   /// requests
-  bool isResponsibleForInitCursor() const {
-    return _isResponsibleForInitCursor;
+  bool isResponsibleForInitializeCursor() const {
+    return _isResponsibleForInitializeCursor;
   }
 
-  RemoteNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  RemoteNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return REMOTE; }
@@ -142,7 +141,7 @@ class RemoteNode : public ExecutionNode {
 
   /// @brief whether or not this node will forward initializeCursor and shutDown
   /// requests
-  bool _isResponsibleForInitCursor;
+  bool _isResponsibleForInitializeCursor;
 };
 
 /// @brief class ScatterNode
@@ -156,7 +155,7 @@ class ScatterNode : public ExecutionNode {
               Collection const* collection)
       : ExecutionNode(plan, id), _vocbase(vocbase), _collection(collection) {}
 
-  ScatterNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  ScatterNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return SCATTER; }
@@ -209,7 +208,8 @@ class DistributeNode : public ExecutionNode {
         _varId(varId),
         _alternativeVarId(alternativeVarId),
         _createKeys(createKeys),
-        _allowKeyConversionToObject(allowKeyConversionToObject) {}
+        _allowKeyConversionToObject(allowKeyConversionToObject),
+        _allowSpecifiedKeys(false) {}
 
   DistributeNode(ExecutionPlan* plan, size_t id, TRI_vocbase_t* vocbase,
                  Collection const* collection, VariableId const varId,
@@ -219,7 +219,7 @@ class DistributeNode : public ExecutionNode {
     // just delegates to the other constructor
   }
 
-  DistributeNode(ExecutionPlan*, arangodb::basics::Json const& base);
+  DistributeNode(ExecutionPlan*, arangodb::velocypack::Slice const& base);
 
   /// @brief return the type of the node
   NodeType getType() const override final { return DISTRIBUTE; }
@@ -249,6 +249,26 @@ class DistributeNode : public ExecutionNode {
   /// @brief return the collection
   Collection const* collection() const { return _collection; }
 
+  /// @brief set collection
+  void setCollection(Collection* coll) { _collection = coll; }
+
+  /// @brief set varId
+  void setVarId(VariableId varId) { _varId = varId; }
+
+  /// @brief set alternativeVarId
+  void setAlternativeVarId(VariableId alternativeVarId) {
+    _alternativeVarId = alternativeVarId;
+  }
+
+  /// @brief set createKeys
+  void setCreateKeys(bool b) { _createKeys = b; }
+
+  /// @brief set allowKeyConversionToObject
+  void setAllowKeyConversionToObject(bool b) { _allowKeyConversionToObject = b; }
+
+  /// @brief set _allowSpecifiedKeys
+  void setAllowSpecifiedKeys(bool b) { _allowSpecifiedKeys = b; }
+
  private:
   /// @brief the underlying database
   TRI_vocbase_t* _vocbase;
@@ -257,17 +277,20 @@ class DistributeNode : public ExecutionNode {
   Collection const* _collection;
 
   /// @brief the variable we must inspect to know where to distribute
-  VariableId const _varId;
+  VariableId _varId;
 
   /// @brief an optional second variable we must inspect to know where to
   /// distribute
-  VariableId const _alternativeVarId;
+  VariableId _alternativeVarId;
 
   /// @brief the node is responsible for creating document keys
-  bool const _createKeys;
+  bool _createKeys;
 
   /// @brief allow conversion of key to object
-  bool const _allowKeyConversionToObject;
+  bool _allowKeyConversionToObject;
+
+  /// @brief allow specified keys in input even in the non-default sharding case
+  bool _allowSpecifiedKeys;
 };
 
 /// @brief class GatherNode
@@ -281,7 +304,7 @@ class GatherNode : public ExecutionNode {
              Collection const* collection)
       : ExecutionNode(plan, id), _vocbase(vocbase), _collection(collection) {}
 
-  GatherNode(ExecutionPlan*, arangodb::basics::Json const& base,
+  GatherNode(ExecutionPlan*, arangodb::velocypack::Slice const& base,
              SortElementVector const& elements);
 
   /// @brief return the type of the node

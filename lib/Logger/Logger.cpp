@@ -24,6 +24,7 @@
 
 #include "Logger.h"
 
+#include "Basics/ArangoGlobalContext.h"
 #include "Basics/ConditionLocker.h"
 #include "Basics/Exceptions.h"
 #include "Basics/MutexLocker.h"
@@ -45,6 +46,7 @@ bool Logger::_showThreadIdentifier(false);
 bool Logger::_threaded(false);
 bool Logger::_useLocalTime(false);
 bool Logger::_keepLogRotate(false);
+bool Logger::_useMicrotime(false);
 std::string Logger::_outputPrefix("");
 
 std::unique_ptr<LogThread> Logger::_loggingThread(nullptr);
@@ -84,7 +86,7 @@ void Logger::setLogLevel(std::string const& levelName) {
     level = LogLevel::FATAL;
   } else if (l == "error") {
     level = LogLevel::ERR;
-  } else if (l == "warning") {
+  } else if (l == "warning" || l == "warn") {
     level = LogLevel::WARN;
   } else if (l == "info") {
     level = LogLevel::INFO;
@@ -160,6 +162,16 @@ void Logger::setUseLocalTime(bool show) {
 }
 
 // NOTE: this function should not be called if the logging is active.
+void Logger::setUseMicrotime(bool show) {
+  if (_active) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
+                                   "cannot change use microtime if logging is active");
+  }
+
+  _useMicrotime = show;
+}
+
+// NOTE: this function should not be called if the logging is active.
 void Logger::setKeepLogrotate(bool keep) {
   if (_active) {
     THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL,
@@ -204,7 +216,9 @@ void Logger::log(char const* function, char const* file, long int line,
                  std::string const& message) {
 #ifdef _WIN32
   if (level == LogLevel::FATAL || level == LogLevel::ERR) {
-    TRI_LogWindowsEventlog(function, file, line, message);
+    if (ArangoGlobalContext::CONTEXT != nullptr && ArangoGlobalContext::CONTEXT->useEventLog()) {
+      TRI_LogWindowsEventlog(function, file, line, message);
+    }
   }
 #endif
 
@@ -216,7 +230,11 @@ void Logger::log(char const* function, char const* file, long int line,
   std::stringstream out;
 
   // time prefix
-  {
+  if (_useMicrotime) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%.6f ", TRI_microtime());
+    out << buf;
+  } else {
     char timePrefix[32];
     time_t tt = time(0);
     struct tm tb;

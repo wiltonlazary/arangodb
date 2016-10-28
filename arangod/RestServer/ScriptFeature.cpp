@@ -43,7 +43,7 @@ ScriptFeature::ScriptFeature(application_features::ApplicationServer* server, in
       _result(result) {
   startsAfter("Nonce");
   startsAfter("Server");
-  startsAfter("RestServer");
+  startsAfter("GeneralServer");
 }
 
 void ScriptFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
@@ -70,7 +70,15 @@ int ScriptFeature::runScript(std::vector<std::string> const& scripts) {
 
   auto database = ApplicationServer::getFeature<DatabaseFeature>("Database");
   V8Context* context =
-      V8DealerFeature::DEALER->enterContext(database->vocbase(), true);
+      V8DealerFeature::DEALER->enterContext(database->systemDatabase(), true);
+
+  if (context == nullptr) {
+    LOG(FATAL) << "cannot acquire V8 context";
+    FATAL_ERROR_EXIT();
+  }
+
+  TRI_DEFER(V8DealerFeature::DEALER->exitContext(context));
+
   auto isolate = context->_isolate;
 
   {
@@ -144,8 +152,6 @@ int ScriptFeature::runScript(std::vector<std::string> const& scripts) {
 
     localContext->Exit();
   }
-
-  V8DealerFeature::DEALER->exitContext(context);
 
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

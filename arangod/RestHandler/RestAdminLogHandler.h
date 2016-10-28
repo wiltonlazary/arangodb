@@ -35,16 +35,17 @@ namespace arangodb {
 
 class RestAdminLogHandler : public RestBaseHandler {
  public:
-  explicit RestAdminLogHandler(HttpRequest*);
+  explicit RestAdminLogHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestAdminLogHandler"; }
+
   bool isDirect() const override;
+  RestStatus execute() override;
 
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief returns the log files (inheritDoc)
-  //////////////////////////////////////////////////////////////////////////////
-
-  status_t execute() override;
+ private:
+  void reportLogs();
+  void setLogLevel();
 };
 }
 

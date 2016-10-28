@@ -24,6 +24,8 @@
 #include "RestShutdownHandler.h"
 
 #include "Rest/HttpRequest.h"
+#include "Cluster/AgencyComm.h"
+#include "Cluster/ClusterFeature.h"
 
 #include <velocypack/Builder.h>
 #include <velocypack/velocypack-aliases.h>
@@ -32,8 +34,8 @@ using namespace arangodb;
 using namespace arangodb::application_features;
 using namespace arangodb::rest;
 
-RestShutdownHandler::RestShutdownHandler(HttpRequest* request)
-    : RestBaseHandler(request) {}
+RestShutdownHandler::RestShutdownHandler(GeneralRequest* request, GeneralResponse* response)
+  : RestBaseHandler(request, response) {}
 
 bool RestShutdownHandler::isDirect() const { return true; }
 
@@ -41,16 +43,43 @@ bool RestShutdownHandler::isDirect() const { return true; }
 /// @brief was docuBlock JSF_get_api_initiate
 ////////////////////////////////////////////////////////////////////////////////
 
-HttpHandler::status_t RestShutdownHandler::execute() {
+RestStatus RestShutdownHandler::execute() {
+  if (_request->requestType() != rest::RequestType::DELETE_REQ) {
+    generateError(rest::ResponseCode::METHOD_NOT_ALLOWED, 405);
+    return RestStatus::DONE;
+  }
+  bool removeFromCluster;
+  std::string const& remove = _request->value("remove_from_cluster", removeFromCluster);
+  removeFromCluster = removeFromCluster && remove == "1";
+
+  bool shutdownClusterFound;
+  std::string const& shutdownCluster = _request->value("shutdown_cluster", shutdownClusterFound);
+  if (shutdownClusterFound && shutdownCluster == "1") {
+    AgencyComm agency;
+
+    VPackBuilder builder;
+    builder.add(VPackValue(true));
+    AgencyCommResult result = agency.setValue("Shutdown", builder.slice(), 0.0);
+    if (!result.successful()) {
+      generateError(rest::ResponseCode::SERVER_ERROR, 500);
+      return RestStatus::DONE;
+    }
+    removeFromCluster = true;
+  }
+  if (removeFromCluster) {
+    ClusterFeature* clusterFeature = ApplicationServer::getFeature<ClusterFeature>("Cluster");
+    clusterFeature->setUnregisterOnShutdown(true);
+  }
+
   ApplicationServer::server->beginShutdown();
 
   try {
     VPackBuilder result;
     result.add(VPackValue("OK"));
-    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
+    generateResult(rest::ResponseCode::OK, result.slice());
   } catch (...) {
     // Ignore the error
   }
 
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

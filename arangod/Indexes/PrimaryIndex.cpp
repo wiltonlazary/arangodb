@@ -27,9 +27,11 @@
 #include "Basics/StaticStrings.h"
 #include "Basics/hashes.h"
 #include "Basics/tri-strings.h"
+#include "Indexes/IndexLookupContext.h"
 #include "Indexes/SimpleAttributeEqualityMatcher.h"
 #include "Utils/Transaction.h"
-#include "VocBase/document-collection.h"
+#include "Utils/TransactionContext.h"
+#include "VocBase/LogicalCollection.h"
 #include "VocBase/transaction.h"
 
 #include <velocypack/Builder.h>
@@ -39,73 +41,150 @@
 
 using namespace arangodb;
 
-static inline uint64_t HashKey(void* userData, uint8_t const* key) {
-  // can use fast hash-function here, as index values are restricted to strings
-  return VPackSlice(key).hashString();
+/// @brief hard-coded vector of the index attributes
+/// note that the attribute names must be hard-coded here to avoid an init-order
+/// fiasco with StaticStrings::FromString etc.
+static std::vector<std::vector<arangodb::basics::AttributeName>> const IndexAttributes
+    {{arangodb::basics::AttributeName("_id", false)},
+     {arangodb::basics::AttributeName("_key", false)}};
+
+static inline uint64_t HashKey(void*, uint8_t const* key) {
+  return SimpleIndexElement::hash(VPackSlice(key));
 }
 
-static inline uint64_t HashElement(void*, TRI_doc_mptr_t const* element) {
-  return element->getHash();
+static inline uint64_t HashElement(void*, SimpleIndexElement const& element) {
+  return element.hash();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief determines if a key corresponds to an element
 ////////////////////////////////////////////////////////////////////////////////
 
-static bool IsEqualKeyElement(void*, uint8_t const* key,
-                              uint64_t const hash,
-                              TRI_doc_mptr_t const* element) {
-  if (hash != element->getHash()) {
+static bool IsEqualKeyElement(void* userData, uint8_t const* key,
+                              uint64_t hash,
+                              SimpleIndexElement const& right) {
+  IndexLookupContext* context = static_cast<IndexLookupContext*>(userData);
+  TRI_ASSERT(context != nullptr);
+  
+  try {
+    VPackSlice tmp = right.slice(context);
+    TRI_ASSERT(tmp.isString());
+    return VPackSlice(key).equals(tmp);
+  } catch (...) {
     return false;
   }
- 
-  return Transaction::extractKeyFromDocument(VPackSlice(element->vpack())).equals(VPackSlice(key)); 
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief determines if two elements are equal
 ////////////////////////////////////////////////////////////////////////////////
 
-static bool IsEqualElementElement(void*, TRI_doc_mptr_t const* left,
-                                  TRI_doc_mptr_t const* right) {
-  if (left->getHash() != right->getHash()) {
-    return false;
-  }
-
-  VPackSlice l = Transaction::extractKeyFromDocument(VPackSlice(left->vpack()));
-  VPackSlice r = Transaction::extractKeyFromDocument(VPackSlice(right->vpack()));
+static bool IsEqualElementElement(void* userData, SimpleIndexElement const& left,
+                                  SimpleIndexElement const& right) {
+  IndexLookupContext* context = static_cast<IndexLookupContext*>(userData);
+  TRI_ASSERT(context != nullptr);
+  
+  VPackSlice l = left.slice(context);
+  VPackSlice r = right.slice(context);
+  TRI_ASSERT(l.isString());
+  TRI_ASSERT(r.isString());
   return l.equals(r);
 }
+  
+PrimaryIndexIterator::PrimaryIndexIterator(LogicalCollection* collection,
+                       arangodb::Transaction* trx, 
+                       ManagedDocumentResult* mmdr,
+                       PrimaryIndex const* index,
+                       std::unique_ptr<VPackBuilder>& keys)
+    : IndexIterator(collection, trx, mmdr, index),
+      _index(index), 
+      _keys(keys.get()), 
+      _iterator(_keys->slice()) {
 
-TRI_doc_mptr_t* PrimaryIndexIterator::next() {
+  keys.release(); // now we have ownership for _keys
+  TRI_ASSERT(_keys->slice().isArray());
+}
+
+PrimaryIndexIterator::~PrimaryIndexIterator() {
+  if (_keys != nullptr) {
+    // return the VPackBuilder to the transaction context 
+    _trx->transactionContextPtr()->returnBuilder(_keys.release());
+  }
+}
+
+IndexLookupResult PrimaryIndexIterator::next() {
   while (_iterator.valid()) {
-    auto result = _index->lookup(_trx, _iterator.value());
+    SimpleIndexElement result = _index->lookupKey(_trx, _iterator.value());
     _iterator.next();
 
-    if (result != nullptr) {
+    if (result) {
       // found a result
-      return result;
+      return IndexLookupResult(result.revisionId());
     }
 
     // found no result. now go to next lookup value in _keys
   }
 
-  return nullptr;
+  return IndexLookupResult();
 }
 
 void PrimaryIndexIterator::reset() { _iterator.reset(); }
+  
+AllIndexIterator::AllIndexIterator(LogicalCollection* collection,
+                   arangodb::Transaction* trx, 
+                   ManagedDocumentResult* mmdr,
+                   PrimaryIndex const* index,
+                   PrimaryIndexImpl const* indexImpl,
+                   bool reverse)
+    : IndexIterator(collection, trx, mmdr, index), _index(indexImpl), _reverse(reverse), _total(0) {}
 
-TRI_doc_mptr_t* AllIndexIterator::next() {
+IndexLookupResult AllIndexIterator::next() {
+  SimpleIndexElement element;
   if (_reverse) {
-    return _index->findSequentialReverse(_trx, _position);
+    element = _index->findSequentialReverse(&_context, _position);
+  } else {
+    element = _index->findSequential(&_context, _position, _total);
   }
-  return _index->findSequential(_trx, _position, _total);
-};
+  if (element) {
+    return IndexLookupResult(element.revisionId());
+  }
+  return IndexLookupResult();
+}
+
+void AllIndexIterator::nextBabies(std::vector<IndexLookupResult>& buffer, size_t limit) {
+  size_t atMost = limit;
+
+  buffer.clear();
+  if (atMost > 0) {
+    buffer.reserve(atMost);
+  }
+
+  while (atMost > 0) {
+    IndexLookupResult result = next();
+
+    if (!result) {
+      return;
+    }
+
+    buffer.emplace_back(result);
+    --atMost;
+  }
+}
 
 void AllIndexIterator::reset() { _position.reset(); }
+  
+AnyIndexIterator::AnyIndexIterator(LogicalCollection* collection, arangodb::Transaction* trx, 
+                                   ManagedDocumentResult* mmdr,
+                                   PrimaryIndex const* index,
+                                   PrimaryIndexImpl const* indexImpl)
+    : IndexIterator(collection, trx, mmdr, index), _index(indexImpl), _step(0), _total(0) {}
 
-TRI_doc_mptr_t* AnyIndexIterator::next() {
-  return _index->findRandom(_trx, _initial, _position, _step, _total);
+IndexLookupResult AnyIndexIterator::next() {
+  SimpleIndexElement element = _index->findRandom(&_context, _initial, _position, _step, _total);
+  if (element) {
+    return IndexLookupResult(element.revisionId());
+  }
+  return IndexLookupResult();
 }
 
 void AnyIndexIterator::reset() {
@@ -114,35 +193,28 @@ void AnyIndexIterator::reset() {
   _position = _initial;
 }
 
-
-PrimaryIndex::PrimaryIndex(TRI_document_collection_t* collection)
+PrimaryIndex::PrimaryIndex(arangodb::LogicalCollection* collection)
     : Index(0, collection,
             std::vector<std::vector<arangodb::basics::AttributeName>>(
-                {{{StaticStrings::KeyString, false}}}),
+                {{arangodb::basics::AttributeName(StaticStrings::KeyString, false)}}),
             true, false),
       _primaryIndex(nullptr) {
   uint32_t indexBuckets = 1;
 
   if (collection != nullptr) {
-    // document is a nullptr in the coordinator case
-    indexBuckets = collection->_info.indexBuckets();
+    // collection is a nullptr in the coordinator case
+    indexBuckets = collection->indexBuckets();
   }
 
-  _primaryIndex = new TRI_PrimaryIndex_t(
+  _primaryIndex = new PrimaryIndexImpl(
       HashKey, HashElement, IsEqualKeyElement, IsEqualElementElement,
       IsEqualElementElement, indexBuckets,
-      []() -> std::string { return "primary"; });
+      [this]() -> std::string { return this->context(); });
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief create an index stub with a hard-coded selectivity estimate
-/// this is used in the cluster coordinator case
-////////////////////////////////////////////////////////////////////////////////
-
-PrimaryIndex::PrimaryIndex(VPackSlice const& slice)
-    : Index(slice), _primaryIndex(nullptr) {}
-
-PrimaryIndex::~PrimaryIndex() { delete _primaryIndex; }
+PrimaryIndex::~PrimaryIndex() { 
+  delete _primaryIndex; 
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief return the number of documents from the index
@@ -154,7 +226,9 @@ size_t PrimaryIndex::size() const { return _primaryIndex->size(); }
 /// @brief return the memory usage of the index
 ////////////////////////////////////////////////////////////////////////////////
 
-size_t PrimaryIndex::memory() const { return _primaryIndex->memoryUsage(); }
+size_t PrimaryIndex::memory() const { 
+  return _primaryIndex->memoryUsage();
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief return a VelocyPack representation of the index
@@ -167,61 +241,75 @@ void PrimaryIndex::toVelocyPack(VPackBuilder& builder, bool withFigures) const {
   builder.add("sparse", VPackValue(false));
 }
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief return a VelocyPack representation of the index figures
-////////////////////////////////////////////////////////////////////////////////
-
 void PrimaryIndex::toVelocyPackFigures(VPackBuilder& builder) const {
   Index::toVelocyPackFigures(builder);
   _primaryIndex->appendToVelocyPack(builder);
 }
 
-int PrimaryIndex::insert(arangodb::Transaction*, TRI_doc_mptr_t const*, bool) {
-  THROW_ARANGO_EXCEPTION(TRI_ERROR_NOT_IMPLEMENTED);
+int PrimaryIndex::insert(arangodb::Transaction*, TRI_voc_rid_t, VPackSlice const&, bool) {
+#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+  LOG(WARN) << "insert() called for primary index";
+#endif
+  THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "insert() called for primary index");
 }
 
-int PrimaryIndex::remove(arangodb::Transaction*, TRI_doc_mptr_t const*, bool) {
-  THROW_ARANGO_EXCEPTION(TRI_ERROR_NOT_IMPLEMENTED);
+int PrimaryIndex::remove(arangodb::Transaction*, TRI_voc_rid_t, VPackSlice const&, bool) {
+#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+  LOG(WARN) << "remove() called for primary index";
+#endif
+  THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "remove() called for primary index");
 }
 
-////////////////////////////////////////////////////////////////////////////////
+/// @brief unload the index data from memory
+int PrimaryIndex::unload() {
+  _primaryIndex->truncate([](SimpleIndexElement const&) { return true; });
+
+  return TRI_ERROR_NO_ERROR;
+}
+
 /// @brief looks up an element given a key
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_doc_mptr_t* PrimaryIndex::lookup(arangodb::Transaction* trx,
-                                     VPackSlice const& slice) const {
-  TRI_ASSERT(slice.isArray() && slice.length() == 1);
-  
-  VPackSlice tmp = slice.at(0);
-  TRI_ASSERT(tmp.isObject() && tmp.hasKey(TRI_SLICE_KEY_EQUAL));
-  tmp = tmp.get(TRI_SLICE_KEY_EQUAL);
-  return _primaryIndex->findByKey(trx, tmp.begin());
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief looks up an element given a key
-////////////////////////////////////////////////////////////////////////////////
-
-TRI_doc_mptr_t* PrimaryIndex::lookupKey(arangodb::Transaction* trx,
-                                        VPackSlice const& key) const {
+SimpleIndexElement PrimaryIndex::lookupKey(arangodb::Transaction* trx,
+                                           VPackSlice const& key) const {
+  ManagedDocumentResult mmdr(trx); 
+  IndexLookupContext context(trx, _collection, &mmdr, 1); 
   TRI_ASSERT(key.isString());
-  return _primaryIndex->findByKey(trx, key.begin());
+  return _primaryIndex->findByKey(&context, key.begin());
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief a method to iterate over all elements in the index in
-///        a random order.
-///        Returns nullptr if all documents have been returned.
-///        Convention: step === 0 indicates a new start.
-///        DEPRECATED
-////////////////////////////////////////////////////////////////////////////////
+/// @brief looks up an element given a key
+SimpleIndexElement PrimaryIndex::lookupKey(arangodb::Transaction* trx,
+                                           VPackSlice const& key,
+                                           ManagedDocumentResult& mmdr) const {
+  IndexLookupContext context(trx, _collection, &mmdr, 1); 
+  TRI_ASSERT(key.isString());
+  return _primaryIndex->findByKey(&context, key.begin());
+}
 
-TRI_doc_mptr_t* PrimaryIndex::lookupRandom(
-    arangodb::Transaction* trx,
-    arangodb::basics::BucketPosition& initialPosition,
-    arangodb::basics::BucketPosition& position, uint64_t& step,
-    uint64_t& total) {
-  return _primaryIndex->findRandom(trx, initialPosition, position, step, total);
+/// @brief looks up an element given a key
+SimpleIndexElement* PrimaryIndex::lookupKeyRef(arangodb::Transaction* trx,
+                                               VPackSlice const& key) const {
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  TRI_ASSERT(key.isString());
+  SimpleIndexElement* element = _primaryIndex->findByKeyRef(&context, key.begin());
+  if (element != nullptr && element->revisionId() == 0) {
+    return nullptr;
+  }
+  return element;
+}
+
+/// @brief looks up an element given a key
+SimpleIndexElement* PrimaryIndex::lookupKeyRef(arangodb::Transaction* trx,
+                                               VPackSlice const& key,
+                                               ManagedDocumentResult& mmdr) const {
+  IndexLookupContext context(trx, _collection, &mmdr, 1); 
+  TRI_ASSERT(key.isString());
+  SimpleIndexElement* element = _primaryIndex->findByKeyRef(&context, key.begin());
+  if (element != nullptr && element->revisionId() == 0) {
+    return nullptr;
+  }
+  return element;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -232,10 +320,12 @@ TRI_doc_mptr_t* PrimaryIndex::lookupRandom(
 ///        DEPRECATED
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_doc_mptr_t* PrimaryIndex::lookupSequential(
+SimpleIndexElement PrimaryIndex::lookupSequential(
     arangodb::Transaction* trx, arangodb::basics::BucketPosition& position,
     uint64_t& total) {
-  return _primaryIndex->findSequential(trx, position, total);
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  return _primaryIndex->findSequential(&context, position, total);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -244,8 +334,9 @@ TRI_doc_mptr_t* PrimaryIndex::lookupSequential(
 //////////////////////////////////////////////////////////////////////////////
 
 IndexIterator* PrimaryIndex::allIterator(arangodb::Transaction* trx,
+                                         ManagedDocumentResult* mmdr,
                                          bool reverse) const {
-  return new AllIndexIterator(trx, _primaryIndex, reverse);
+  return new AllIndexIterator(_collection, trx, mmdr, this, _primaryIndex, reverse);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -254,8 +345,9 @@ IndexIterator* PrimaryIndex::allIterator(arangodb::Transaction* trx,
 ///        exactly once unless the collection is modified.
 //////////////////////////////////////////////////////////////////////////////
 
-IndexIterator* PrimaryIndex::anyIterator(arangodb::Transaction* trx) const {
-  return new AnyIndexIterator(trx, _primaryIndex);
+IndexIterator* PrimaryIndex::anyIterator(arangodb::Transaction* trx,
+                                         ManagedDocumentResult* mmdr) const {
+  return new AnyIndexIterator(_collection, trx, mmdr, this, _primaryIndex);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -266,9 +358,11 @@ IndexIterator* PrimaryIndex::anyIterator(arangodb::Transaction* trx) const {
 ///        DEPRECATED
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_doc_mptr_t* PrimaryIndex::lookupSequentialReverse(
+SimpleIndexElement PrimaryIndex::lookupSequentialReverse(
     arangodb::Transaction* trx, arangodb::basics::BucketPosition& position) {
-  return _primaryIndex->findSequentialReverse(trx, position);
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  return _primaryIndex->findSequentialReverse(&context, position);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -276,36 +370,52 @@ TRI_doc_mptr_t* PrimaryIndex::lookupSequentialReverse(
 /// returns a status code, and *found will contain a found element (if any)
 ////////////////////////////////////////////////////////////////////////////////
 
-int PrimaryIndex::insertKey(arangodb::Transaction* trx, TRI_doc_mptr_t* header,
-                            void const** found) {
-  *found = nullptr;
-  int res = _primaryIndex->insert(trx, header);
-
-  if (res == TRI_ERROR_ARANGO_UNIQUE_CONSTRAINT_VIOLATED) {
-    *found = _primaryIndex->find(trx, header);
-  }
-
-  return res;
+int PrimaryIndex::insertKey(arangodb::Transaction* trx, TRI_voc_rid_t revisionId, VPackSlice const& doc) {
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  SimpleIndexElement element(buildKeyElement(revisionId, doc));
+  
+  return _primaryIndex->insert(&context, element);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief adds a key/element to the index
-/// this is a special, optimized version that receives the target slot index
-/// from a previous lookupKey call
-////////////////////////////////////////////////////////////////////////////////
-
-int PrimaryIndex::insertKey(arangodb::Transaction* trx, TRI_doc_mptr_t* header,
-                            arangodb::basics::BucketPosition const& position) {
-  return _primaryIndex->insertAtPosition(trx, header, position);
+int PrimaryIndex::insertKey(arangodb::Transaction* trx, TRI_voc_rid_t revisionId, VPackSlice const& doc, ManagedDocumentResult& mmdr) {
+  IndexLookupContext context(trx, _collection, &mmdr, 1); 
+  SimpleIndexElement element(buildKeyElement(revisionId, doc));
+  
+  return _primaryIndex->insert(&context, element);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief removes an key/element from the index
 ////////////////////////////////////////////////////////////////////////////////
 
-TRI_doc_mptr_t* PrimaryIndex::removeKey(arangodb::Transaction* trx,
-                                        VPackSlice const& slice) {
-  return _primaryIndex->removeByKey(trx, slice.begin());
+int PrimaryIndex::removeKey(arangodb::Transaction* trx,
+                            TRI_voc_rid_t revisionId, VPackSlice const& doc) {
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  
+  VPackSlice keySlice(Transaction::extractKeyFromDocument(doc));
+  SimpleIndexElement found = _primaryIndex->removeByKey(&context, keySlice.begin());
+
+  if (!found) {
+    return TRI_ERROR_ARANGO_DOCUMENT_NOT_FOUND;
+  }
+    
+  return TRI_ERROR_NO_ERROR;
+}
+
+int PrimaryIndex::removeKey(arangodb::Transaction* trx,
+                            TRI_voc_rid_t revisionId, VPackSlice const& doc, ManagedDocumentResult& mmdr) {
+  IndexLookupContext context(trx, _collection, &mmdr, 1); 
+  
+  VPackSlice keySlice(Transaction::extractKeyFromDocument(doc));
+  SimpleIndexElement found = _primaryIndex->removeByKey(&context, keySlice.begin());
+
+  if (!found) {
+    return TRI_ERROR_ARANGO_DOCUMENT_NOT_FOUND;
+  }
+    
+  return TRI_ERROR_NO_ERROR;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -313,27 +423,18 @@ TRI_doc_mptr_t* PrimaryIndex::removeKey(arangodb::Transaction* trx,
 ////////////////////////////////////////////////////////////////////////////////
 
 int PrimaryIndex::resize(arangodb::Transaction* trx, size_t targetSize) {
-  return _primaryIndex->resize(trx, targetSize);
-}
-
-uint64_t PrimaryIndex::calculateHash(arangodb::Transaction* trx,
-                                     VPackSlice const& slice) {
-  // can use fast hash-function here, as index values are restricted to strings
-  return slice.hashString();
-}
-
-uint64_t PrimaryIndex::calculateHash(arangodb::Transaction* trx,
-                                     uint8_t const* key) {
-  return HashKey(trx, key);
+  ManagedDocumentResult result(trx); 
+  IndexLookupContext context(trx, _collection, &result, 1); 
+  return _primaryIndex->resize(&context, targetSize);
 }
 
 void PrimaryIndex::invokeOnAllElements(
-    std::function<bool(TRI_doc_mptr_t*)> work) {
+    std::function<bool(SimpleIndexElement const&)> work) {
   _primaryIndex->invokeOnAllElements(work);
 }
 
 void PrimaryIndex::invokeOnAllElementsForRemoval(
-    std::function<bool(TRI_doc_mptr_t*)> work) {
+    std::function<bool(SimpleIndexElement&)> work) {
   _primaryIndex->invokeOnAllElementsForRemoval(work);
 }
 
@@ -345,10 +446,8 @@ bool PrimaryIndex::supportsFilterCondition(
     arangodb::aql::AstNode const* node,
     arangodb::aql::Variable const* reference, size_t itemsInIndex,
     size_t& estimatedItems, double& estimatedCost) const {
-  SimpleAttributeEqualityMatcher matcher(
-      {{arangodb::basics::AttributeName(StaticStrings::IdString, false)},
-       {arangodb::basics::AttributeName(StaticStrings::KeyString, false)}});
 
+  SimpleAttributeEqualityMatcher matcher(IndexAttributes);
   return matcher.matchOne(this, node, reference, itemsInIndex, estimatedItems,
                           estimatedCost);
 }
@@ -358,14 +457,11 @@ bool PrimaryIndex::supportsFilterCondition(
 ////////////////////////////////////////////////////////////////////////////////
 
 IndexIterator* PrimaryIndex::iteratorForCondition(
-    arangodb::Transaction* trx, IndexIteratorContext* context,
-    arangodb::aql::Ast* ast, arangodb::aql::AstNode const* node,
+    arangodb::Transaction* trx, 
+    ManagedDocumentResult* mmdr,
+    arangodb::aql::AstNode const* node,
     arangodb::aql::Variable const* reference, bool reverse) const {
   TRI_ASSERT(node->type == aql::NODE_TYPE_OPERATOR_NARY_AND);
-
-  SimpleAttributeEqualityMatcher matcher(
-      {{arangodb::basics::AttributeName(StaticStrings::IdString, false)},
-       {arangodb::basics::AttributeName(StaticStrings::KeyString, false)}});
 
   TRI_ASSERT(node->numMembers() == 1);
 
@@ -384,26 +480,14 @@ IndexIterator* PrimaryIndex::iteratorForCondition(
 
   if (comp->type == aql::NODE_TYPE_OPERATOR_BINARY_EQ) {
     // a.b == value
-    return createIterator(
-        trx, context, attrNode,
-        std::vector<arangodb::aql::AstNode const*>({valNode}));
+    return createEqIterator(trx, mmdr, attrNode, valNode);
   } else if (comp->type == aql::NODE_TYPE_OPERATOR_BINARY_IN) {
     // a.b IN values
     if (!valNode->isArray()) {
       return nullptr;
     }
 
-    std::vector<arangodb::aql::AstNode const*> valNodes;
-    size_t const n = valNode->numMembers();
-    valNodes.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-      valNodes.emplace_back(valNode->getMemberUnchecked(i));
-      TRI_IF_FAILURE("PrimaryIndex::iteratorValNodes") {
-        THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
-      }
-    }
-
-    return createIterator(trx, context, attrNode, valNodes);
+    return createInIterator(trx, mmdr, attrNode, valNode);
   }
 
   // operator type unsupported
@@ -415,15 +499,18 @@ IndexIterator* PrimaryIndex::iteratorForCondition(
 ////////////////////////////////////////////////////////////////////////////////
 
 IndexIterator* PrimaryIndex::iteratorForSlice(
-    arangodb::Transaction* trx, IndexIteratorContext* ctxt,
+    arangodb::Transaction* trx, 
+    ManagedDocumentResult* mmdr,
     arangodb::velocypack::Slice const searchValues, bool) const {
   if (!searchValues.isArray()) {
     // Invalid searchValue
     return nullptr;
   }
-  auto builder = std::make_unique<VPackBuilder>();
+  // lease builder, but immediately pass it to the unique_ptr so we don't leak  
+  TransactionBuilderLeaser builder(trx);
+  std::unique_ptr<VPackBuilder> keys(builder.steal());
   builder->add(searchValues);
-  return new PrimaryIndexIterator(trx, this, builder);
+  return new PrimaryIndexIterator(_collection, trx, mmdr, this, keys);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -433,81 +520,123 @@ IndexIterator* PrimaryIndex::iteratorForSlice(
 arangodb::aql::AstNode* PrimaryIndex::specializeCondition(
     arangodb::aql::AstNode* node,
     arangodb::aql::Variable const* reference) const {
-  SimpleAttributeEqualityMatcher matcher(
-      {{arangodb::basics::AttributeName(StaticStrings::IdString, false)},
-       {arangodb::basics::AttributeName(StaticStrings::KeyString, false)}});
 
+  SimpleAttributeEqualityMatcher matcher(IndexAttributes);
   return matcher.specializeOne(this, node, reference);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief create the iterator
+/// @brief create the iterator, for a single attribute, IN operator
 ////////////////////////////////////////////////////////////////////////////////
 
-IndexIterator* PrimaryIndex::createIterator(
-    arangodb::Transaction* trx, IndexIteratorContext* context,
+IndexIterator* PrimaryIndex::createInIterator(
+    arangodb::Transaction* trx, 
+    ManagedDocumentResult* mmdr,
     arangodb::aql::AstNode const* attrNode,
-    std::vector<arangodb::aql::AstNode const*> const& valNodes) const {
+    arangodb::aql::AstNode const* valNode) const {
   // _key or _id?
-  bool const isId =
-      (strcmp(attrNode->getStringValue(), TRI_VOC_ATTRIBUTE_ID) == 0);
-
-  // only leave the valid elements in the vector
-  auto keys = std::make_unique<VPackBuilder>();
+  bool const isId = (attrNode->stringEquals(StaticStrings::IdString));
+    
+  TRI_ASSERT(valNode->isArray());
+  
+  // lease builder, but immediately pass it to the unique_ptr so we don't leak  
+  TransactionBuilderLeaser builder(trx);
+  std::unique_ptr<VPackBuilder> keys(builder.steal());
   keys->openArray();
+  
+  size_t const n = valNode->numMembers();
 
-  for (auto const& valNode : valNodes) {
-    if (!valNode->isStringValue()) {
-      continue;
-    }
-    if (valNode->getStringLength() == 0) {
-      continue;
-    }
-
-    if (isId) {
-      // lookup by _id. now validate if the lookup is performed for the
-      // correct collection (i.e. _collection)
-      TRI_voc_cid_t cid;
-      char const* key;
-      int res = context->resolveId(valNode->getStringValue(), cid, key);
-
-      if (res != TRI_ERROR_NO_ERROR) {
-        continue;
-      }
-
-      TRI_ASSERT(cid != 0);
-      TRI_ASSERT(key != nullptr);
-
-      if (!context->isCluster() && cid != _collection->_info.id()) {
-        // only continue lookup if the id value is syntactically correct and
-        // refers to "our" collection, using local collection id
-        continue;
-      }
-
-      if (context->isCluster() && cid != _collection->_info.planId()) {
-        // only continue lookup if the id value is syntactically correct and
-        // refers to "our" collection, using cluster collection id
-        continue;
-      }
-
-      // use _key value from _id
-      keys->openArray();
-      keys->openObject();
-      keys->add(TRI_SLICE_KEY_EQUAL, VPackValue(key));
-      keys->close();
-      keys->close();
-    } else {
-      keys->openArray();
-      keys->openObject();
-      keys->add(TRI_SLICE_KEY_EQUAL, VPackValue(valNode->getStringValue()));
-      keys->close();
-      keys->close();
+  // only leave the valid elements
+  for (size_t i = 0; i < n; ++i) {
+    handleValNode(trx, keys.get(), valNode->getMemberUnchecked(i), isId);
+    TRI_IF_FAILURE("PrimaryIndex::iteratorValNodes") {
+      THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
     }
   }
+  
+  TRI_IF_FAILURE("PrimaryIndex::noIterator") {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
+  }
+  keys->close();
+  return new PrimaryIndexIterator(_collection, trx, mmdr, this, keys);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief create the iterator, for a single attribute, EQ operator
+////////////////////////////////////////////////////////////////////////////////
+
+IndexIterator* PrimaryIndex::createEqIterator(
+    arangodb::Transaction* trx, 
+    ManagedDocumentResult* mmdr,
+    arangodb::aql::AstNode const* attrNode,
+    arangodb::aql::AstNode const* valNode) const {
+  // _key or _id?
+  bool const isId = (attrNode->stringEquals(StaticStrings::IdString));
+
+  // lease builder, but immediately pass it to the unique_ptr so we don't leak  
+  TransactionBuilderLeaser builder(trx);
+  std::unique_ptr<VPackBuilder> keys(builder.steal());
+  keys->openArray();
+
+  // handle the sole element
+  handleValNode(trx, keys.get(), valNode, isId);
 
   TRI_IF_FAILURE("PrimaryIndex::noIterator") {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
   }
   keys->close();
-  return new PrimaryIndexIterator(trx, this, keys);
+  return new PrimaryIndexIterator(_collection, trx, mmdr, this, keys);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief add a single value node to the iterator's keys
+////////////////////////////////////////////////////////////////////////////////
+   
+void PrimaryIndex::handleValNode(arangodb::Transaction* trx,
+                                 VPackBuilder* keys,
+                                 arangodb::aql::AstNode const* valNode,
+                                 bool isId) const { 
+  if (!valNode->isStringValue() || valNode->getStringLength() == 0) {
+    return;
+  }
+
+  if (isId) {
+    // lookup by _id. now validate if the lookup is performed for the
+    // correct collection (i.e. _collection)
+    TRI_voc_cid_t cid;
+    char const* key;
+    size_t outLength;
+    int res = trx->resolveId(valNode->getStringValue(), valNode->getStringLength(), cid, key, outLength);
+
+    if (res != TRI_ERROR_NO_ERROR) {
+      return;
+    }
+
+    TRI_ASSERT(cid != 0);
+    TRI_ASSERT(key != nullptr);
+
+    if (!trx->isCluster() && cid != _collection->cid()) {
+      // only continue lookup if the id value is syntactically correct and
+      // refers to "our" collection, using local collection id
+      return;
+    }
+
+    if (trx->isCluster() && cid != _collection->planId()) {
+      // only continue lookup if the id value is syntactically correct and
+      // refers to "our" collection, using cluster collection id
+      return;
+    }
+
+    // use _key value from _id
+    keys->add(VPackValuePair(key, outLength, VPackValueType::String));
+  } else {
+    keys->add(VPackValuePair(valNode->getStringValue(), valNode->getStringLength(), VPackValueType::String));
+  }
+}
+
+SimpleIndexElement PrimaryIndex::buildKeyElement(TRI_voc_rid_t revisionId, VPackSlice const& doc) const {
+  TRI_ASSERT(doc.isObject());
+  VPackSlice value(Transaction::extractKeyFromDocument(doc));
+  TRI_ASSERT(value.isString());
+  return SimpleIndexElement(revisionId, value, static_cast<uint32_t>(value.begin() - doc.begin()));
 }

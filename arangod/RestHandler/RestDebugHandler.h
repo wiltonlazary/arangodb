@@ -27,19 +27,14 @@
 #include "RestHandler/RestVocbaseBaseHandler.h"
 
 namespace arangodb {
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief version request handler
-////////////////////////////////////////////////////////////////////////////////
-
 class RestDebugHandler : public arangodb::RestVocbaseBaseHandler {
  public:
-  explicit RestDebugHandler(HttpRequest*);
+  RestDebugHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestDebugHandler"; }
   bool isDirect() const override;
-
-  status_t execute() override;
+  RestStatus execute() override;
 };
 }
 

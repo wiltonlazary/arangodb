@@ -37,7 +37,10 @@
 #include "Basics/StringUtils.h"
 #include "Basics/Utf8Helper.h"
 #include "Basics/build-date.h"
+#include "Basics/build-repository.h"
 #include "Basics/conversions.h"
+
+#include <rocksdb/version.h>
 
 using namespace arangodb::rest;
 
@@ -88,7 +91,6 @@ void Version::initialize() {
   }
 
   Values["architecture"] = (sizeof(void*) == 4 ? "32" : "64") + std::string("bit");
-
   Values["asm-crc32"] = (ENABLE_ASM_CRC32) ? "true" : "false";
   Values["boost-version"] = getBoostVersion();
   Values["build-date"] = getBuildDate();
@@ -104,6 +106,23 @@ void Version::initialize() {
   Values["v8-version"] = getV8Version();
   Values["vpack-version"] = getVPackVersion();
   Values["zlib-version"] = getZLibVersion();
+
+
+#if USE_ENTERPRISE
+  Values["enterprise-version"] = ARANGODB_ENTERPRISE_VERSION;
+#endif
+
+#if HAVE_ARANGODB_BUILD_REPOSITORY
+  Values["build-repository"] = getBuildRepository();
+#endif
+
+#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+  Values["assertions"] = "true";
+#else
+  Values["assertions"] = "false";
+#endif
+
+  Values["rocksdb-version"] = std::to_string(ROCKSDB_MAJOR) + "." + std::to_string(ROCKSDB_MINOR) + "." + std::to_string(ROCKSDB_PATCH);
 
 #ifdef __cplusplus
   Values["cplusplus"] = std::to_string(__cplusplus);
@@ -146,7 +165,7 @@ void Version::initialize() {
 #else
   Values["fd-client-event-handler"] = "select";
 #endif
-
+  
   for (auto& it : Values) {
     arangodb::basics::StringUtils::trimInPlace(it.second);
   }
@@ -276,11 +295,11 @@ std::string Version::getICUVersion() {
 
 std::string Version::getCompiler() {
 #if defined(__clang__)
-  return "clang";
+  return "clang [" + std::string(__VERSION__) + "]";
 #elif defined(__GNUC__) || defined(__GNUG__)
-  return "gcc";
+  return "gcc [" + std::string(__VERSION__) + "]";
 #elif defined(_MSC_VER)
-  return "msvc";
+  return "msvc [" + std::to_string(_MSC_VER) + "]";
 #endif
   return "unknown";
 }
@@ -316,6 +335,19 @@ std::string Version::getBuildDate() {
   return std::string(__DATE__).append(" ").append(__TIME__);
 #endif
 }
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief get build repository
+////////////////////////////////////////////////////////////////////////////////
+
+std::string Version::getBuildRepository() {
+#ifdef HAVE_ARANGODB_BUILD_REPOSITORY
+  return std::string(ARANGODB_BUILD_REPOSITORY);
+#else
+  return std::string("");
+#endif
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief return a server version string
@@ -376,6 +408,8 @@ std::string Version::getDetailed() {
 ////////////////////////////////////////////////////////////////////////////////
 
 void Version::getVPack(VPackBuilder& dst) {
+  TRI_ASSERT(!dst.isClosed());
+
   for (auto const& it : Values) {
     std::string const& value = it.second;
 

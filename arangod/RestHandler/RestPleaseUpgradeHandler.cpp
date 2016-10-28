@@ -23,31 +23,41 @@
 
 #include "RestPleaseUpgradeHandler.h"
 
+#include "Rest/HttpResponse.h"
+
 using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-RestPleaseUpgradeHandler::RestPleaseUpgradeHandler(HttpRequest* request)
-    : HttpHandler(request) {}
+RestPleaseUpgradeHandler::RestPleaseUpgradeHandler(GeneralRequest* request,
+                                                   GeneralResponse* response)
+    : RestHandler(request, response) {}
 
 bool RestPleaseUpgradeHandler::isDirect() const { return true; }
 
-HttpHandler::status_t RestPleaseUpgradeHandler::execute() {
-  createResponse(GeneralResponse::ResponseCode::OK);
-  _response->setContentType(HttpResponse::CONTENT_TYPE_TEXT);
+RestStatus RestPleaseUpgradeHandler::execute() {
+  // TODO needs to generalized
+  auto response = dynamic_cast<HttpResponse*>(_response.get());
 
-  auto& buffer = _response->body();
+  if (response == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_INTERNAL);
+  }
+
+  resetResponse(rest::ResponseCode::OK);
+  response->setContentType(rest::ContentType::TEXT);
+
+  auto& buffer = response->body();
   buffer.appendText("Database: ");
   buffer.appendText(_request->databaseName());
   buffer.appendText("\r\n\r\n");
   buffer.appendText("It appears that your database must be upgraded. ");
   buffer.appendText("Normally this can be done using\r\n\r\n");
-  buffer.appendText("  /etc/init.d/arangodb stop\r\n");
-  buffer.appendText("  /etc/init.d/arangodb upgrade\r\n");
-  buffer.appendText("  /etc/init.d/arangodb start\r\n\r\n");
+  buffer.appendText("  /etc/init.d/arangodb3 stop\r\n");
+  buffer.appendText("  /etc/init.d/arangodb3 upgrade\r\n");
+  buffer.appendText("  /etc/init.d/arangodb3 start\r\n\r\n");
   buffer.appendText("Please check the log file for details.\r\n");
 
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }
 
 void RestPleaseUpgradeHandler::handleError(const Exception&) {}

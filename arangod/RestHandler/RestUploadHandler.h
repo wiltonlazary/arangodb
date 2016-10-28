@@ -25,19 +25,20 @@
 #define ARANGOD_REST_HANDLER_REST_UPLOAD_HANDLER_H 1
 
 #include "Basics/Common.h"
-#include "HttpServer/HttpServer.h"
+#include "GeneralServer/GeneralServer.h"
 #include "RestHandler/RestVocbaseBaseHandler.h"
 
 namespace arangodb {
 
 class RestUploadHandler : public RestVocbaseBaseHandler {
  public:
-  explicit RestUploadHandler(HttpRequest*);
+  RestUploadHandler(GeneralRequest*, GeneralResponse*);
 
   ~RestUploadHandler();
 
  public:
-  HttpHandler::status_t execute();
+  RestStatus execute() override;
+  char const* name() const override final { return "RestUploadHandler"; }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief parses a multi-part request body and determines the boundaries of

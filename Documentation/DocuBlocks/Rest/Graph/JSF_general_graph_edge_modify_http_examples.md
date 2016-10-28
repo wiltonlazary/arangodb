@@ -24,7 +24,7 @@ The *_key* attribute of the vertex.
 Define if the request should wait until synced to disk.
 
 @RESTPARAM{keepNull, boolean, optional}
-Define if values set to null should be stored. By default the key is removed from the document.
+Define if values set to null should be stored. By default the key is not removed from the document.
 
 @RESTALLBODYPARAM{updateAttributes,object,required}
 The body has to be a JSON object containing the attributes to be updated.
@@ -44,6 +44,7 @@ Returned if no graph with this name, no edge collection or no edge with this id 
 
 @EXAMPLE_ARANGOSH_RUN{HttpGharialPatchEdge}
   var examples = require("@arangodb/graph-examples/example-graph.js");
+~ examples.dropGraph("social");
   examples.loadGraph("social");
   var url = "/_api/gharial/social/edge/relation/aliceAndBob";
   body = {

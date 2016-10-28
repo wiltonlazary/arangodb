@@ -12,21 +12,6 @@ include_directories(.)
 if (USE_MAINTAINER_MODE AND NOT MSVC)
   add_custom_command(
     OUTPUT
-      ${CMAKE_SOURCE_DIR}/lib/JsonParser/json-parser.cpp
-    WORKING_DIRECTORY
-      ${CMAKE_SOURCE_DIR}
-    COMMAND
-      ${CMAKE_SOURCE_DIR}/utils/flex-c++.sh
-      ${FLEX_EXECUTABLE}
-      lib/JsonParser/json-parser.cpp
-      lib/JsonParser/json-parser.ll
-    MAIN_DEPENDENCY
-      ${CMAKE_SOURCE_DIR}/lib/JsonParser/json-parser.ll
-    VERBATIM
-  )
-  
-  add_custom_command(
-    OUTPUT
       ${CMAKE_SOURCE_DIR}/lib/V8/v8-json.cpp
     WORKING_DIRECTORY
       ${CMAKE_SOURCE_DIR}
@@ -53,6 +38,7 @@ if (MSVC)
     Basics/threads-win32.cpp
     Basics/win-utils.cpp
     Zip/iowin32.cpp
+    ApplicationFeatures/WindowsServiceFeature.cpp
   )
 else ()
   set(LIB_ARANGO_POSIX
@@ -86,11 +72,12 @@ set(LIB_ARANGO_VPACK
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/Parser.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/Slice.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/ValueType.cpp
+  ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/Validator.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/Version.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/asm-functions.cpp
-  ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/fasthash.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/fpconv.cpp
   ${PROJECT_SOURCE_DIR}/3rdParty/velocypack/src/velocypack-common.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Basics/xxhash.cpp
 )
 
 if (ASM_OPTIMIZATIONS AND CMAKE_TARGET_ARCHITECTURE_CODE MATCHES "x86_64")
@@ -104,11 +91,17 @@ if (ASM_OPTIMIZATIONS AND CMAKE_TARGET_ARCHITECTURE_CODE MATCHES "x86_64")
       )
   endif()
   add_definitions("-DENABLE_ASM_CRC32=1")
-  message("-- Will compile in hand-optimized assembler code for CRC32.")
+  message(STATUS "-- Will compile in hand-optimized assembler code for CRC32.")
 else()
   add_definitions("-DENABLE_ASM_CRC32=0")
-  message("-- Will not compile in hand-optimized assembler code for CRC32.")
+  message(STATUS "-- Will not compile in hand-optimized assembler code for CRC32.")
 endif()
+
+if (USE_LOCAL_CLOCK_GETTIME)
+  SET(LIB_CLOCK_GETTIME
+    Utilities/clock_gettime.cpp
+  )
+endif ()
 
 add_library(${LIB_ARANGO} STATIC
   ${LIB_ARANGO_APPLE}
@@ -116,20 +109,20 @@ add_library(${LIB_ARANGO} STATIC
   ${LIB_ARANGO_POSIX}
   ${LIB_ARANGO_LINENOISE}
   ${LIB_ARANGO_VPACK}
+  ${LIB_CLOCK_GETTIME}
   ${LIB_ASM_SOURCES}
   ApplicationFeatures/ApplicationFeature.cpp
   ApplicationFeatures/ApplicationServer.cpp
-  ApplicationFeatures/ClientFeature.cpp
   ApplicationFeatures/ConfigFeature.cpp
-  ApplicationFeatures/ConsoleFeature.cpp
+  ApplicationFeatures/GreetingsFeature.cpp
   ApplicationFeatures/LanguageFeature.cpp
   ApplicationFeatures/NonceFeature.cpp
+  ApplicationFeatures/PageSizeFeature.cpp
   ApplicationFeatures/PrivilegeFeature.cpp
   ApplicationFeatures/ShutdownFeature.cpp
   ApplicationFeatures/TempFeature.cpp
   ApplicationFeatures/V8PlatformFeature.cpp
   ApplicationFeatures/VersionFeature.cpp
-  ApplicationFeatures/WorkMonitorFeature.cpp
   Basics/ArangoGlobalContext.cpp
   Basics/AttributeNameParser.cpp
   Basics/Barrier.cpp
@@ -138,7 +131,7 @@ add_library(${LIB_ARANGO} STATIC
   Basics/DataProtector.cpp
   Basics/Exceptions.cpp
   Basics/FileUtils.cpp
-  Basics/JsonHelper.cpp
+  Basics/HybridLogicalClock.cpp
   Basics/Mutex.cpp
   Basics/MutexLocker.cpp
   Basics/Nonce.cpp
@@ -146,6 +139,7 @@ add_library(${LIB_ARANGO} STATIC
   Basics/ReadWriteLockCPP11.cpp
   Basics/StaticStrings.cpp
   Basics/StringBuffer.cpp
+  Basics/StringHeap.cpp
   Basics/StringUtils.cpp
   Basics/Thread.cpp
   Basics/ThreadPool.cpp
@@ -163,7 +157,6 @@ add_library(${LIB_ARANGO} STATIC
   Basics/files.cpp
   Basics/fpconv.cpp
   Basics/hashes.cpp
-  Basics/json-utilities.cpp
   Basics/json.cpp
   Basics/levenshtein.cpp
   Basics/memory.cpp
@@ -185,7 +178,6 @@ add_library(${LIB_ARANGO} STATIC
   Endpoint/EndpointIpV4.cpp
   Endpoint/EndpointIpV6.cpp
   Endpoint/EndpointList.cpp
-  JsonParser/json-parser.cpp
   Logger/LogAppender.cpp
   Logger/LogAppenderFile.cpp
   Logger/LogAppenderSyslog.cpp
@@ -198,16 +190,20 @@ add_library(${LIB_ARANGO} STATIC
   Logger/LoggerBufferFeature.cpp
   Logger/LoggerFeature.cpp
   Logger/LoggerStream.cpp
+  ProgramOptions/Translator.cpp
   Random/RandomFeature.cpp
   Random/RandomGenerator.cpp
   Random/UniformCharacter.cpp
   Rest/GeneralRequest.cpp
   Rest/GeneralResponse.cpp
+  Rest/VppRequest.cpp
+  Rest/VppResponse.cpp
   Rest/HttpRequest.cpp
   Rest/HttpResponse.cpp
   Rest/InitializeRest.cpp
   Rest/Version.cpp
   SimpleHttpClient/ClientConnection.cpp
+  SimpleHttpClient/Communicator.cpp
   SimpleHttpClient/ConnectionManager.cpp
   SimpleHttpClient/GeneralClientConnection.cpp
   SimpleHttpClient/SimpleHttpClient.cpp
@@ -225,6 +221,11 @@ add_library(${LIB_ARANGO} STATIC
   Zip/zip.cpp
 )
 
+target_link_libraries(${LIB_ARANGO}
+    boost_system
+    boost_boost
+)
+
 ################################################################################
 ## LIB_ARANGO_V8
 ################################################################################
@@ -240,4 +241,9 @@ add_library(${LIB_ARANGO_V8} STATIC
   V8/v8-utils.cpp
   V8/v8-vpack.cpp
   V8/v8-environment.cpp
+)
+
+target_link_libraries(${LIB_ARANGO_V8}
+    boost_system
+    boost_boost
 )

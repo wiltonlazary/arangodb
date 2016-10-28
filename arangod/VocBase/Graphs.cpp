@@ -24,13 +24,14 @@
 #include "Graphs.h"
 
 #include "Aql/Graphs.h"
+#include "Basics/StaticStrings.h"
 #include "Cluster/ClusterMethods.h"
 #include "Utils/SingleCollectionTransaction.h"
 #include "Utils/StandaloneTransactionContext.h"
-#include "VocBase/Graphs.h"
 
 using namespace arangodb;
 
+#ifndef USE_ENTERPRISE
 std::string const GRAPHS = "_graphs";
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -70,6 +71,11 @@ arangodb::aql::Graph* arangodb::lookupGraphByName(TRI_vocbase_t* vocbase,
     THROW_ARANGO_EXCEPTION_FORMAT(res, "while looking up graph '%s'",
                                   name.c_str());
   }
+  VPackSlice info = result.slice();
+  if (info.isExternal()) {
+    info = info.resolveExternal();
+  }
 
-  return new arangodb::aql::Graph(result.slice());
+  return new arangodb::aql::Graph(info);
 }
+#endif

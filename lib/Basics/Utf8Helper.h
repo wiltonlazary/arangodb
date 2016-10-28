@@ -52,9 +52,9 @@ class Utf8Helper {
   ///     This parameter can instead be an ICU style C locale (e.g. "en_US")
   //////////////////////////////////////////////////////////////////////////////
 
-  explicit Utf8Helper(std::string const& lang);
+  Utf8Helper(std::string const& lang, char const* binaryPath);
 
-  Utf8Helper();
+  explicit Utf8Helper(char const* binaryPath);
 
   ~Utf8Helper();
 
@@ -91,7 +91,7 @@ class Utf8Helper {
   ///     This parameter can instead be an ICU style C locale (e.g. "en_US")
   //////////////////////////////////////////////////////////////////////////////
 
-  bool setCollatorLanguage(std::string const& lang);
+  bool setCollatorLanguage(std::string const& lang, char const* binaryPath);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief get collator language
@@ -149,13 +149,7 @@ class Utf8Helper {
   /// @brief whether or not value matches a regex
   //////////////////////////////////////////////////////////////////////////////
 
-  bool matches(RegexMatcher*, std::string const&, bool&);
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief whether or not value matches a regex
-  //////////////////////////////////////////////////////////////////////////////
-
-  bool matches(RegexMatcher*, char const*, size_t, bool&);
+  bool matches(RegexMatcher*, char const*, size_t, bool partial, bool& error);
 
  private:
   Collator* _coll;
@@ -192,21 +186,29 @@ char* TRI_normalize_utf16_to_NFC(TRI_memory_zone_t* zone, uint16_t const* utf16,
                                  size_t inLength, size_t* outLength);
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief compare two utf8 strings (implemented in Basic/Utf8Helper.cpp)
+/// @brief compare two utf8 strings
 ////////////////////////////////////////////////////////////////////////////////
 
-int TRI_compare_utf8(char const* left, char const* right);
+static inline int TRI_compare_utf8(char const* left, char const* right) {
+  TRI_ASSERT(left != nullptr);
+  TRI_ASSERT(right != nullptr);
+  return arangodb::basics::Utf8Helper::DefaultUtf8Helper.compareUtf8(left, right);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief compare two utf8 strings (implemented in Basic/Utf8Helper.cpp)
+/// @brief compare two utf8 strings
 ////////////////////////////////////////////////////////////////////////////////
 
-int TRI_compare_utf8(char const* left, size_t leftLength, char const* right,
-                     size_t rightLength);
+static inline int TRI_compare_utf8(char const* left, size_t leftLength, 
+                                   char const* right, size_t rightLength) {
+  TRI_ASSERT(left != nullptr);
+  TRI_ASSERT(right != nullptr);
+  return arangodb::basics::Utf8Helper::DefaultUtf8Helper.compareUtf8(left, leftLength, 
+                                                                     right, rightLength);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief Lowercase the characters in a UTF-8 string (implemented in
-/// Basic/Utf8Helper.cpp)
+/// @brief Lowercase the characters in a UTF-8 string
 ////////////////////////////////////////////////////////////////////////////////
 
 char* TRI_tolower_utf8(TRI_memory_zone_t* zone, char const* src,

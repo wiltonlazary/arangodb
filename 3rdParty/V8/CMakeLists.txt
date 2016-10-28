@@ -36,6 +36,9 @@ endif()
 if ("${CMAKE_TARGET_ARCHITECTURES}" STREQUAL "armv7")
   set(V8_PROC_ARCH "arm")
   list(APPEND V8_GYP_ARGS -Darm_version=7 -Darm_fpu=default -Darm_float_abi=default)
+elseif("${CMAKE_TARGET_ARCHITECTURES}" STREQUAL "aarch64")
+  set(V8_PROC_ARCH "arm64")
+  list(APPEND V8_GYP_ARGS -Darm_fpu=default -Darm_float_abi=default)
 else ()
   if ("${BITS}" STREQUAL "64")
     set(V8_PROC_ARCH "x64")
@@ -56,6 +59,12 @@ list(APPEND V8_GYP_ARGS
   -Dbyteorder=${ENDIANESS}
   -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}
 )
+
+if (CROSS_COMPILING)
+  list(APPEND V8_GYP_ARGS
+  -Dhost_arch=${V8_PROC_ARCH}
+  -DGYP_CROSSCOMPILE=1)
+endif()
 
 ################################################################################
 ## ICU EXPORTS
@@ -95,7 +104,86 @@ set(V8_INCLUDE_DIR
 )
 
 
-if (${CMAKE_GENERATOR} MATCHES "Ninja")
+
+################################################################################
+## WINDOWS & NINJA
+################################################################################
+if (WIN32 AND ${CMAKE_GENERATOR} MATCHES "Ninja")
+  message(STATUS "using generator NINJA on Windows! Still WIP be patient!")
+  set(GYP_MAIN ${V8_DIR}/build/gyp_v8)
+
+  # try to find 2013 in 'Visual Studio 12 2013 Win64'
+  #if (${CMAKE_GENERATOR} MATCHES "2013") 
+  #  list(APPEND V8_GYP_ARGS "-G msvs_version=2013")
+  #endif()
+
+  # try to find 2015 in 'Visual Studio 14 2015 Win64'
+  #if (${CMAKE_GENERATOR} MATCHES "2015") 
+    #    list(APPEND V8_GYP_ARGS "-G msvs_version=2015")
+  list(APPEND V8_GYP_ARGS --format ninja)
+  #endif()
+
+  if ("${BITS}" STREQUAL "64")
+    set(MS_TARGET_PLATFORM x64)
+  else ()
+    set(MS_TARGET_PLATFORM Win32)
+  endif ()
+
+  list(APPEND V8_GYP_ARGS -Dtarget_arch=${V8_PROC_ARCH} -Dhost_arch=${V8_PROC_ARCH})
+  list(APPEND V8_GYP_ARGS ${V8_DIR}/build/all.gyp)
+
+  if ("${V8_TARGET_ARCHS}" STREQUAL "")
+    set(V8_TARGET_ARCHS "Debug;Release" CACHE string "V8 targets to build")
+  endif()
+  list(APPEND V8_GYP_ARGS
+    -Dcomponent=static_library
+    -Dlibrary=static_library
+    #--depth=2
+    #-Dv8_use_external_startup_data=1
+    #-Dicu_gyp_path=../third_party/icu/icu.gyp
+    #-Dv8_optimized_debug=0
+    #-Dos_posix=0
+    #-Dclang=0
+    #-Dwant_separate_host_toolset=0
+  )
+
+  add_custom_target(v8_build_ninja)
+
+  set(NINJA_BUILD_DIR "${V8_TARGET_DIR}/${NINJA_TARGET}")
+
+  ExternalProject_Add(v8_build_ninja
+    SOURCE_DIR
+      "${V8_DIR}"
+    CONFIGURE_COMMAND
+      ${PYTHON_EXECUTABLE} ${GYP_MAIN} ${V8_GYP_ARGS}
+    BINARY_DIR
+      ${NINJA_BUILD_DIR}
+    BUILD_COMMAND
+      ${CMAKE_BUILD_TOOL} v8
+    STEP_TARGETS
+      v8_base v8_libbase v8_libplatform v8_nosnapshot icui18n icuuc icudata
+    INSTALL_COMMAND
+      "")
+
+  list(APPEND LINK_DIRECTORIES "${NINJA_BUILD_DIR}/obj/tools/gyp")
+
+  set(V8_LIBS
+    "v8_base;v8_libbase;v8_libplatform;v8_nosnapshot"
+    CACHE INTERNAL
+    "${PROJECT_NAME}: Libraries"
+  )
+
+  list(APPEND LINK_DIRECTORIES "${NINJA_BUILD_DIR}/obj/third_party/icu")
+
+  set(ICU_LIBS
+    "icui18n;icuuc;icudata"
+    CACHE INTERNAL
+    "ICU: Libraries"
+  )
+
+  set(LINK_DIRECTORIES "${LINK_DIRECTORIES}" PARENT_SCOPE)
+
+elseif (${CMAKE_GENERATOR} MATCHES "Ninja")
   message(STATUS "using generator NINJA!")
 
   option(USE_DEBUG_V8 "compile V8 in DEBUG mode" OFF)
@@ -178,10 +266,11 @@ if (${CMAKE_GENERATOR} MATCHES "Ninja")
   set(LINK_DIRECTORIES "${LINK_DIRECTORIES}" PARENT_SCOPE)
 
 ################################################################################
-## WINDOWS
+## WINDOWS with msbuild
 ################################################################################
 
 elseif (WIN32)
+  MESSAGE("Building V8 for Windows with MSBUILD")
   set(GYP_MAIN ${V8_DIR}/build/gyp_v8)
 
   # try to find 2013 in 'Visual Studio 12 2013 Win64'
@@ -203,8 +292,9 @@ elseif (WIN32)
   list(APPEND V8_GYP_ARGS -Dtarget_arch=${V8_PROC_ARCH} -Dhost_arch=${V8_PROC_ARCH})
   list(APPEND V8_GYP_ARGS ${V8_DIR}/build/all.gyp)
 
-  set(V8_TARGET_ARCHS "Debug;Release" CACHE string "V8 targets to build")
-
+  if ("${V8_TARGET_ARCHS}" STREQUAL "")
+    set(V8_TARGET_ARCHS "Debug;Release" CACHE string "V8 targets to build")
+  endif()
   list(APPEND V8_GYP_ARGS
     -Dcomponent=static_library
     -Dlibrary=static_library
@@ -364,10 +454,10 @@ else ()
   set(V8_CXXFLAGS "$ENV{V8_CXXFLAGS}")
   set(V8_LDFLAGS  "$ENV{V8_LDFLAGS}")
 
-  if (CMAKE_COMPILER_IS_GNUCC)
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(V8_CFLAGS   "${V8_CFLAGS} -fno-delete-null-pointer-checks")
     set(V8_CXXFLAGS "${V8_CXXFLAGS} -fno-delete-null-pointer-checks")
-  endif ()
+  endif()
 
   if (USE_DEBUG_V8)
     set(V8_TARGET_ARCH "${V8_PROC_ARCH}.debug")
@@ -398,7 +488,6 @@ else ()
 
   list(APPEND V8_GYP_ARGS
     -Ibuild/standalone.gypi
-    -Dv8_use_snapshot=true
     -Dmac_deployment_target=${CMAKE_OSX_DEPLOYMENT_TARGET}
     --depth=.
     -Dstandalone_static_library=1
@@ -408,15 +497,28 @@ else ()
     -Dwerror=
   )
 
+  if (CROSS_COMPILING)
+    list(APPEND V8_GYP_ARGS -Dv8_use_snapshot=false )
+#  dependenis 'v8_libbase' and 'v8_libplatform' need be added in v8.gyp  (under 'v8_use_snapshot!="true"')
+  else ()
+    list(APPEND V8_GYP_ARGS -Dv8_use_snapshot=true )
+  endif()
+
   if (APPLE AND CMAKE_COMPILER_IS_CLANG)
     set(V8_CXXFLAGS "${V8_CXXFLAGS} -stdlib=libc++")
     set(V8_LDFLAGS  "${V8_LDFLAGS} -stdlib=libc++")
   endif ()
 
+  if (USE_DEBUG_V8)
+    set(V8_BUILDTYPE Debug)
+  else ()
+    set(V8_BUILDTYPE Release)
+  endif ()
+
   set(V8_COMPILE_ARGS
     -C ${V8_TARGET_DIR}
     -f Makefile.${V8_TARGET_ARCH}
-    BUILDTYPE=Release
+    BUILDTYPE=${V8_BUILDTYPE}
     builddir=${V8_TARGET_DIR}/${V8_TARGET_ARCH}
     CC=${CMAKE_C_COMPILER}
     CXX=${CMAKE_CXX_COMPILER}
@@ -463,8 +565,8 @@ else ()
 endif()
 
 if (WIN32)
-  set(ICU_DT "${ICU_BASEDIR}/data/in/icudtl.dat")
-  set(ICU_DT_DEST "icudt${ICU_COMPACT_VERSION}l.dat")
+  set(ICU_DT "${ICU_BASEDIR}/data/in/icudtl.dat" PARENT_SCOPE)
+  set(ICU_DT_DEST "icudt${ICU_COMPACT_VERSION}l.dat" PARENT_SCOPE)
   # other platforms link the file into the binary
   install(FILES ${ICU_DT}
     DESTINATION "share/arangodb/"
@@ -473,6 +575,8 @@ if (WIN32)
     DESTINATION "bin/share/arangodb/"
     RENAME ${ICU_DT_DEST})
 else()
+  # other platforms don't install ICU:
+  set(ICU_DT_DEST "" PARENT_SCOPE)
   add_custom_target(nonthinV8
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../../Installation/archive-de-thinner.sh ${V8_REL_TARGET_PATH}
     COMMENT de-thins V8 .a files)

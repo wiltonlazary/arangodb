@@ -24,11 +24,16 @@
 #include "Aql/Ast.h"
 #include "Aql/Arithmetic.h"
 #include "Aql/Executor.h"
+#include "Aql/Function.h"
 #include "Aql/Graphs.h"
 #include "Aql/Query.h"
 #include "Basics/Exceptions.h"
+#include "Basics/StringUtils.h"
 #include "Basics/tri-strings.h"
-#include "VocBase/collection.h"
+#include "Cluster/ClusterInfo.h"
+#include "Utils/CollectionNameResolver.h"
+#include "Utils/Transaction.h"
+#include "VocBase/LogicalCollection.h"
 
 #include <velocypack/Iterator.h>
 #include <velocypack/Slice.h>
@@ -551,7 +556,7 @@ AstNode* Ast::createNodeCollection(char const* name,
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
 
-  if (*name == '\0' || !TRI_IsAllowedNameCollection(true, name)) {
+  if (*name == '\0' || !LogicalCollection::IsAllowedName(true, name)) {
     _query->registerErrorCustom(TRI_ERROR_ARANGO_ILLEGAL_NAME, name);
     return nullptr;
   }
@@ -560,6 +565,21 @@ AstNode* Ast::createNodeCollection(char const* name,
   node->setStringValue(name, strlen(name));
 
   _query->collections()->add(name, accessType);
+
+  if (ServerState::instance()->isCoordinator()) {
+    auto ci = ClusterInfo::instance();
+    // We want to tolerate that a collection name is given here
+    // which does not exist, if only for some unit tests:
+    try {
+      auto coll = ci->getCollection(_query->vocbase()->name(), name);
+      auto names = coll->realNames();
+      for (auto const& n : names) {
+        _query->collections()->add(n, accessType);
+      }
+    }
+    catch (...) {
+    }
+  }
 
   return node;
 }
@@ -871,7 +891,8 @@ AstNode* Ast::createNodeArray(size_t size) {
 }
 
 /// @brief create an AST unique array node, AND-merged from two other arrays
-AstNode* Ast::createNodeIntersectedArray(AstNode const* lhs,
+AstNode* Ast::createNodeIntersectedArray(arangodb::Transaction* trx,
+                                         AstNode const* lhs,
                                          AstNode const* rhs) {
   TRI_ASSERT(lhs->isArray() && lhs->isConstant());
   TRI_ASSERT(rhs->isArray() && rhs->isConstant());
@@ -887,7 +908,7 @@ AstNode* Ast::createNodeIntersectedArray(AstNode const* lhs,
 
   for (size_t i = 0; i < nl; ++i) {
     auto member = lhs->getMemberUnchecked(i);
-    VPackSlice slice = member->computeValue();
+    VPackSlice slice = member->computeValue(trx);
 
     cache.emplace(slice, member);
   }
@@ -909,7 +930,8 @@ AstNode* Ast::createNodeIntersectedArray(AstNode const* lhs,
 }
 
 /// @brief create an AST unique array node, OR-merged from two other arrays
-AstNode* Ast::createNodeUnionizedArray(AstNode const* lhs, AstNode const* rhs) {
+AstNode* Ast::createNodeUnionizedArray(arangodb::Transaction* trx,
+                                       AstNode const* lhs, AstNode const* rhs) {
   TRI_ASSERT(lhs->isArray() && lhs->isConstant());
   TRI_ASSERT(rhs->isArray() && rhs->isConstant());
 
@@ -929,7 +951,7 @@ AstNode* Ast::createNodeUnionizedArray(AstNode const* lhs, AstNode const* rhs) {
     } else {
       member = rhs->getMemberUnchecked(i - nl);
     }
-    VPackSlice slice = member->computeValue();
+    VPackSlice slice = member->computeValue(trx);
 
     cache.emplace(slice, member);
   }
@@ -983,7 +1005,22 @@ AstNode* Ast::createNodeWithCollections (AstNode const* collections) {
     auto c = collections->getMember(i);
 
     if (c->isStringValue()) {
-      _query->collections()->add(c->getString(), TRI_TRANSACTION_READ);
+      std::string name = c->getString();
+      _query->collections()->add(name, TRI_TRANSACTION_READ);
+      if (ServerState::instance()->isCoordinator()) {
+        auto ci = ClusterInfo::instance();
+        // We want to tolerate that a collection name is given here
+        // which does not exist, if only for some unit tests:
+        try {
+          auto coll = ci->getCollection(_query->vocbase()->name(), name);
+          auto names = coll->realNames();
+          for (auto const& n : names) {
+            _query->collections()->add(n, TRI_TRANSACTION_READ);
+          }
+        }
+        catch (...) {
+        }
+      }
     }// else bindParameter use default for collection bindVar
     // We do not need to propagate these members
     node->addMember(c);
@@ -1001,16 +1038,34 @@ AstNode* Ast::createNodeCollectionList(AstNode const* edgeCollections) {
 
   TRI_ASSERT(edgeCollections->type == NODE_TYPE_ARRAY);
 
+  auto ci = ClusterInfo::instance();
+  auto ss = ServerState::instance();
+
+  auto doTheAdd = [&](std::string name) {
+    _query->collections()->add(name, TRI_TRANSACTION_READ);
+    if (ss->isCoordinator()) {
+      try {
+        auto c = ci->getCollection(_query->vocbase()->name(), name);
+        auto names = c->realNames();
+        for (auto const& n : names) {
+          _query->collections()->add(n, TRI_TRANSACTION_READ);
+        }
+      }
+      catch (...) {
+      }
+    }
+  };
+
   for (size_t i = 0; i < edgeCollections->numMembers(); ++i) {
     // TODO Direction Parsing!
     auto eC = edgeCollections->getMember(i);
     if (eC->isStringValue()) {
-      _query->collections()->add(eC->getString(), TRI_TRANSACTION_READ);
+      doTheAdd(eC->getString());
     } else if (eC->type == NODE_TYPE_DIRECTION) {
       TRI_ASSERT(eC->numMembers() == 2);
       auto eCSub = eC->getMember(1);
       if (eCSub->isStringValue()) {
-        _query->collections()->add(eCSub->getString(), TRI_TRANSACTION_READ);
+        doTheAdd(eCSub->getString());
       }
     }// else bindParameter use default for collection bindVar
     // We do not need to propagate these members
@@ -1062,22 +1117,29 @@ AstNode* Ast::createNodeCollectionDirection(uint64_t direction, AstNode const* c
 AstNode* Ast::createNodeTraversal(char const* vertexVarName,
                                   size_t vertexVarLength,
                                   AstNode const* direction,
-                                  AstNode const* start, AstNode const* graph) {
+                                  AstNode const* start, AstNode const* graph,
+                                  AstNode const* options) {
   if (vertexVarName == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
   AstNode* node = createNode(NODE_TYPE_TRAVERSAL);
-  node->reserve(3);
+  node->reserve(5);
+
+  if (options == nullptr) {
+    // no options given. now use default options
+    options = &NopNode;
+  }
 
   node->addMember(direction);
   node->addMember(start);
   node->addMember(graph);
+  node->addMember(options);
 
   AstNode* vertexVar =
       createNodeVariable(vertexVarName, vertexVarLength, false);
   node->addMember(vertexVar);
 
-  TRI_ASSERT(node->numMembers() == 4);
+  TRI_ASSERT(node->numMembers() == 5);
 
   _containsTraversal = true;
 
@@ -1089,17 +1151,18 @@ AstNode* Ast::createNodeTraversal(char const* vertexVarName,
                                   size_t vertexVarLength,
                                   char const* edgeVarName, size_t edgeVarLength,
                                   AstNode const* direction,
-                                  AstNode const* start, AstNode const* graph) {
+                                  AstNode const* start, AstNode const* graph,
+                                  AstNode const* options) {
   if (edgeVarName == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
   AstNode* node = createNodeTraversal(vertexVarName, vertexVarLength, direction,
-                                      start, graph);
+                                      start, graph, options);
 
   AstNode* edgeVar = createNodeVariable(edgeVarName, edgeVarLength, false);
   node->addMember(edgeVar);
 
-  TRI_ASSERT(node->numMembers() == 5);
+  TRI_ASSERT(node->numMembers() == 6);
 
   _containsTraversal = true;
 
@@ -1112,20 +1175,75 @@ AstNode* Ast::createNodeTraversal(char const* vertexVarName,
                                   char const* edgeVarName, size_t edgeVarLength,
                                   char const* pathVarName, size_t pathVarLength,
                                   AstNode const* direction,
-                                  AstNode const* start, AstNode const* graph) {
+                                  AstNode const* start, AstNode const* graph,
+                                  AstNode const* options) {
   if (pathVarName == nullptr) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
   AstNode* node =
       createNodeTraversal(vertexVarName, vertexVarLength, edgeVarName,
-                          edgeVarLength, direction, start, graph);
+                          edgeVarLength, direction, start, graph, options);
 
   AstNode* pathVar = createNodeVariable(pathVarName, pathVarLength, false);
   node->addMember(pathVar);
 
-  TRI_ASSERT(node->numMembers() == 6);
+  TRI_ASSERT(node->numMembers() == 7);
 
   _containsTraversal = true;
+
+  return node;
+}
+
+/// @brief create an AST shortest path node with only vertex variable
+AstNode* Ast::createNodeShortestPath(char const* vertexVarName,
+                                     size_t vertexVarLength, uint64_t direction,
+                                     AstNode const* start,
+                                     AstNode const* target,
+                                     AstNode const* graph,
+                                     AstNode const* options) {
+  if (vertexVarName == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+  AstNode* node = createNode(NODE_TYPE_SHORTEST_PATH);
+
+  node->reserve(6);
+
+  if (options == nullptr) {
+    // no options given. now use default options
+    options = &NopNode;
+  }
+  AstNode* dir = createNodeValueInt(direction);
+  node->addMember(dir);
+  node->addMember(start);
+  node->addMember(target);
+  node->addMember(graph);
+  node->addMember(options);
+
+  AstNode* vertexVar =
+      createNodeVariable(vertexVarName, vertexVarLength, false);
+  node->addMember(vertexVar);
+
+  TRI_ASSERT(node->numMembers() == 6);
+
+  return node;
+}
+
+/// @brief create an AST shortest path node with vertex and edge variable
+AstNode* Ast::createNodeShortestPath(
+    char const* vertexVarName, size_t vertexVarLength, char const* edgeVarName,
+    size_t edgeVarLength, uint64_t direction, AstNode const* start,
+    AstNode const* target, AstNode const* graph, AstNode const* options) {
+
+  if (edgeVarName == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+  }
+
+  AstNode* node = createNodeShortestPath(vertexVarName, vertexVarLength, direction, start, target, graph, options);
+
+  AstNode* edgeVar = createNodeVariable(edgeVarName, edgeVarLength, false);
+  node->addMember(edgeVar);
+
+  TRI_ASSERT(node->numMembers() == 7);
 
   return node;
 }
@@ -1263,11 +1381,26 @@ void Ast::injectBindParameters(BindParameters& parameters) {
         }
 
         // turn node into a collection node
+        char const* name = nullptr;
         VPackValueLength length;
         char const* stringValue = value.getString(length);
-        // TODO: can we get away without registering the string value here?
-        char const* name =
-            _query->registerString(stringValue, static_cast<size_t>(length));
+
+        if (length > 0 && stringValue[0] >= '0' && stringValue[0] <= '9') {
+          // emergency translation of collection id to name
+          arangodb::CollectionNameResolver resolver(_query->vocbase());
+          std::string collectionName = resolver.getCollectionNameCluster(basics::StringUtils::uint64(stringValue, length));
+          if (collectionName.empty()) {
+            THROW_ARANGO_EXCEPTION_PARAMS(TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND,
+                                          value.copyString().c_str());
+          }
+
+          name = _query->registerString(collectionName.c_str(), collectionName.size());
+        } else {
+          // TODO: can we get away without registering the string value here?
+          name = _query->registerString(stringValue, static_cast<size_t>(length));
+        }
+
+        TRI_ASSERT(name != nullptr);
 
         node = createNodeCollection(name, isWriteCollection
                                               ? TRI_TRANSACTION_WRITE
@@ -1351,6 +1484,7 @@ void Ast::injectBindParameters(BindParameters& parameters) {
         TRI_ASSERT(graphNode->isStringValue());
         std::string graphName = graphNode->getString();
         auto graph = _query->lookupGraphByName(graphName);
+        TRI_ASSERT(graph != nullptr);
         auto vColls = graph->vertexCollections();
         for (const auto& n : vColls) {
           _query->collections()->add(n, TRI_TRANSACTION_READ);
@@ -1358,6 +1492,48 @@ void Ast::injectBindParameters(BindParameters& parameters) {
         auto eColls = graph->edgeCollections();
         for (const auto& n : eColls) {
           _query->collections()->add(n, TRI_TRANSACTION_READ);
+        }
+        if (ServerState::instance()->isCoordinator()) {
+          auto ci = ClusterInfo::instance();
+          for (const auto& n : eColls) {
+            try {
+              auto c = ci->getCollection(_query->vocbase()->name(), n);
+              auto names = c->realNames();
+              for (auto const& name : names) {
+                _query->collections()->add(name, TRI_TRANSACTION_READ);
+              }
+            } catch (...) {
+            }
+          }
+        }
+      }
+    } else if (node->type == NODE_TYPE_SHORTEST_PATH) {
+      auto graphNode = node->getMember(3);
+      if (graphNode->type == NODE_TYPE_VALUE) {
+        TRI_ASSERT(graphNode->isStringValue());
+        std::string graphName = graphNode->getString();
+        auto graph = _query->lookupGraphByName(graphName);
+        TRI_ASSERT(graph != nullptr);
+        auto vColls = graph->vertexCollections();
+        for (const auto& n : vColls) {
+          _query->collections()->add(n, TRI_TRANSACTION_READ);
+        }
+        auto eColls = graph->edgeCollections();
+        for (const auto& n : eColls) {
+          _query->collections()->add(n, TRI_TRANSACTION_READ);
+        }
+        if (ServerState::instance()->isCoordinator()) {
+          auto ci = ClusterInfo::instance();
+          for (const auto& n : eColls) {
+            try {
+              auto c = ci->getCollection(_query->vocbase()->name(), n);
+              auto names = c->realNames();
+              for (auto const& name : names) {
+                _query->collections()->add(name, TRI_TRANSACTION_READ);
+              }
+            } catch (...) {
+            }
+          }
         }
       }
     }
@@ -1370,7 +1546,21 @@ void Ast::injectBindParameters(BindParameters& parameters) {
   // add all collections used in data-modification statements
   for (auto& it : _writeCollections) {
     if (it->type == NODE_TYPE_COLLECTION) {
-      _query->collections()->add(it->getString(), TRI_TRANSACTION_WRITE);
+      std::string name = it->getString();
+      _query->collections()->add(name, TRI_TRANSACTION_WRITE);
+      if (ServerState::instance()->isCoordinator()) {
+        auto ci = ClusterInfo::instance();
+        // We want to tolerate that a collection name is given here
+        // which does not exist, if only for some unit tests:
+        try {
+          auto coll = ci->getCollection(_query->vocbase()->name(), name);
+          auto names = coll->realNames();
+          for (auto const& n : names) {
+            _query->collections()->add(n, TRI_TRANSACTION_WRITE);
+          }
+        } catch (...) {
+        }
+      }
     }
   }
 
@@ -2035,7 +2225,7 @@ AstNode* Ast::createArithmeticResultNode(double value) {
     // if the architecture does not use IEEE754 values then this shouldn't do
     // any harm either
     _query->registerWarning(TRI_ERROR_QUERY_NUMBER_OUT_OF_RANGE);
-    return const_cast<AstNode*>(&ZeroNode);
+    return const_cast<AstNode*>(&NullNode);
   }
 
   return createNodeValueDouble(value);
@@ -2389,7 +2579,7 @@ AstNode* Ast::optimizeBinaryOperatorArithmetic(AstNode* node) {
 
         if (r == 0) {
           _query->registerWarning(TRI_ERROR_QUERY_DIVISION_BY_ZERO);
-          return const_cast<AstNode*>(&ZeroNode);
+          return const_cast<AstNode*>(&NullNode);
         }
 
         // check if the result would overflow
@@ -2404,7 +2594,7 @@ AstNode* Ast::optimizeBinaryOperatorArithmetic(AstNode* node) {
 
       if (right->getDoubleValue() == 0.0) {
         _query->registerWarning(TRI_ERROR_QUERY_DIVISION_BY_ZERO);
-        return const_cast<AstNode*>(&ZeroNode);
+        return const_cast<AstNode*>(&NullNode);
       }
 
       return createArithmeticResultNode(left->getDoubleValue() /
@@ -2421,7 +2611,7 @@ AstNode* Ast::optimizeBinaryOperatorArithmetic(AstNode* node) {
 
         if (r == 0) {
           _query->registerWarning(TRI_ERROR_QUERY_DIVISION_BY_ZERO);
-          return const_cast<AstNode*>(&ZeroNode);
+          return const_cast<AstNode*>(&NullNode);
         }
 
         // check if the result would overflow
@@ -2435,7 +2625,7 @@ AstNode* Ast::optimizeBinaryOperatorArithmetic(AstNode* node) {
 
       if (right->getDoubleValue() == 0.0) {
         _query->registerWarning(TRI_ERROR_QUERY_DIVISION_BY_ZERO);
-        return const_cast<AstNode*>(&ZeroNode);
+        return const_cast<AstNode*>(&NullNode);
       }
 
       return createArithmeticResultNode(
@@ -2519,7 +2709,7 @@ AstNode* Ast::optimizeFunctionCall(AstNode* node) {
   auto func = static_cast<Function*>(node->getData());
   TRI_ASSERT(func != nullptr);
 
-  if (func->externalName == "LENGTH") {
+  if (func->externalName == "LENGTH" || func->externalName == "COUNT") {
     // shortcut LENGTH(collection) to COLLECTION_COUNT(collection)
     auto args = node->getMember(0);
     if (args->numMembers() == 1) {
@@ -2887,22 +3077,17 @@ void Ast::traverseReadOnly(AstNode const* node,
 std::pair<std::string, bool> Ast::normalizeFunctionName(char const* name) {
   TRI_ASSERT(name != nullptr);
 
-  char* upperName = TRI_UpperAsciiString(TRI_UNKNOWN_MEM_ZONE, name);
-
-  if (upperName == nullptr) {
-    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
-  }
-
-  std::string functionName(upperName);
-  TRI_FreeString(TRI_UNKNOWN_MEM_ZONE, upperName);
+  std::string functionName(name);
+  // convert name to upper case
+  std::transform(functionName.begin(), functionName.end(), functionName.begin(), ::toupper);
 
   if (functionName.find(':') == std::string::npos) {
     // prepend default namespace for internal functions
-    return std::make_pair(functionName, true);
+    return std::make_pair(std::move(functionName), true);
   }
 
   // user-defined function
-  return std::make_pair(functionName, false);
+  return std::make_pair(std::move(functionName), false);
 }
 
 /// @brief create a node of the specified type

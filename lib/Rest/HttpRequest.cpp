@@ -27,12 +27,12 @@
 #include <velocypack/Builder.h>
 #include <velocypack/Options.h>
 #include <velocypack/Parser.h>
+#include <velocypack/Validator.h>
 #include <velocypack/velocypack-aliases.h>
 
-#include "Basics/conversions.h"
 #include "Basics/StaticStrings.h"
-#include "Basics/StringBuffer.h"
 #include "Basics/StringUtils.h"
+#include "Basics/conversions.h"
 #include "Basics/tri-strings.h"
 #include "Logger/Logger.h"
 
@@ -45,19 +45,35 @@ HttpRequest::HttpRequest(ConnectionInfo const& connectionInfo,
     : GeneralRequest(connectionInfo),
       _contentLength(0),
       _header(nullptr),
-      _allowMethodOverride(allowMethodOverride) {
+      _allowMethodOverride(allowMethodOverride),
+      _vpackBuilder(nullptr) {
   if (0 < length) {
-    _header = new char[length + 1];
-    memcpy(_header, header, length);
-    _header[length] = 0;
+    _contentType = ContentType::JSON;
+    _contentTypeResponse = ContentType::JSON;
+    _header = std::unique_ptr<char[]>(new char[length + 1]);
+    memcpy(_header.get(), header, length);
+
+    (_header.get())[length] = 0;
     parseHeader(length);
   }
 }
 
-HttpRequest::~HttpRequest() { delete[] _header; }
+HttpRequest::HttpRequest(
+    ContentType contentType, char const* body, int64_t contentLength,
+    std::unordered_map<std::string, std::string> const& headers)
+    : GeneralRequest(ConnectionInfo()),
+      _contentLength(contentLength),
+      _header(nullptr),
+      _body(body, contentLength),
+      _allowMethodOverride(false),
+      _vpackBuilder(nullptr),
+      _headers(headers) {
+  _contentType = contentType;
+  _contentTypeResponse = contentType;
+}
 
 void HttpRequest::parseHeader(size_t length) {
-  char* start = _header;
+  char* start = _header.get();
   char* end = start + length;
   size_t const versionLength = strlen("http/1.x");
 
@@ -192,14 +208,25 @@ void HttpRequest::parseHeader(size_t length) {
           // find a question mark or space
           char* f = pathBegin;
 
+          // get ride of "//"
+          char* g = f;
+
           // do NOT url-decode the path, we need to distingush between
           // "/document/a/b" and "/document/a%2fb"
 
           while (f < valueEnd && *f != '?' && *f != ' ' && *f != '\n') {
-            ++f;
+            *g++ = *f;
+
+            if (*f == '/') {
+              while (f < valueEnd && *f == '/') {
+                ++f;
+              }
+            } else {
+              ++f;
+            }
           }
 
-          pathEnd = f;
+          pathEnd = g;
 
           // look for database name in URL
           if (pathEnd - pathBegin >= 5) {
@@ -229,6 +256,7 @@ void HttpRequest::parseHeader(size_t length) {
 
           // no space, question mark or end-of-line
           if (f == valueEnd) {
+            *pathEnd = '\0';
             paramEnd = paramBegin = pathEnd;
 
             // set full url = complete path
@@ -239,7 +267,7 @@ void HttpRequest::parseHeader(size_t length) {
           else if (*f == ' ' || *f == '\n') {
             *pathEnd = '\0';
 
-            paramEnd = paramBegin = pathEnd;
+            paramEnd = paramBegin = f;
 
             // set full url = complete path
             setFullUrl(pathBegin, pathEnd);
@@ -247,20 +275,24 @@ void HttpRequest::parseHeader(size_t length) {
 
           // found a question mark
           else {
-            paramBegin = f + 1;
-            paramEnd = paramBegin;
+            paramBegin = g + 1;
+            paramEnd = f + 1;
+
+            *g++ = '?';
 
             while (paramEnd < valueEnd && *paramEnd != ' ' &&
                    *paramEnd != '\n') {
-              ++paramEnd;
+              *g++ = *paramEnd++;
             }
+
+            *g = '\0';
+            paramEnd = g;
 
             // set full url = complete path + query parameters
             setFullUrl(pathBegin, paramEnd);
 
             // now that the full url was saved, we can insert the null bytes
             *pathEnd = '\0';
-            *paramEnd = '\0';
           }
 
           if (pathBegin < pathEnd) {
@@ -390,6 +422,17 @@ void HttpRequest::parseHeader(size_t length) {
   }
 }
 
+void HttpRequest::setArrayValue(std::string const&& key,
+                                std::string const&& value) {
+  _arrayValues[key].emplace_back(value);
+}
+
+void HttpRequest::setArrayValue(char* key, size_t length, char const* value) {
+  TRI_ASSERT(key != nullptr);
+  TRI_ASSERT(value != nullptr);
+  _arrayValues[std::string(key, length)].emplace_back(value);
+}
+
 void HttpRequest::setValues(char* buffer, char* end) {
   char* keyBegin = nullptr;
   char* key = nullptr;
@@ -500,11 +543,29 @@ void HttpRequest::setValues(char* buffer, char* end) {
 /// @brief sets a key/value header
 void HttpRequest::setHeader(char const* key, size_t keyLength,
                             char const* value, size_t valueLength) {
+  TRI_ASSERT(key != nullptr);
+  TRI_ASSERT(value != nullptr);
+
   if (keyLength == 14 &&
       memcmp(key, "content-length", keyLength) ==
           0) {  // 14 = strlen("content-length")
     _contentLength = StringUtils::int64(value, valueLength);
     // do not store this header
+    return;
+  }
+
+  if (keyLength == 6 && memcmp(key, "accept", keyLength) == 0) {
+    if (valueLength == std::strlen("application/x-velocypack") &&
+        memcmp(value, "application/x-velocypack", valueLength) == 0) {
+      _contentTypeResponse = ContentType::VPACK;
+      return;
+    }
+  }
+
+  if (keyLength == 12 && valueLength == 24 &&
+      memcmp(key, "content-type", keyLength) == 0 &&
+      memcmp(value, "application/x-velocypack", valueLength) == 0) {
+    _contentType = ContentType::VPACK;
     return;
   }
 
@@ -670,12 +731,75 @@ std::string const& HttpRequest::cookieValue(std::string const& key,
 std::string const& HttpRequest::body() const { return _body; }
 
 void HttpRequest::setBody(char const* body, size_t length) {
-  _body = std::string(body, length);
+  TRI_ASSERT(body != nullptr);
+  _body.reserve(length + 1);
+  _body.append(body, length);
+  // make sure the string is null-terminated
+  _body[length] = '\0';
 }
 
-std::shared_ptr<VPackBuilder> HttpRequest::toVelocyPack(
-    VPackOptions const* options) {
-  VPackParser parser(options);
-  parser.parse(body());
-  return parser.steal();
+VPackSlice HttpRequest::payload(VPackOptions const* options) {
+  // check options for nullptr?
+
+  if (_contentType == ContentType::JSON) {
+    if (body().length() > 0) {
+      if (_vpackBuilder == nullptr) {
+        VPackParser parser(options);
+        parser.parse(body());
+        _vpackBuilder = parser.steal();
+        return VPackSlice(_vpackBuilder->slice());
+      } else {
+        return VPackSlice(_vpackBuilder->slice());
+      }
+    }
+    return VPackSlice::noneSlice();  // no body
+  } else /*VPACK*/ {
+    VPackValidator validator;
+    validator.validate(body().c_str(), body().length());
+    return VPackSlice(body().c_str());
+  }
+}
+
+std::string const& HttpRequest::header(std::string const& key,
+                                       bool& found) const {
+  auto it = _headers.find(key);
+
+  if (it == _headers.end()) {
+    found = false;
+    return StaticStrings::Empty;
+  }
+
+  found = true;
+  return it->second;
+}
+
+std::string const& HttpRequest::header(std::string const& key) const {
+  bool unused = true;
+  return header(key, unused);
+}
+
+std::string const& HttpRequest::value(std::string const& key,
+                                      bool& found) const {
+  if (!_values.empty()) {
+    auto it = _values.find(key);
+
+    if (it != _values.end()) {
+      found = true;
+      return it->second;
+    }
+  }
+
+  found = false;
+  return StaticStrings::Empty;
+}
+
+std::string const& HttpRequest::value(std::string const& key) const {
+  bool unused = true;
+  return value(key, unused);
+}
+
+HttpRequest* HttpRequest::createHttpRequest(
+    ContentType contentType, char const* body, int64_t contentLength,
+    std::unordered_map<std::string, std::string> const& headers) {
+  return new HttpRequest(contentType, body, contentLength, headers);
 }

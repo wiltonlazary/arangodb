@@ -30,23 +30,14 @@
 #include "Rest/HttpResponse.h"
 
 namespace arangodb {
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief shutdown request handler
-////////////////////////////////////////////////////////////////////////////////
-
 class RestShutdownHandler : public RestBaseHandler {
  public:
-  explicit RestShutdownHandler(HttpRequest*);
+  explicit RestShutdownHandler(GeneralRequest*, GeneralResponse*);
 
  public:
+  char const* name() const override final { return "RestShutdownHandler"; }
   bool isDirect() const override;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief initiates the shutdown process
-  //////////////////////////////////////////////////////////////////////////////
-
-  status_t execute() override;
+  RestStatus execute() override;
 };
 }
 

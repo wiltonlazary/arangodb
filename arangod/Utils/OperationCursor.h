@@ -38,17 +38,17 @@ namespace arangodb {
 
 // FORWARD declaration
 class IndexIterator;
+class LogicalCollection;
 struct OperationResult;
 
 struct OperationCursor {
 
  public:
-  int                                     code;
-  std::shared_ptr<VPackCustomTypeHandler> customTypeHandler;
+  int                            code;
 
  private:
 
-  std::shared_ptr<IndexIterator> _indexIterator;
+  std::unique_ptr<IndexIterator> _indexIterator;
   bool                           _hasMore;
   uint64_t                       _limit;
   uint64_t const                 _originalLimit;
@@ -57,36 +57,35 @@ struct OperationCursor {
  public:
   explicit OperationCursor(int code)
       : code(code),
-        customTypeHandler(),
         _hasMore(false),
         _limit(0),
         _originalLimit(0),
         _batchSize(1000) {}
 
-  OperationCursor(std::shared_ptr<VPackCustomTypeHandler> handler,
-                  IndexIterator* iterator, uint64_t limit, uint64_t batchSize)
+  OperationCursor(IndexIterator* iterator, uint64_t limit, uint64_t batchSize)
       : code(TRI_ERROR_NO_ERROR), 
-        customTypeHandler(handler),
         _indexIterator(iterator),
         _hasMore(true),
         _limit(limit),  // _limit is modified later on
         _originalLimit(limit),
         _batchSize(batchSize) {
-          if (_indexIterator == nullptr) {
-            _hasMore = false;
-          }
-        }
-
-  ~OperationCursor() {
+    if (_indexIterator == nullptr) {
+      _hasMore = false;
+    }
   }
+
+  ~OperationCursor() {}
   
   IndexIterator* indexIterator() const {
     return _indexIterator.get();
   }
-
-  bool hasMore() const {
-    return _hasMore;
+  
+  LogicalCollection* collection() const {
+    TRI_ASSERT(_indexIterator != nullptr);
+    return _indexIterator->collection();
   }
+
+  inline bool hasMore() const { return _hasMore; }
 
   bool successful() const {
     return code == TRI_ERROR_NO_ERROR;
@@ -128,8 +127,8 @@ struct OperationCursor {
 ///        Check hasMore()==true before using this
 ///        NOTE: This will throw on OUT_OF_MEMORY
 //////////////////////////////////////////////////////////////////////////////
-
-  std::vector<TRI_doc_mptr_t*> getMoreMptr(uint64_t batchSize);
+  
+  std::vector<IndexLookupResult> getMoreMptr(uint64_t batchSize = UINT64_MAX);
 
 //////////////////////////////////////////////////////////////////////////////
 /// @brief Get next batchSize many elements. mptr variant
@@ -139,7 +138,7 @@ struct OperationCursor {
 ///        NOTE: The result vector handed in will be cleared.
 //////////////////////////////////////////////////////////////////////////////
 
-  void getMoreMptr(std::vector<TRI_doc_mptr_t*>& result, uint64_t batchSize);
+  void getMoreMptr(std::vector<IndexLookupResult>& result, uint64_t batchSize = UINT64_MAX);
 
 //////////////////////////////////////////////////////////////////////////////
 /// @brief Skip the next toSkip many elements.

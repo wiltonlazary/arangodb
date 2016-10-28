@@ -23,16 +23,18 @@
 
 #include "RandomGenerator.h"
 
-#include <random>
 #include <chrono>
+#include <random>
 
 #ifdef _WIN32
 #include <Wincrypt.h>
 #endif
 
-#include "Logger/Logger.h"
 #include "Basics/Exceptions.h"
+#include "Basics/HybridLogicalClock.h"
 #include "Basics/Thread.h"
+#include "Basics/hashes.h"
+#include "Logger/Logger.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -42,16 +44,12 @@ using namespace arangodb::basics;
 // -----------------------------------------------------------------------------
 
 unsigned long RandomDevice::seed() {
-  unsigned long s = (unsigned long)time(0);
+  HybridLogicalClock clock;
+  unsigned long s = static_cast<unsigned long>(clock.getPhysicalTime());
+  TRI_pid_t pid = Thread::currentProcessId();
 
-  struct timeval tv;
-  int result = gettimeofday(&tv, 0);
-
-  s ^= static_cast<unsigned long>(tv.tv_sec);
-  s ^= static_cast<unsigned long>(tv.tv_usec);
-  s ^= static_cast<unsigned long>(result);
-  s ^= static_cast<unsigned long>(Thread::currentProcessId());
-
+  s ^= static_cast<unsigned long>(TRI_Crc32HashPointer(&pid, sizeof(TRI_pid_t)));
+  s = static_cast<unsigned long>(TRI_Crc32HashPointer(&s, sizeof(unsigned long))); 
   return s;
 }
 
@@ -76,7 +74,7 @@ int32_t RandomDevice::random(int32_t left, int32_t right) {
   }
 
   uint32_t range = static_cast<uint32_t>(right - left + 1);
-
+  
   switch (range) {
     case 0x00000002:
       return power2(left, 0x00000002 - 1);
@@ -353,8 +351,7 @@ class RandomDeviceCombined : public RandomDevice {
 class RandomDeviceMersenne : public RandomDevice {
  public:
   RandomDeviceMersenne()
-      : engine(static_cast<unsigned int>(
-            std::chrono::system_clock::now().time_since_epoch().count())) {}
+      : engine(RandomDevice::seed()) {}
 
   uint32_t random() { return engine(); }
 
@@ -471,7 +468,8 @@ void RandomGenerator::initialize(RandomType type) {
 void RandomGenerator::shutdown() { _device.reset(nullptr); }
 
 int16_t RandomGenerator::interval(int16_t left, int16_t right) {
-  return static_cast<int16_t>(interval(static_cast<int32_t>(left), static_cast<int32_t>(right)));
+  return static_cast<int16_t>(
+      interval(static_cast<int32_t>(left), static_cast<int32_t>(right)));
 }
 
 int32_t RandomGenerator::interval(int32_t left, int32_t right) {
@@ -497,28 +495,33 @@ int64_t RandomGenerator::interval(int64_t left, int64_t right) {
     return static_cast<int64_t>((r1 << 32) | r2);
   }
 
-  uint64_t high = static_cast<uint64_t>(right);
-  uint64_t low = static_cast<uint64_t>(-left);
-
   if (left < 0) {
-    uint64_t d = high + low;
+    if (right < 0) {
+      uint64_t high = static_cast<uint64_t>(-left);
+      uint64_t low = static_cast<uint64_t>(-right);
+      uint64_t d = high - low;
+      return left + static_cast<int64_t>(interval(d));
+    }
+
+    uint64_t low = static_cast<uint64_t>(-left);
+    uint64_t d = low + static_cast<uint64_t>(right);
     uint64_t dRandom = interval(d);
 
     if (dRandom < low) {
       return -1 - static_cast<int64_t>(dRandom);
-    }
-    else {
+    } else {
       return static_cast<int64_t>(dRandom - low);
     }
-  }
-  else {
+  } else {
+    uint64_t high = static_cast<uint64_t>(right);
+    uint64_t low = static_cast<uint64_t>(left);
     uint64_t d = high - low;
-    return static_cast<int64_t>(interval(d)) + low;
+    return left + static_cast<int64_t>(interval(d));
   }
 }
 
 uint16_t RandomGenerator::interval(uint16_t right) {
-  return static_cast<uint16_t>(static_cast<uint32_t>(right));
+  return static_cast<uint16_t>(interval(static_cast<uint32_t>(right)));
 }
 
 uint32_t RandomGenerator::interval(uint32_t right) {
@@ -552,8 +555,7 @@ uint64_t RandomGenerator::interval(uint64_t right) {
     uint32_t low = static_cast<uint32_t>(right - highMax);
     uint64_t lowRandom = static_cast<uint64_t>(interval(low));
     return highRandom | lowRandom;
-  }
-  else {
+  } else {
     uint64_t lowRandom = static_cast<uint64_t>(interval(UINT32_MAX));
     return highRandom | lowRandom;
   }

@@ -60,6 +60,7 @@ SortCondition::SortCondition(
 
   bool foundDirection = false;
 
+  std::vector<arangodb::basics::AttributeName> fieldNames;
   size_t const n = sorts.size();
 
   for (size_t i = 0; i < n; ++i) {
@@ -73,10 +74,11 @@ SortCondition::SortCondition(
       auto node = (*it).second;
 
       if (node != nullptr && node->type == NODE_TYPE_ATTRIBUTE_ACCESS) {
-        std::vector<arangodb::basics::AttributeName> fieldNames;
+        fieldNames.clear();
+        
         while (node->type == NODE_TYPE_ATTRIBUTE_ACCESS) {
           fieldNames.emplace_back(
-              arangodb::basics::AttributeName(node->getString()));
+              arangodb::basics::AttributeName(node->getString(), false));
           node = node->getMember(0);
         }
 
@@ -158,21 +160,21 @@ size_t SortCondition::coveredAttributes(
     // no match
     bool isConstant = false;
 
-    if (IsContained(_constAttributes, indexAttributes[i])) {
+    if (IsContained(indexAttributes, field.second) &&
+        IsContained(_constAttributes, field.second)) {
+      // no field match, but a constant attribute
+      isConstant = true;
+      ++fieldsPosition;
+      ++numCovered;
+    }
+    
+    if (!isConstant &&
+        IsContained(_constAttributes, indexAttributes[i])) {
       // no field match, but a constant attribute
       isConstant = true;
       ++i; // next index field
     }
 
-    if (!isConstant) {
-      if (IsContained(indexAttributes, field.second) &&
-          IsContained(_constAttributes, field.second)) {
-        // no field match, but a constant attribute
-        isConstant = true;
-        ++fieldsPosition;
-        ++numCovered;
-      }
-    }
           
     if (!isConstant) {
       break;

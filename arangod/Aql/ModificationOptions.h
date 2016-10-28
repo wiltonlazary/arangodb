@@ -25,7 +25,9 @@
 #define ARANGOD_AQL_MODIFICATION_OPTIONS_H 1
 
 #include "Basics/Common.h"
-#include "Basics/JsonHelper.h"
+
+#include <velocypack/Builder.h>
+#include <velocypack/Slice.h>
 
 namespace arangodb {
 namespace aql {
@@ -33,7 +35,7 @@ namespace aql {
 /// @brief ModificationOptions
 struct ModificationOptions {
   /// @brief constructor, using default values
-  ModificationOptions(arangodb::basics::Json const&);
+  explicit ModificationOptions(arangodb::velocypack::Slice const&);
 
   ModificationOptions()
       : ignoreErrors(false),
@@ -41,9 +43,9 @@ struct ModificationOptions {
         nullMeansRemove(false),
         mergeObjects(true),
         ignoreDocumentNotFound(false),
-        readCompleteInput(true) {}
-
-  void toJson(arangodb::basics::Json&, TRI_memory_zone_t*) const;
+        readCompleteInput(true),
+        useIsRestore(false),
+        consultAqlWriteFilter(false) {}
 
   void toVelocyPack(arangodb::velocypack::Builder&) const;
 
@@ -53,6 +55,8 @@ struct ModificationOptions {
   bool mergeObjects;
   bool ignoreDocumentNotFound;
   bool readCompleteInput;
+  bool useIsRestore;
+  bool consultAqlWriteFilter;
 };
 
 }  // namespace arangodb::aql

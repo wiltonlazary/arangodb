@@ -23,6 +23,7 @@
 
 #include "Basics/MutexLocker.h"
 #include "Basics/ConditionLocker.h"
+#include "Logger/Logger.h"
 
 #include <chrono>
 #include <thread>
@@ -64,10 +65,13 @@ void AgencyCallback::refetchAndUpdate(bool needToAcquireMutex) {
   AgencyCommResult result = _agency.getValues(key);
 
   if (!result.successful()) {
+    LOG(ERR) << "Callback getValues to agency was not successful: "
+             << result.errorCode() << " " << result.errorMessage();
     return;
   }
   
-  std::vector<std::string> kv = basics::StringUtils::split(AgencyComm::prefixPath() + key,'/');
+  std::vector<std::string> kv =
+    basics::StringUtils::split(AgencyComm::prefixPath() + key,'/');
   kv.erase(std::remove(kv.begin(), kv.end(), ""), kv.end());
   
   std::shared_ptr<VPackBuilder> newData = std::make_shared<VPackBuilder>();
@@ -85,11 +89,14 @@ void AgencyCallback::checkValue(std::shared_ptr<VPackBuilder> newData) {
   // Only called from refetchAndUpdate, we always have the mutex when
   // we get here!
   if (!_lastData || !_lastData->slice().equals(newData->slice())) {
-    LOG(DEBUG) << "Got new value " << newData->slice().typeName() << " " << newData->toJson();
+    LOG_TOPIC(DEBUG, Logger::CLUSTER)
+      << "AgencyCallback: Got new value " << newData->slice().typeName()
+      << " " << newData->toJson();
     if (execute(newData)) {
       _lastData = newData;
     } else {
-      LOG(DEBUG) << "Callback was not successful for " << newData->toJson();
+      LOG_TOPIC(DEBUG, Logger::CLUSTER)
+        << "Callback was not successful for " << newData->toJson();
     }
   }
 }
@@ -97,7 +104,7 @@ void AgencyCallback::checkValue(std::shared_ptr<VPackBuilder> newData) {
 bool AgencyCallback::executeEmpty() {
   // only called from refetchAndUpdate, we always have the mutex when 
   // we get here!
-  LOG(DEBUG) << "Executing (empty)";
+  LOG_TOPIC(DEBUG, Logger::CLUSTER) << "Executing (empty)";
   bool result = _cb(VPackSlice::noneSlice());
   if (result) {
     _cv.signal();
@@ -108,7 +115,7 @@ bool AgencyCallback::executeEmpty() {
 bool AgencyCallback::execute(std::shared_ptr<VPackBuilder> newData) {
   // only called from refetchAndUpdate, we always have the mutex when 
   // we get here!
-  LOG(DEBUG) << "Executing";
+  LOG_TOPIC(DEBUG, Logger::CLUSTER) << "Executing";
   bool result = _cb(newData->slice());
   if (result) {
     _cv.signal();
@@ -119,17 +126,11 @@ bool AgencyCallback::execute(std::shared_ptr<VPackBuilder> newData) {
 void AgencyCallback::executeByCallbackOrTimeout(double maxTimeout) {
   // One needs to acquire the mutex of the condition variable
   // before entering this function!
-  auto compareBuilder = std::make_shared<VPackBuilder>();
-  if (_lastData) {
-    compareBuilder = _lastData;
-  }
-  
   if (!_cv.wait(static_cast<uint64_t>(maxTimeout * 1000000.0))) {
-    if (!_lastData || !_lastData->slice().equals(compareBuilder->slice())) {
-      LOG(DEBUG) << "Waiting done and nothing happended. Refetching to be sure";
-      // mop: watches have not triggered during our sleep...recheck to be sure
-      refetchAndUpdate(false);
-    }
+    LOG_TOPIC(DEBUG, Logger::CLUSTER)
+      << "Waiting done and nothing happended. Refetching to be sure";
+    // mop: watches have not triggered during our sleep...recheck to be sure
+    refetchAndUpdate(false);
   }
 }
 

@@ -28,23 +28,20 @@
 #include "ProgramOptions/ProgramOptions.h"
 #include "ProgramOptions/Section.h"
 #include "Random/UniformCharacter.h"
-#include "Ssl/ssl-helper.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::options;
 
-SslServerFeature::SslServerFeature(application_features::ApplicationServer* server)
+SslServerFeature* SslServerFeature::SSL = nullptr;
+
+SslServerFeature::SslServerFeature(
+    application_features::ApplicationServer* server)
     : ApplicationFeature(server, "SslServer"),
       _cafile(),
       _keyfile(),
-      _sessionCache(false),
       _cipherList(),
-      _protocol(TLS_V1),
-      _options(
-          (long)(SSL_OP_TLS_ROLLBACK_BUG | SSL_OP_CIPHER_SERVER_PREFERENCE)),
-      _ecdhCurve("prime256v1"),
-      _sslContext(nullptr) {
+      _ecdhCurve("prime256v1") {
   setOptional(true);
   requiresElevatedPrivileges(false);
   startsAfter("Ssl");
@@ -52,6 +49,13 @@ SslServerFeature::SslServerFeature(application_features::ApplicationServer* serv
 }
 
 void SslServerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
+  options->addOldOption("server.cafile", "ssl.cafile");
+  options->addOldOption("server.keyfile", "ssl.keyfile");
+  options->addOldOption("server.ssl-cache", "ssl.session-cache");
+  options->addOldOption("server.ssl-cipher-list", "ssl.cipher-list");
+  options->addOldOption("server.ssl-options", "ssl.options");
+  options->addOldOption("server.ssl-protocol", "ssl.protocol");
+
   options->addSection("ssl", "Configure SSL communication");
 
   options->addOption("--ssl.cafile", "ca file used for secure connections",
@@ -68,16 +72,17 @@ void SslServerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
                      "ssl cipers to use, see OpenSSL documentation",
                      new StringParameter(&_cipherList));
 
-  std::unordered_set<uint64_t> sslProtocols = {1, 2, 3, 4};
+  std::unordered_set<uint64_t> sslProtocols = {1, 2, 3, 4, 5};
 
   options->addOption("--ssl.protocol",
                      "ssl protocol (1 = SSLv2, 2 = SSLv23, 3 = SSLv3, 4 = "
                      "TLSv1, 5 = TLSV1.2 (recommended)",
-                     new UInt64Parameter(&_protocol));
+                     new DiscreteValuesParameter<UInt64Parameter>(
+                         &_sslProtocol, sslProtocols));
 
-  options->addHiddenOption(
-      "--ssl.options", "ssl connection options, see OpenSSL documentation",
-      new DiscreteValuesParameter<UInt64Parameter>(&_options, sslProtocols));
+  options->addHiddenOption("--ssl.options",
+                           "ssl connection options, see OpenSSL documentation",
+                           new UInt64Parameter(&_sslOptions));
 
   options->addOption(
       "--ssl.ecdh-curve",
@@ -86,21 +91,50 @@ void SslServerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
 }
 
 void SslServerFeature::prepare() {
-  createSslContext();
-}
-
-void SslServerFeature::start() {
-  LOG(INFO) << "using SSL options: " << stringifySslOptions(_options);
+  LOG(INFO) << "using SSL options: " << stringifySslOptions(_sslOptions);
 
   if (!_cipherList.empty()) {
-      LOG(INFO) << "using SSL cipher-list '" << _cipherList << "'";
+    LOG(INFO) << "using SSL cipher-list '" << _cipherList << "'";
   }
+
+  UniformCharacter r(
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+  _rctx = r.random(SSL_MAX_SSL_SESSION_ID_LENGTH);
+
+  SSL = this;
 }
 
-void SslServerFeature::stop() {
-  if (_sslContext != nullptr) {
-    SSL_CTX_free(_sslContext);
-    _sslContext = nullptr;
+void SslServerFeature::unprepare() {
+  LOG(TRACE) << "unpreparing ssl: " << stringifySslOptions(_sslOptions);
+}
+
+void SslServerFeature::verifySslOptions() {
+  // check keyfile
+  if (_keyfile.empty()) {
+    LOG(FATAL) << "keyfile empty'" << _keyfile << "'";
+    FATAL_ERROR_EXIT();
+  }
+
+  // validate protocol
+  if (_sslProtocol <= SSL_UNKNOWN || _sslProtocol >= SSL_LAST) {
+    LOG(FATAL) << "invalid SSL protocol version specified. Please use a valid "
+                  "value for '--ssl.protocol'.";
+    FATAL_ERROR_EXIT();
+  }
+
+  LOG(DEBUG) << "using SSL protocol version '"
+             << protocolName((protocol_e)_sslProtocol) << "'";
+
+  if (!FileUtils::exists(_keyfile)) {
+    LOG(FATAL) << "unable to find SSL keyfile '" << _keyfile << "'";
+    FATAL_ERROR_EXIT();
+  }
+
+  try {
+    createSslContext();
+  } catch (...) {
+    LOG(FATAL) << "cannot create SSL context";
+    FATAL_ERROR_EXIT();
   }
 }
 
@@ -116,51 +150,42 @@ class BIOGuard {
 };
 }
 
-void SslServerFeature::createSslContext() {
-  // check keyfile
-  if (_keyfile.empty()) {
-    return;
-  }
-
-  // validate protocol
-  if (_protocol <= SSL_UNKNOWN || _protocol >= SSL_LAST) {
-    LOG(FATAL) << "invalid SSL protocol version specified. Please use a valid "
-                  "value for '--ssl.protocol.'";
-    FATAL_ERROR_EXIT();
-  }
-
-  LOG(DEBUG) << "using SSL protocol version '"
-             << protocolName((protocol_e)_protocol) << "'";
-
-  if (!FileUtils::exists(_keyfile)) {
-    LOG(FATAL) << "unable to find SSL keyfile '" << _keyfile << "'";
-    FATAL_ERROR_EXIT();
-  }
-
+boost::asio::ssl::context SslServerFeature::createSslContext() const {
   // create context
-  _sslContext = ::sslContext(protocol_e(_protocol), _keyfile);
+  auto sslContextOpt = ::sslContext(protocol_e(_sslProtocol), _keyfile);
 
-  if (_sslContext == nullptr) {
-    LOG(FATAL) << "failed to create SSL context, cannot create HTTPS server";
-    FATAL_ERROR_EXIT();
+  if (!sslContextOpt) {
+    LOG(ERR) << "failed to create SSL context, cannot create HTTPS server";
+    throw std::runtime_error("cannot create SSL context");
   }
+
+  boost::asio::ssl::context sslContext(
+      boost::asio::ssl::context::method::sslv23);
+
+  // swap context out of optional
+  std::swap(sslContextOpt.get(), sslContext);
+
+  // and use this native handle
+  boost::asio::ssl::context::native_handle_type nativeContext =
+      sslContext.native_handle();
 
   // set cache mode
-  SSL_CTX_set_session_cache_mode(
-      _sslContext, _sessionCache ? SSL_SESS_CACHE_SERVER : SSL_SESS_CACHE_OFF);
+  SSL_CTX_set_session_cache_mode(nativeContext, _sessionCache
+                                                    ? SSL_SESS_CACHE_SERVER
+                                                    : SSL_SESS_CACHE_OFF);
 
   if (_sessionCache) {
     LOG(TRACE) << "using SSL session caching";
   }
 
   // set options
-  SSL_CTX_set_options(_sslContext, (long)_options);
+  SSL_CTX_set_options(nativeContext, (long)_sslOptions);
 
   if (!_cipherList.empty()) {
-    if (SSL_CTX_set_cipher_list(_sslContext, _cipherList.c_str()) != 1) {
-      LOG(FATAL) << "cannot set SSL cipher list '" << _cipherList
-                 << "': " << lastSSLError();
-      FATAL_ERROR_EXIT();
+    if (SSL_CTX_set_cipher_list(nativeContext, _cipherList.c_str()) != 1) {
+      LOG(ERR) << "cannot set SSL cipher list '" << _cipherList
+               << "': " << lastSSLError();
+      throw std::runtime_error("cannot create SSL context");
     }
   }
 
@@ -170,48 +195,44 @@ void SslServerFeature::createSslContext() {
   sslEcdhNid = OBJ_sn2nid(_ecdhCurve.c_str());
 
   if (sslEcdhNid == 0) {
-    LOG(FATAL) << "SSL error: " << lastSSLError()
+    LOG(ERR) << "SSL error: " << lastSSLError()
              << " Unknown curve name: " << _ecdhCurve;
-    FATAL_ERROR_EXIT();
+    throw std::runtime_error("cannot create SSL context");
   }
 
   // https://www.openssl.org/docs/manmaster/apps/ecparam.html
   ecdhKey = EC_KEY_new_by_curve_name(sslEcdhNid);
   if (ecdhKey == nullptr) {
-    LOG(FATAL) << "SSL error: " << lastSSLError()
+    LOG(ERR) << "SSL error: " << lastSSLError()
              << " Unable to create curve by name: " << _ecdhCurve;
-    FATAL_ERROR_EXIT();
+    throw std::runtime_error("cannot create SSL context");
   }
 
-  SSL_CTX_set_tmp_ecdh(_sslContext, ecdhKey);
-  SSL_CTX_set_options(_sslContext, SSL_OP_SINGLE_ECDH_USE);
+  SSL_CTX_set_tmp_ecdh(nativeContext, ecdhKey);
+  SSL_CTX_set_options(nativeContext, SSL_OP_SINGLE_ECDH_USE);
   EC_KEY_free(ecdhKey);
 #endif
 
   // set ssl context
-  UniformCharacter r(
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-  _rctx = r.random(SSL_MAX_SSL_SESSION_ID_LENGTH);
-
   int res = SSL_CTX_set_session_id_context(
-      _sslContext, (unsigned char const*)_rctx.c_str(), (int)_rctx.size());
+      nativeContext, (unsigned char const*)_rctx.c_str(), (int)_rctx.size());
 
   if (res != 1) {
-    LOG(FATAL) << "cannot set SSL session id context '" << _rctx
-               << "': " << lastSSLError();
-    FATAL_ERROR_EXIT();
+    LOG(ERR) << "cannot set SSL session id context '" << _rctx
+             << "': " << lastSSLError();
+    throw std::runtime_error("cannot create SSL context");
   }
 
   // check CA
   if (!_cafile.empty()) {
     LOG(TRACE) << "trying to load CA certificates from '" << _cafile << "'";
 
-    int res = SSL_CTX_load_verify_locations(_sslContext, _cafile.c_str(), 0);
+    int res = SSL_CTX_load_verify_locations(nativeContext, _cafile.c_str(), 0);
 
     if (res == 0) {
-      LOG(FATAL) << "cannot load CA certificates from '" << _cafile
-                 << "': " << lastSSLError();
-      FATAL_ERROR_EXIT();
+      LOG(ERR) << "cannot load CA certificates from '" << _cafile
+               << "': " << lastSSLError();
+      throw std::runtime_error("cannot create SSL context");
     }
 
     STACK_OF(X509_NAME) * certNames;
@@ -219,9 +240,9 @@ void SslServerFeature::createSslContext() {
     certNames = SSL_load_client_CA_file(_cafile.c_str());
 
     if (certNames == nullptr) {
-      LOG(FATAL) << "cannot load CA certificates from '" << _cafile
-                 << "': " << lastSSLError();
-      FATAL_ERROR_EXIT();
+      LOG(ERR) << "cannot load CA certificates from '" << _cafile
+               << "': " << lastSSLError();
+      throw std::runtime_error("cannot create SSL context");
     }
 
     if (Logger::logLevel() == arangodb::LogLevel::TRACE) {
@@ -244,12 +265,15 @@ void SslServerFeature::createSslContext() {
       }
     }
 
-    SSL_CTX_set_client_CA_list(_sslContext, certNames);
+    SSL_CTX_set_client_CA_list(nativeContext, certNames);
   }
+
+  sslContext.set_verify_mode(SSL_VERIFY_NONE);
+
+  return sslContext;
 }
 
-std::string SslServerFeature::stringifySslOptions(
-    uint64_t opts) const {
+std::string SslServerFeature::stringifySslOptions(uint64_t opts) const {
   std::string result;
 
 #ifdef SSL_OP_MICROSOFT_SESS_ID_BUG

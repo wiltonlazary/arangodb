@@ -24,124 +24,97 @@
 #ifndef ARANGOD_CLUSTER_CLUSTER_TRAVERSER_H
 #define ARANGOD_CLUSTER_CLUSTER_TRAVERSER_H 1
 
+#include "Cluster/TraverserEngineRegistry.h"
+#include "VocBase/LogicalCollection.h"
 #include "VocBase/Traverser.h"
+#include "VocBase/TraverserOptions.h"
 
 namespace arangodb {
 class CollectionNameResolver;
+class ManagedDocumentResult;
 class Transaction;
 
 namespace traverser {
+class ClusterEdgeCursor;
 
-class ClusterTraversalPath;
+class PathEnumerator;
 
-class ClusterTraverser : public Traverser {
-  friend class ClusterTraversalPath;
+class ClusterTraverser final : public Traverser {
+  friend class ClusterEdgeCursor;
 
  public:
   ClusterTraverser(
-      std::vector<std::string> edgeCollections, TraverserOptions& opts,
-      std::string dbname, Transaction* trx,
-      std::unordered_map<size_t, std::vector<TraverserExpression*>> const*
-          expressions)
-      : Traverser(opts, expressions),
-        _edgeCols(edgeCollections),
-        _dbname(dbname),
-        _vertexGetter(this),
-        _edgeGetter(this),
-        _trx(trx) {}
+      TraverserOptions* opts,
+      ManagedDocumentResult* mmdr,
+      std::unordered_map<ServerID, traverser::TraverserEngineID> const* engines,
+      std::string const& dbname, Transaction* trx);
 
-  ~ClusterTraverser() {
-  }
+  ~ClusterTraverser() {}
 
-  void setStartVertex(std::string const&) override;
+  void setStartVertex(std::string const& id) override;
 
-  TraversalPath* next() override;
+ protected:
+  /// @brief Function to load the other sides vertex of an edge
+  ///        Returns true if the vertex passes filtering conditions
+  ///        Also apppends the _id value of the vertex in the given vector
+
+  bool getVertex(arangodb::velocypack::Slice,
+                 std::vector<arangodb::velocypack::Slice>&) override;
+
+  /// @brief Function to load the other sides vertex of an edge
+  ///        Returns true if the vertex passes filtering conditions
+
+  bool getSingleVertex(arangodb::velocypack::Slice, arangodb::velocypack::Slice,
+                       size_t, arangodb::velocypack::Slice&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to fetch the real data of a vertex into an AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue fetchVertexData(arangodb::velocypack::Slice) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to fetch the real data of an edge into an AQLValue
+  //////////////////////////////////////////////////////////////////////////////
+
+  aql::AqlValue fetchEdgeData(arangodb::velocypack::Slice) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of a vertex into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  void addVertexToVelocyPack(arangodb::velocypack::Slice,
+                             arangodb::velocypack::Builder&) override;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief Function to add the real data of an edge into a velocypack builder
+  //////////////////////////////////////////////////////////////////////////////
+
+  void addEdgeToVelocyPack(arangodb::velocypack::Slice,
+                           arangodb::velocypack::Builder&) override;
 
  private:
 
-  void fetchVertices(std::unordered_set<std::string>&, size_t);
+  void fetchVertices();
 
-  bool vertexMatchesCondition(arangodb::velocypack::Slice const&,
-                              std::vector<TraverserExpression*> const&);
-
-  class VertexGetter {
-   public:
-    explicit VertexGetter(ClusterTraverser* traverser)
-        : _traverser(traverser) {}
-
-    bool operator()(std::string const&, std::string const&, size_t,
-                    std::string&);
-
-   private:
-    ClusterTraverser* _traverser;
-  };
-
-  class EdgeGetter {
-   public:
-    explicit EdgeGetter(ClusterTraverser* traverser)
-        : _traverser(traverser), _continueConst(1) {}
-
-    void operator()(std::string const&,
-                    std::vector<std::string>&, size_t*&,
-                    size_t&, bool&);
-
-   private:
-    ClusterTraverser* _traverser;
-
-    size_t _continueConst;
-  };
-
-  std::unordered_map<std::string,
-                     std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>
+  std::unordered_map<arangodb::velocypack::Slice, arangodb::velocypack::Slice>
       _edges;
 
-  std::unordered_map<std::string,
+  std::unordered_map<arangodb::velocypack::Slice,
                      std::shared_ptr<arangodb::velocypack::Buffer<uint8_t>>>
       _vertices;
 
-  std::stack<std::stack<std::string>> _iteratorCache;
-
-  std::vector<std::string> _edgeCols;
-
   std::string _dbname;
 
-  VertexGetter _vertexGetter;
+  std::unordered_map<ServerID, traverser::TraverserEngineID> const* _engines;
 
-  EdgeGetter _edgeGetter;
+  std::unordered_set<arangodb::velocypack::Slice> _verticesToFetch;
 
-  arangodb::velocypack::Builder _builder;
+  std::vector<std::shared_ptr<arangodb::velocypack::Builder>> _datalake;
 
-  arangodb::Transaction* _trx;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief internal cursor to enumerate the paths of a graph
-  //////////////////////////////////////////////////////////////////////////////
-
-  std::unique_ptr<arangodb::basics::PathEnumerator<std::string, std::string, size_t>> _enumerator;
-};
-
-class ClusterTraversalPath : public TraversalPath {
- public:
-  ClusterTraversalPath(
-      ClusterTraverser const* traverser,
-      const arangodb::basics::EnumeratedPath<std::string, std::string>& path)
-      : _path(path), _traverser(traverser) {}
-
-  void pathToVelocyPack(Transaction*, arangodb::velocypack::Builder&) override;
-
-  void lastEdgeToVelocyPack(Transaction*,
-                            arangodb::velocypack::Builder&) override;
-
-  void lastVertexToVelocyPack(Transaction*,
-                              arangodb::velocypack::Builder&) override;
-
- private:
-  arangodb::basics::EnumeratedPath<std::string, std::string> _path;
-
-  ClusterTraverser const* _traverser;
 };
 
 }  // traverser
-}  // triagens
+}  // arangodb
 
 #endif

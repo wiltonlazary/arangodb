@@ -35,6 +35,7 @@
 #include "Basics/VPackStringBufferAdapter.h"
 #include "Basics/VelocyPackDumper.h"
 #include "Basics/tri-strings.h"
+#include "Meta/conversion.h"
 #include "Rest/GeneralRequest.h"
 
 using namespace arangodb;
@@ -44,15 +45,26 @@ bool HttpResponse::HIDE_PRODUCT_HEADER = false;
 
 HttpResponse::HttpResponse(ResponseCode code)
     : GeneralResponse(code),
-      _connectionType(CONNECTION_KEEP_ALIVE),
-      _contentType(CONTENT_TYPE_TEXT),
       _isHeadResponse(false),
       _body(TRI_UNKNOWN_MEM_ZONE, false),
       _bodySize(0) {
+  _generateBody = false;
+  _contentType = ContentType::TEXT;
+  _connectionType = rest::ConnectionType::C_KEEP_ALIVE;
   if (_body.c_str() == nullptr) {
     // no buffer could be reserved. out of memory!
     THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
+}
+
+void HttpResponse::reset(ResponseCode code) {
+  _responseCode = code;
+  _headers.clear();
+  _connectionType = rest::ConnectionType::C_KEEP_ALIVE;
+  _contentType = ContentType::TEXT;
+  _isHeadResponse = false;
+  _body.clear();
+  _bodySize = 0;
 }
 
 void HttpResponse::setCookie(std::string const& name, std::string const& value,
@@ -207,13 +219,13 @@ void HttpResponse::writeHeader(StringBuffer* output) {
   // add "Connection" response header
   if (!seenConnectionHeader) {
     switch (_connectionType) {
-      case CONNECTION_KEEP_ALIVE:
+      case rest::ConnectionType::C_KEEP_ALIVE:
         output->appendText(TRI_CHAR_LENGTH_PAIR("Connection: Keep-Alive\r\n"));
         break;
-      case CONNECTION_CLOSE:
+      case rest::ConnectionType::C_CLOSE:
         output->appendText(TRI_CHAR_LENGTH_PAIR("Connection: Close\r\n"));
         break;
-      case CONNECTION_NONE:
+      case rest::ConnectionType::C_NONE:
         output->appendText(TRI_CHAR_LENGTH_PAIR("Connection: \r\n"));
         break;
     }
@@ -221,27 +233,28 @@ void HttpResponse::writeHeader(StringBuffer* output) {
 
   // add "Content-Type" header
   switch (_contentType) {
-    case CONTENT_TYPE_JSON:
+    case ContentType::UNSET:
+    case ContentType::JSON:
       output->appendText(TRI_CHAR_LENGTH_PAIR(
           "Content-Type: application/json; charset=utf-8\r\n"));
       break;
-    case CONTENT_TYPE_VPACK:
+    case ContentType::VPACK:
       output->appendText(
           TRI_CHAR_LENGTH_PAIR("Content-Type: application/x-velocypack\r\n"));
       break;
-    case CONTENT_TYPE_TEXT:
+    case ContentType::TEXT:
       output->appendText(
           TRI_CHAR_LENGTH_PAIR("Content-Type: text/plain; charset=utf-8\r\n"));
       break;
-    case CONTENT_TYPE_HTML:
+    case ContentType::HTML:
       output->appendText(
           TRI_CHAR_LENGTH_PAIR("Content-Type: text/html; charset=utf-8\r\n"));
       break;
-    case CONTENT_TYPE_DUMP:
+    case ContentType::DUMP:
       output->appendText(TRI_CHAR_LENGTH_PAIR(
           "Content-Type: application/x-arango-dump; charset=utf-8\r\n"));
       break;
-    case CONTENT_TYPE_CUSTOM: {
+    case ContentType::CUSTOM: {
       // intentionally don't print anything here
       // the header should have been in _headers already, and should have been
       // handled above
@@ -287,41 +300,57 @@ void HttpResponse::writeHeader(StringBuffer* output) {
   // end of header, body to follow
 }
 
-void HttpResponse::fillBody(GeneralRequest const* request,
-                            arangodb::velocypack::Slice const& slice,
-                            bool generateBody, VPackOptions const& options) {
-  // VELOCYPACK
-  if (request != nullptr && request->velocyPackResponse()) {
-    setContentType(HttpResponse::CONTENT_TYPE_VPACK);
-    size_t length = static_cast<size_t>(slice.byteSize());
-
-    if (generateBody) {
-      _body.appendText(slice.startAs<const char>(), length);
-    } else {
-      headResponse(length);
-    }
+void HttpResponse::addPayloadPostHook(
+    VPackSlice const& slice,
+    VPackOptions const* options = &VPackOptions::Options::Defaults,
+    bool resolveExternals = true, bool bodySkipped = false) {
+  VPackSlice const* slicePtr;
+  VPackSlice tmpSlice;
+  if (!bodySkipped) {
+    // we have Probably resolved externals
+    TRI_ASSERT(!_vpackPayloads.empty());
+    tmpSlice = VPackSlice(_vpackPayloads.front().data());
+    slicePtr = &tmpSlice;
+  } else {
+    slicePtr = &slice;
   }
 
-  // JSON
-  else {
-    setContentType(HttpResponse::CONTENT_TYPE_JSON);
+  if (_contentType == rest::ContentType::JSON &&
+      _contentTypeRequested == rest::ContentType::VPACK) {
+    // content type was set by a handler to Json but the client wants VPACK
+    // as we have a slice at had we are able to reply with VPACK
+    _contentType = rest::ContentType::VPACK;
+  }
 
-    if (generateBody) {
-      arangodb::basics::VelocyPackDumper dumper(&_body, &options);
-      dumper.dumpValue(slice);
-    } else {
-      // TODO can we optimize this?
-      // Just dump some where else to find real length
-      StringBuffer tmp(TRI_UNKNOWN_MEM_ZONE, false);
+  switch (_contentType) {
+    case rest::ContentType::VPACK: {
+      size_t length = static_cast<size_t>(slicePtr->byteSize());
+      if (_generateBody) {
+        _body.appendText(slicePtr->startAs<const char>(), length);
+      } else {
+        headResponse(length);
+      }
+      break;
+    }
+    default: {
+      setContentType(rest::ContentType::JSON);
+      if (_generateBody) {
+        arangodb::basics::VelocyPackDumper dumper(&_body, options);
+        dumper.dumpValue(*slicePtr);
+      } else {
+        // TODO can we optimize this?
+        // Just dump some where else to find real length
+        StringBuffer tmp(TRI_UNKNOWN_MEM_ZONE, false);
 
-      // convert object to string
-      VPackStringBufferAdapter buffer(tmp.stringBuffer());
+        // convert object to string
+        VPackStringBufferAdapter buffer(tmp.stringBuffer());
 
-      // usual dumping -  but not to the response body
-      VPackDumper dumper(&buffer, &options);
-      dumper.dump(slice);
+        // usual dumping -  but not to the response body
+        VPackDumper dumper(&buffer, options);
+        dumper.dump(*slicePtr);
 
-      headResponse(tmp.length());
+        headResponse(tmp.length());
+      }
     }
   }
 }

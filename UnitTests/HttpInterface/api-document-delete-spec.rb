@@ -50,7 +50,7 @@ describe ArangoDB do
 
         doc.code.should eq(400)
         doc.parsed_response['error'].should eq(true)
-        doc.parsed_response['errorNum'].should eq(1203)
+        doc.parsed_response['errorNum'].should eq(400)
         doc.parsed_response['code'].should eq(400)
         doc.headers['content-type'].should eq("application/json; charset=utf-8")
       end
@@ -138,7 +138,7 @@ describe ArangoDB do
 
         # delete document, different revision
         cmd = "/_api/document/#{did}"
-        hdr = { "if-match" => "\"386897#{rev}\"" }
+        hdr = { "if-match" => "\"386897\"" }
         doc = ArangoDB.log_delete("#{prefix}-if-match-other", cmd, :headers => hdr)
 
         doc.code.should eq(412)
@@ -187,7 +187,7 @@ describe ArangoDB do
 
         # delete document, invalid revision
         cmd = "/_api/document/#{did}"
-        hdr = { "if-match" => "\"abcd\"" }
+        hdr = { "if-match" => "\"*abcd\"" }
         doc = ArangoDB.log_delete("#{prefix}-rev-invalid", cmd, :headers => hdr )
 
         doc.code.should eq(400)
@@ -197,7 +197,7 @@ describe ArangoDB do
         
         # delete document, invalid revision
         cmd = "/_api/document/#{did}"
-        hdr = { "if-match" => "'abcd'" }
+        hdr = { "if-match" => "'*abcd'" }
         doc = ArangoDB.log_delete("#{prefix}-rev-invalid", cmd, :headers => hdr)
 
         doc.code.should eq(400)

@@ -29,10 +29,9 @@
 #include "RestHandler/RestVocbaseBaseHandler.h"
 #include "VocBase/replication-common.h"
 
-class TRI_vocbase_col_t;
-
 namespace arangodb {
 class CollectionNameResolver;
+class LogicalCollection;
 class Transaction;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -41,12 +40,12 @@ class Transaction;
 
 class RestReplicationHandler : public RestVocbaseBaseHandler {
  public:
-  explicit RestReplicationHandler(HttpRequest*);
-
+  RestReplicationHandler(GeneralRequest*, GeneralResponse*);
   ~RestReplicationHandler();
 
  public:
-  HttpHandler::status_t execute();
+  RestStatus execute() override;
+  char const* name() const override final { return "RestReplicationHandler"; }
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -55,14 +54,14 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
   /// because edges depend on vertices being there), then name
   //////////////////////////////////////////////////////////////////////////////
 
-  static bool sortCollections(TRI_vocbase_col_t const*,
-                              TRI_vocbase_col_t const*);
+  static bool sortCollections(arangodb::LogicalCollection const*,
+                              arangodb::LogicalCollection const*);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief filter a collection based on collection attributes
   //////////////////////////////////////////////////////////////////////////////
 
-  static bool filterCollection(TRI_vocbase_col_t*, void*);
+  static bool filterCollection(arangodb::LogicalCollection*, void*);
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -160,7 +159,7 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
   /// @brief creates a collection, based on the VelocyPack provided TODO: MOVE
   //////////////////////////////////////////////////////////////////////////////
 
-  int createCollection(VPackSlice const&, TRI_vocbase_col_t**, bool);
+  int createCollection(VPackSlice const&, arangodb::LogicalCollection**, bool);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief handle a restore command for a specific collection
@@ -186,7 +185,7 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
   //////////////////////////////////////////////////////////////////////////////
 
   int processRestoreCollectionCoordinator(VPackSlice const&, bool, bool, bool,
-                                          uint64_t, std::string&);
+                                          uint64_t, std::string&, uint64_t);
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief restores the indexes of a collection TODO MOVE
@@ -324,6 +323,36 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
 
   void handleCommandAddFollower();
 
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief remove a follower of a shard from the list of followers
+  //////////////////////////////////////////////////////////////////////////////
+
+  void handleCommandRemoveFollower();
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief hold a read lock on a collection to stop writes temporarily
+  //////////////////////////////////////////////////////////////////////////////
+
+  void handleCommandHoldReadLockCollection();
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief check if we are holding a read lock on a collection
+  //////////////////////////////////////////////////////////////////////////////
+
+  void handleCommandCheckHoldReadLockCollection();
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief cancel holding a read lock on a collection
+  //////////////////////////////////////////////////////////////////////////////
+
+  void handleCommandCancelHoldReadLockCollection();
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief get an ID for a hold read lock job
+  //////////////////////////////////////////////////////////////////////////////
+
+  void handleCommandGetIdForReadLockCollection();
+
  private:
   //////////////////////////////////////////////////////////////////////////////
   /// @brief minimum chunk size
@@ -336,6 +365,22 @@ class RestReplicationHandler : public RestVocbaseBaseHandler {
   //////////////////////////////////////////////////////////////////////////////
 
   static uint64_t const maxChunkSize;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief condition locker to wake up holdReadLockCollection jobs
+  //////////////////////////////////////////////////////////////////////////////
+
+  static arangodb::basics::ConditionVariable _condVar;
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief global set of ids of holdReadLockCollection jobs, if
+  /// an id is removed here (under the protection of the mutex of
+  /// condVar) and a broadcast is sent, the job with that id is
+  /// terminated.
+  //////////////////////////////////////////////////////////////////////////////
+
+  static std::unordered_set<std::string> _holdReadLockJobs;
+
 };
 }
 

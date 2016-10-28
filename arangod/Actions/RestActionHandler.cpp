@@ -33,9 +33,9 @@ using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-RestActionHandler::RestActionHandler(HttpRequest* request,
-                                     action_options_t* data)
-    : RestVocbaseBaseHandler(request),
+RestActionHandler::RestActionHandler(GeneralRequest* request,
+                                     GeneralResponse* response)
+    : RestVocbaseBaseHandler(request, response),
       _action(nullptr),
       _dataLock(),
       _data(nullptr) {
@@ -44,7 +44,7 @@ RestActionHandler::RestActionHandler(HttpRequest* request,
 
 bool RestActionHandler::isDirect() const { return _action == nullptr; }
 
-HttpHandler::status_t RestActionHandler::execute() {
+RestStatus RestActionHandler::execute() {
   TRI_action_result_t result;
 
   // check the request path
@@ -62,17 +62,17 @@ HttpHandler::status_t RestActionHandler::execute() {
   // execute
   else {
     // extract the sub-request type
-    GeneralRequest::RequestType type = _request->requestType();
+    rest::RequestType type = _request->requestType();
 
     // execute one of the HTTP methods
     switch (type) {
-      case GeneralRequest::RequestType::GET:
-      case GeneralRequest::RequestType::POST:
-      case GeneralRequest::RequestType::PUT:
-      case GeneralRequest::RequestType::DELETE_REQ:
-      case GeneralRequest::RequestType::HEAD:
-      case GeneralRequest::RequestType::OPTIONS:
-      case GeneralRequest::RequestType::PATCH: {
+      case rest::RequestType::GET:
+      case rest::RequestType::POST:
+      case rest::RequestType::PUT:
+      case rest::RequestType::DELETE_REQ:
+      case rest::RequestType::HEAD:
+      case rest::RequestType::OPTIONS:
+      case rest::RequestType::PATCH: {
         result = executeAction();
         break;
       }
@@ -85,32 +85,28 @@ HttpHandler::status_t RestActionHandler::execute() {
   }
 
   // handler has finished, generate result
-  return status_t(result.isValid ? HANDLER_DONE : HANDLER_FAILED);
+  return result.isValid ? RestStatus::DONE : RestStatus::FAIL;
 }
 
-bool RestActionHandler::cancel() { return _action->cancel(&_dataLock, &_data); }
+bool RestActionHandler::cancel() {
+  RestHandler::cancel();
+  return _action->cancel(&_dataLock, &_data);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief executes an action
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_action_result_t RestActionHandler::executeAction() {
-  TRI_action_result_t result =
-      _action->execute(_vocbase, _request, &_dataLock, &_data);
+  TRI_action_result_t result = _action->execute(
+      _vocbase, _request.get(), _response.get(), &_dataLock, &_data);
 
-  if (result.isValid) {
-    _response = result.response;
-    result.response = nullptr;
-  } else if (result.canceled) {
-    result.isValid = true;
-    generateCanceled();
-  } else {
-    result.isValid = true;
-    generateNotImplemented(_action->_url);
-  }
-
-  if (result.response != nullptr) {
-    delete result.response;
+  if (!result.isValid) {
+    if (result.canceled) {
+      generateCanceled();
+    } else {
+      generateNotImplemented(_action->_url);
+    }
   }
 
   return result;

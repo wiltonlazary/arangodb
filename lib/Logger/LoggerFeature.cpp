@@ -35,24 +35,12 @@ using namespace arangodb::options;
 LoggerFeature::LoggerFeature(application_features::ApplicationServer* server,
                              bool threaded)
     : ApplicationFeature(server, "Logger"),
-      _output(),
-      _levels(),
-      _useLocalTime(false),
-      _prefix(""),
-      _file(),
-      _lineNumber(false),
-      _thread(false),
-      _performance(false),
-      _keepLogRotate(false),
-      _foregroundTty(true),
-      _forceDirect(false),
-      _supervisor(false),
-      _backgrounded(false),
       _threaded(threaded) {
   setOptional(false);
   requiresElevatedPrivileges(false);
 
   startsAfter("Version");
+
   if (threaded) {
     startsAfter("WorkMonitor");
   }
@@ -63,7 +51,17 @@ LoggerFeature::LoggerFeature(application_features::ApplicationServer* server,
   _foregroundTty = (isatty(STDOUT_FILENO) != 0);
 }
 
+LoggerFeature::~LoggerFeature() {
+  Logger::shutdown(true);
+}
+
 void LoggerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
+  options->addOldOption("log.tty", "log.foreground-tty");
+  options->addOldOption("log.content-filter", "");
+  options->addOldOption("log.source-filter", "");
+  options->addOldOption("log.application", "");
+  options->addOldOption("log.facility", "");
+  
   options->addHiddenOption("--log", "the global or topic-specific log level",
                            new VectorParameter<StringParameter>(&_levels));
 
@@ -78,6 +76,10 @@ void LoggerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
   options->addOption("--log.use-local-time",
                      "use local timezone instead of UTC",
                      new BooleanParameter(&_useLocalTime));
+
+  options->addOption("--log.use-microtime",
+                     "use microtime instead",
+                     new BooleanParameter(&_useMicrotime));
 
   options->addHiddenOption("--log.prefix",
                            "prefix log message with this string",
@@ -113,7 +115,8 @@ void LoggerFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
 }
 
 void LoggerFeature::loadOptions(
-    std::shared_ptr<options::ProgramOptions> options) {
+    std::shared_ptr<options::ProgramOptions> options,
+    const char *binaryPath) {
   // for debugging purpose, we set the log levels NOW
   // this might be overwritten latter
   Logger::setLogLevel(_levels);
@@ -147,6 +150,7 @@ void LoggerFeature::prepare() {
 
   Logger::setLogLevel(_levels);
   Logger::setUseLocalTime(_useLocalTime);
+  Logger::setUseMicrotime(_useMicrotime);
   Logger::setShowLineNumber(_lineNumber);
   Logger::setShowThreadIdentifier(_thread);
   Logger::setOutputPrefix(_prefix);
@@ -171,7 +175,6 @@ void LoggerFeature::prepare() {
   }
 }
 
-void LoggerFeature::stop() {
+void LoggerFeature::unprepare() {
   Logger::flush();
-  Logger::shutdown(true);
 }

@@ -54,9 +54,19 @@
 # (To distribute this file outside of CMake, substitute the full
 #  License text for the above reference.)
 
+if (APPLE AND BREW AND NOT OPENSSL_ROOT_DIR)
+  message("searching openssl with brew (${BREW})")
+  # if we have a brew openssl, prefer it over the elderly system one.
+  execute_process(OUTPUT_VARIABLE BREW_ROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND ${BREW} --prefix)
+  set(OPENSSL_ROOT_DIR "${BREW_ROOT}/opt/openssl")
+  message("auto-set OPENSSL_ROOT_DIR to: ${OPENSSL_ROOT_DIR}")
+endif ()
+
 if (UNIX)
   find_package(PkgConfig QUIET)
-  pkg_check_modules(_OPENSSL QUIET openssl)
+  pkg_check_modules(_OPENSSL openssl)
 endif ()
 
 # Support preference of static libs by adjusting CMAKE_FIND_LIBRARY_SUFFIXES
@@ -75,7 +85,9 @@ if (WIN32)
   set(SSL_BITS "x64")
   # v140 corresponds to VS 2015
   set(SSL_NUGET_DIR "lib/native/v140/windesktop/msvcstl/dyn/rt-dyn")
-  set(SSL_NUGET_ROOT "$ENV{USERPROFILE}/.nuget/packages/openssl.v140.windesktop.msvcstl.dyn.rt-dyn.${SSL_BITS}")
+
+  string(REPLACE "\\" "/" USER_PATH "$ENV{USERPROFILE}")
+  set(SSL_NUGET_ROOT "${USER_PATH}/.nuget/packages/openssl.v140.windesktop.msvcstl.dyn.rt-dyn.${SSL_BITS}")
   if (NOT OPENSSL_ROOT_DIR AND IS_DIRECTORY ${SSL_NUGET_ROOT})
     # find latest version based on folder name and assign to OPENSSL_ROOT_DIR
     FILE(GLOB dirlist RELATIVE ${SSL_NUGET_ROOT} ${SSL_NUGET_ROOT}/*)
@@ -173,21 +185,25 @@ if(WIN32 AND NOT CYGWIN)
     set(LIB_EAY_DEBUG LIB_EAY_DEBUG-NOTFOUND)
     if (EXISTS "${OPENSSL_LIB_DIR}/debug/libeay32.lib")
       set(LIB_EAY_DEBUG "${OPENSSL_LIB_DIR}/debug/libeay32.lib")
+      set(LIB_EAY_DEBUG_DLL "${OPENSSL_LIB_DIR}/debug/libeay32.dll")
     endif()
 
     set(LIB_EAY_RELEASE LIB_EAY_RELEASE-NOTFOUND)
     if (EXISTS "${OPENSSL_LIB_DIR}/release/libeay32.lib")
       set(LIB_EAY_RELEASE "${OPENSSL_LIB_DIR}/release/libeay32.lib")
+      set(LIB_EAY_RELEASE_DLL "${OPENSSL_LIB_DIR}/release/libeay32.dll")
     endif()
 
     set(SSL_EAY_DEBUG SSL_EAY_DEBUG-NOTFOUND)
     if (EXISTS "${OPENSSL_LIB_DIR}/debug/ssleay32.lib")
       set(SSL_EAY_DEBUG "${OPENSSL_LIB_DIR}/debug/ssleay32.lib")
+      set(SSL_EAY_DEBUG_DLL "${OPENSSL_LIB_DIR}/debug/ssleay32.dll")
     endif()
 
     set(SSL_EAY_RELEASE SSL_EAY_RELEASE-NOTFOUND)
     if (EXISTS "${OPENSSL_LIB_DIR}/release/ssleay32.lib")
       set(SSL_EAY_RELEASE "${OPENSSL_LIB_DIR}/release/ssleay32.lib")
+      set(SSL_EAY_RELEASE_DLL "${OPENSSL_LIB_DIR}/release/ssleay32.dll")
     endif()
 
     set(LIB_EAY_LIBRARY_DEBUG "${LIB_EAY_DEBUG}")
@@ -349,7 +365,6 @@ if(WIN32 AND NOT CYGWIN)
     set(OPENSSL_LIBRARIES ${SSL_EAY} ${LIB_EAY} )
   endif()
 else()
-
   find_library(OPENSSL_SSL_LIBRARY
     NAMES
       ssl
@@ -530,9 +545,4 @@ if(OPENSSL_FOUND)
         INTERFACE_LINK_LIBRARIES OpenSSL::Crypto)
     endif()
   endif()
-endif()
-
-# Restore the original find library ordering
-if(OPENSSL_USE_STATIC_LIBS)
-  set(CMAKE_FIND_LIBRARY_SUFFIXES ${_openssl_ORIG_CMAKE_FIND_LIBRARY_SUFFIXES})
 endif()

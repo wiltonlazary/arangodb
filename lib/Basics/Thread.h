@@ -119,7 +119,7 @@ class Thread {
 
     WorkDescription* desc = thread->workDescription();
 
-    return desc == nullptr ? false : desc->_canceled.load();
+    return desc == nullptr ? false : desc->_data._thread._canceled.load();
   }
 
  public:
@@ -178,6 +178,12 @@ class Thread {
   //////////////////////////////////////////////////////////////////////////////
 
   TRI_tid_t threadId() const { return _threadId; }
+
+  //////////////////////////////////////////////////////////////////////////////
+  /// @brief false, if the thread is just created
+  //////////////////////////////////////////////////////////////////////////////
+
+  bool hasStarted() const { return _state.load() != ThreadState::CREATED; }
 
   //////////////////////////////////////////////////////////////////////////////
   /// @brief true, if the thread is still running

@@ -30,17 +30,13 @@
 #include "Utils/CollectionExport.h"
 
 namespace arangodb {
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief document request handler
-////////////////////////////////////////////////////////////////////////////////
-
 class RestExportHandler : public RestVocbaseBaseHandler {
  public:
-  explicit RestExportHandler(HttpRequest*);
+  explicit RestExportHandler(GeneralRequest*, GeneralResponse*);
 
  public:
-  status_t execute() override;
+  RestStatus execute() override;
+  char const* name() const override final { return "RestExportHandler"; }
 
  private:
   //////////////////////////////////////////////////////////////////////////////

@@ -31,36 +31,33 @@ using namespace arangodb;
 using namespace arangodb::basics;
 using namespace arangodb::rest;
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief ArangoDB server
-////////////////////////////////////////////////////////////////////////////////
-
-RestDebugHandler::RestDebugHandler(HttpRequest* request)
-    : RestVocbaseBaseHandler(request) {}
+RestDebugHandler::RestDebugHandler(GeneralRequest* request,
+                                   GeneralResponse* response)
+    : RestVocbaseBaseHandler(request, response) {}
 
 bool RestDebugHandler::isDirect() const { return false; }
 
-HttpHandler::status_t RestDebugHandler::execute() {
+RestStatus RestDebugHandler::execute() {
   // extract the sub-request type
   auto const type = _request->requestType();
   size_t const len = _request->suffix().size();
-  
+
   if (len == 0 || len > 2 || !(_request->suffix()[0] == "failat")) {
     generateNotImplemented("ILLEGAL /_admin/debug/failat");
-    return status_t(HANDLER_DONE);
+    return RestStatus::DONE;
   }
   std::vector<std::string> const& suffix = _request->suffix();
 
   // execute one of the CRUD methods
   switch (type) {
-    case GeneralRequest::RequestType::DELETE_REQ:
+    case rest::RequestType::DELETE_REQ:
       if (len == 1) {
         TRI_ClearFailurePointsDebugging();
       } else {
         TRI_RemoveFailurePointDebugging(suffix[1].c_str());
       }
       break;
-    case GeneralRequest::RequestType::PUT:
+    case rest::RequestType::PUT:
       if (len == 2) {
         TRI_AddFailurePointDebugging(suffix[1].c_str());
       } else {
@@ -69,14 +66,14 @@ HttpHandler::status_t RestDebugHandler::execute() {
       break;
     default:
       generateNotImplemented("ILLEGAL /_admin/debug/failat");
-      return status_t(HANDLER_DONE);
+      return RestStatus::DONE;
   }
   try {
     VPackBuilder result;
     result.add(VPackValue(true));
-    generateResult(GeneralResponse::ResponseCode::OK, result.slice());
+    generateResult(rest::ResponseCode::OK, result.slice());
   } catch (...) {
     // Ignore this error
   }
-  return status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

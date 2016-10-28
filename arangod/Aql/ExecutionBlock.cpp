@@ -24,6 +24,7 @@
 
 #include "ExecutionBlock.h"
 #include "Aql/ExecutionEngine.h"
+#include "Aql/Ast.h"
 
 using namespace arangodb::aql;
 
@@ -32,7 +33,8 @@ ExecutionBlock::ExecutionBlock(ExecutionEngine* engine, ExecutionNode const* ep)
       _trx(engine->getQuery()->trx()),
       _exeNode(ep),
       _pos(0),
-      _done(false) {}
+      _done(false),
+      _tracing(engine->getQuery()->getNumericOption("tracing", 0)) {}
 
 ExecutionBlock::~ExecutionBlock() {
   for (auto& it : _buffer) {
@@ -40,6 +42,22 @@ ExecutionBlock::~ExecutionBlock() {
   }
 
   _buffer.clear();
+}
+
+/// @brief returns the register id for a variable id
+/// will return ExecutionNode::MaxRegisterId for an unknown variable
+RegisterId ExecutionBlock::getRegister(VariableId id) const {
+  auto it = _exeNode->getRegisterPlan()->varInfo.find(id);
+
+  if (it != _exeNode->getRegisterPlan()->varInfo.end()) {
+    return (*it).second.registerId;
+  }
+  return ExecutionNode::MaxRegisterId;
+}
+
+RegisterId ExecutionBlock::getRegister(Variable const* variable) const {
+  TRI_ASSERT(variable != nullptr);
+  return getRegister(variable->id);
 }
 
 /// @brief determine the number of rows in a vector of blocks
@@ -65,7 +83,7 @@ bool ExecutionBlock::removeDependency(ExecutionBlock* ep) {
 }
 
 int ExecutionBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
-  DEBUG_BEGIN_BLOCK();  
+  DEBUG_BEGIN_BLOCK();
   for (auto& d : _dependencies) {
     int res = d->initializeCursor(items, pos);
 
@@ -81,7 +99,7 @@ int ExecutionBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
 
   _done = false;
   return TRI_ERROR_NO_ERROR;
-  DEBUG_END_BLOCK();  
+  DEBUG_END_BLOCK();
 }
 
 /// @brief whether or not the query was killed
@@ -131,6 +149,41 @@ int ExecutionBlock::shutdown(int errorCode) {
   return ret;
 }
 
+// Trace the start of a getSome call
+void ExecutionBlock::traceGetSomeBegin() const {
+  if (_tracing > 0) {
+    auto node = getPlanNode();
+    LOG_TOPIC(INFO, Logger::QUERIES) << "getSome type="
+      << node->getTypeString() << " this=" << (uintptr_t) this
+      << " id=" << node->id();
+  }
+}
+
+// Trace the end of a getSome call, potentially with result
+void ExecutionBlock::traceGetSomeEnd(AqlItemBlock const* result) const {
+  if (_tracing > 0) {
+    auto node = getPlanNode();
+    LOG_TOPIC(INFO, Logger::QUERIES) << "getSome done type="
+      << node->getTypeString() << " this=" << (uintptr_t) this
+      << " id=" << node->id();
+    if (_tracing > 1) {
+      if (result == nullptr) {
+        LOG_TOPIC(INFO, Logger::QUERIES)
+            << "getSome type=" << node->getTypeString() << " result: nullptr";
+      } else {
+        VPackBuilder builder;
+        { 
+          VPackObjectBuilder guard(&builder);
+          result->toVelocyPack(_trx, builder);
+        }
+        LOG_TOPIC(INFO, Logger::QUERIES)
+            << "getSome type=" << node->getTypeString()
+            << " result: " << builder.toJson();
+      }
+    }
+  }
+}
+
 /// @brief getSome, gets some more items, semantic is as follows: not
 /// more than atMost items may be delivered. The method tries to
 /// return a block of at least atLeast items, however, it may return
@@ -138,9 +191,11 @@ int ExecutionBlock::shutdown(int errorCode) {
 /// if it returns an actual block, it must contain at least one item.
 AqlItemBlock* ExecutionBlock::getSome(size_t atLeast, size_t atMost) {
   DEBUG_BEGIN_BLOCK();
+  traceGetSomeBegin();
   std::unique_ptr<AqlItemBlock> result(
       getSomeWithoutRegisterClearout(atLeast, atMost));
   clearRegisters(result.get());
+  traceGetSomeEnd(result.get());
   return result.release();
   DEBUG_END_BLOCK();
 }
@@ -160,7 +215,7 @@ void ExecutionBlock::returnBlock(AqlItemBlock*& block) {
 void ExecutionBlock::inheritRegisters(AqlItemBlock const* src,
                                       AqlItemBlock* dst, size_t srcRow,
                                       size_t dstRow) {
-  DEBUG_BEGIN_BLOCK();  
+  DEBUG_BEGIN_BLOCK();
   RegisterId const n = src->getNrRegs();
   auto planNode = getPlanNode();
 
@@ -177,14 +232,14 @@ void ExecutionBlock::inheritRegisters(AqlItemBlock const* src,
       }
     }
   }
-  DEBUG_END_BLOCK();  
+  DEBUG_END_BLOCK();
 }
 
 /// @brief copy register data from one block (src) into another (dst)
 /// register values are cloned
 void ExecutionBlock::inheritRegisters(AqlItemBlock const* src,
                                       AqlItemBlock* dst, size_t row) {
-  DEBUG_BEGIN_BLOCK();  
+  DEBUG_BEGIN_BLOCK();
   RegisterId const n = src->getNrRegs();
   auto planNode = getPlanNode();
 
@@ -195,7 +250,7 @@ void ExecutionBlock::inheritRegisters(AqlItemBlock const* src,
       if (!value.isEmpty()) {
         AqlValue a = value.clone();
         AqlValueGuard guard(a, true);
-          
+
         TRI_IF_FAILURE("ExecutionBlock::inheritRegisters") {
           THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
         }
@@ -205,7 +260,8 @@ void ExecutionBlock::inheritRegisters(AqlItemBlock const* src,
       }
     }
   }
-  DEBUG_END_BLOCK();  
+
+  DEBUG_END_BLOCK();
 }
 
 /// @brief the following is internal to pull one more block and append it to
@@ -230,7 +286,7 @@ bool ExecutionBlock::getBlock(size_t atLeast, size_t atMost) {
   docs.release();
 
   return true;
-  DEBUG_END_BLOCK();  
+  DEBUG_END_BLOCK();
 }
 
 /// @brief getSomeWithoutRegisterClearout, same as above, however, this
@@ -284,7 +340,7 @@ size_t ExecutionBlock::skipSome(size_t atLeast, size_t atMost) {
 
 // skip exactly <number> outputs, returns <true> if _done after
 // skipping, and <false> otherwise . . .
-bool ExecutionBlock::skip(size_t number) {
+bool ExecutionBlock::skip(size_t number, size_t& numActuallySkipped) {
   DEBUG_BEGIN_BLOCK();
   size_t skipped = skipSome(number, number);
   size_t nr = skipped;
@@ -292,6 +348,7 @@ bool ExecutionBlock::skip(size_t number) {
     nr = skipSome(number - skipped, number - skipped);
     skipped += nr;
   }
+  numActuallySkipped = skipped;
   if (nr == 0) {
     return true;
   }
@@ -345,7 +402,8 @@ int ExecutionBlock::getOrSkipSome(size_t atLeast, size_t atMost, bool skipping,
     while (skipped < atLeast) {
       if (_buffer.empty()) {
         if (skipping) {
-          _dependencies[0]->skip(atLeast - skipped);
+          size_t numActuallySkipped = 0;
+          _dependencies[0]->skip(atLeast - skipped, numActuallySkipped);
           skipped = atLeast;
           freeCollector();
           return TRI_ERROR_NO_ERROR;

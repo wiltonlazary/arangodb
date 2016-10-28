@@ -3,7 +3,7 @@
   "description": "ArangoDB Admin Web Interface",
   "author": "ArangoDB GmbH",
   "version": "3.0.0",
-  "license": "Apache License, Version 2.0",
+  "license": "Apache-2.0",
 
   "engines": {
     "arangodb": "^3.0.0-0 || ^3.0.0"
@@ -33,11 +33,6 @@
   "defaultDocument": "index.html",
 
   "configuration": {
-    "sessionPruneProb": {
-      "description": "Probability that dead sessions will be removed from the database for any given request.",
-      "type": "number",
-      "default": "0.001"
-    }
   },
 
   "files": {

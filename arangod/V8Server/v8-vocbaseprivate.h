@@ -26,7 +26,10 @@
 
 #include "Basics/Common.h"
 #include "V8/v8-utils.h"
-#include "v8-vocbase.h"
+#include "V8Server/v8-vocbase.h"
+#include "VocBase/voc-types.h"
+
+#include <velocypack/Builder.h>
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief wrapped class for TRI_vocbase_t
@@ -39,7 +42,7 @@
 extern int32_t const WRP_VOCBASE_TYPE;
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief wrapped class for TRI_vocbase_col_t
+/// @brief wrapped class for LogicalCollection
 ///
 /// Layout:
 /// - SLOT_CLASS_TYPE
@@ -59,12 +62,6 @@ extern int32_t const WRP_VOCBASE_COL_TYPE;
   }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief create a v8 revision id value from the internal revision id
-////////////////////////////////////////////////////////////////////////////////
-
-v8::Handle<v8::Value> V8RevisionId(v8::Isolate* isolate, TRI_voc_rid_t rid);
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief get the vocbase pointer from the current V8 context
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -75,15 +72,6 @@ TRI_vocbase_t* GetContextVocBase(v8::Isolate* isolate);
 ////////////////////////////////////////////////////////////////////////////////
 
 v8::Handle<v8::Value> V8TickId(v8::Isolate* isolate, TRI_voc_tick_t tick);
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief parse document or document handle from a v8 value (string | object)
-////////////////////////////////////////////////////////////////////////////////
-
-bool ExtractDocumentHandle(v8::Isolate* isolate,
-                           v8::Handle<v8::Value> const val,
-                           std::string& collectionName,
-                           std::unique_ptr<char[]>& key, TRI_voc_rid_t& rid);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief parse document or document handle from a v8 value (string | object)

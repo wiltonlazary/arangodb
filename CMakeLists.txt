@@ -25,17 +25,22 @@ if (NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"
       OR CMAKE_BUILD_TYPE STREQUAL "None"))
   message(FATAL_ERROR "expecting CMAKE_BUILD_TYPE: None Debug Release RelWithDebInfo MinSizeRel, got ${CMAKE_BUILD_TYPE}.")
 endif ()
+add_definitions(-DCURL_STATICLIB=1)
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "deployment target for MacOSX")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.11" CACHE STRING "deployment target for MacOSX; adjust to your sysem")
 
 if (WIN32)
-  project(ArangoDB CXX C)
+  project(arangodb3 CXX C)
 else ()
-  project(ArangoDB CXX C ASM)
+  project(arangodb3 CXX C ASM)
 endif ()
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # where to find CMAKE modules
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
+set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
+
+option(SKIP_PACKAGING OFF)
 
 # be verbose about flags used
 option(VERBOSE OFF)
@@ -47,20 +52,34 @@ if (USE_DEV_TIMERS)
   add_definitions("-DUSE_DEV_TIMERS=1")
 endif ()
 
+# enable enterprise features
+set(ENTERPRISE_INCLUDE_DIR "enterprise")
+option(USE_ENTERPRISE OFF)
+
+if (USE_ENTERPRISE)
+  add_definitions("-DUSE_ENTERPRISE=1")
+  include_directories(${ENTERPRISE_INCLUDE_DIR})
+  add_subdirectory(enterprise)
+endif ()
+
 ################################################################################
 ## ARANGODB
 ################################################################################
 
 set(ARANGODB_VERSION_MAJOR      "3")
-set(ARANGODB_VERSION_MINOR      "0")
-set(ARANGODB_VERSION_REVISION   "x-devel")
+set(ARANGODB_VERSION_MINOR      "1")
+set(ARANGODB_VERSION_REVISION   "devel")
+set(ARANGODB_PACKAGE_REVISION   "1")
 
 set(ARANGODB_VERSION
     "${ARANGODB_VERSION_MAJOR}.${ARANGODB_VERSION_MINOR}.${ARANGODB_VERSION_REVISION}")
 
-# for NSIS
+# for the packages
+set(ARANGODB_PACKAGE_VENDOR  "ArangoDB GmbH")
+set(ARANGODB_PACKAGE_CONTACT "info@arangodb.com")
 set(ARANGODB_DISPLAY_NAME       "ArangoDB")
 set(ARANGODB_URL_INFO_ABOUT     "https://www.arangodb.com")
+set(ARANGODB_HELP_LINK          "https://docs.arangodb.com/${ARANGODB_VERSION_MAJOR}.${ARANGODB_VERSION_MINOR}/")
 set(ARANGODB_CONTACT            "hackers@arangodb.com")
 set(ARANGODB_FRIENDLY_STRING    "ArangoDB - the multi-model database")
 
@@ -70,6 +89,7 @@ set(ARANGO_DUMP_FRIENDLY_STRING    "arangodump - export")
 set(ARANGO_RESTORE_FRIENDLY_STRING "arangrestore - importer")
 set(ARANGO_IMP_FRIENDLY_STRING     "arangoimp - TSV/CSV/JSON importer")
 set(ARANGOSH_FRIENDLY_STRING       "arangosh - commandline client")
+set(ARANGO_VPACK_FRIENDLY_STRING   "arangovpack - vpack printer")
 
 # libraries
 set(LIB_ARANGO        arango)
@@ -82,10 +102,13 @@ set(BIN_ARANGODUMP    arangodump)
 set(BIN_ARANGOIMP     arangoimp)
 set(BIN_ARANGORESTORE arangorestore)
 set(BIN_ARANGOSH      arangosh)
+set(BIN_ARANGOVPACK   arangovpack)
 
 # test binaries
 set(TEST_BASICS_SUITE basics_suite)
 set(TEST_GEO_SUITE    geo_suite)
+set(PACKAGES_LIST)
+set(CLEAN_PACKAGES_LIST)
 
 ################################################################################
 ## VERSION FILES
@@ -116,8 +139,50 @@ configure_file(
 )
 
 ################################################################################
+## Find the git revision
+################################################################################
+
+find_program (GIT_EXE git)
+if (DEFINED GIT_EXE AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.git")
+  execute_process(
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    
+    COMMAND ${GIT_EXE} describe --all --tags --long --dirty=-dirty
+    OUTPUT_VARIABLE GIT_OUTPUT)
+
+  # this may fail on shallow clones that only knows about a limited number of commits.
+  # if there is an older merged revision the head, it may not be available to git.
+  if (NOT GIT_OUTPUT)
+      set(ARANGODB_BUILD_REPOSITORY "GIT FAILED TO RETRIEVE THE VERSION - SHALLOW CLONE?")
+      set(HAVE_ARANGODB_BUILD_REPOSITORY "1")
+    else()
+      string(STRIP ${GIT_OUTPUT} REPOSITORY_VERSION)
+      set(ARANGODB_BUILD_REPOSITORY ${REPOSITORY_VERSION})
+      set(HAVE_ARANGODB_BUILD_REPOSITORY "1")
+    endif()
+else ()
+  set(ARANGODB_BUILD_REPOSITORY "")
+  set(HAVE_ARANGODB_BUILD_REPOSITORY "0")
+endif()
+
+configure_file (
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/Basics/build-repository.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/lib/Basics/build-repository.h"
+  NEWLINE_STYLE UNIX
+)
+
+if (VERBOSE)
+  message(STATUS "ARANGODB_BUILD_REPOSITORY=\"${ARANGODB_BUILD_REPOSITORY}\"")
+endif ()
+
+################################################################################
 ## OPERATION SYSTEM
 ################################################################################
+
+option(HOMEBREW
+  "whether to install for homebrew"
+  Off
+)
 
 if (WIN32)
   set(WINDOWS TRUE)
@@ -154,24 +219,15 @@ elseif (APPLE)
   elseif (CMAKE_SYSTEM_NAME MATCHES ".*MacOS.*")
     set(MACOSX TRUE)
   endif ()
+  find_program(BREW brew)
 endif ()
 
 ################################################################################
 ## ROCKSDB
 ################################################################################
 
-option(USE_ROCKSDB
-  "whether RocksDB is enabled"
-  ON
-)
-
-if (USE_ROCKSDB)
-  add_definitions("-DARANGODB_ENABLE_ROCKSDB=1")
-  add_definitions(-DARANGODB_ROCKSDB_VERSION=\"${ROCKSDB_VERSION}\")
-  include_directories(${ROCKSDB_INCLUDE_DIR})
-else ()
-  set(ROCKSDB_LIBS "")
-endif ()
+add_definitions(-DARANGODB_ROCKSDB_VERSION=\"${ROCKSDB_VERSION}\")
+include_directories(${ROCKSDB_INCLUDE_DIR})
 
 ################################################################################
 ## EXTERNAL PROGRAMS
@@ -183,7 +239,7 @@ else ()
   set(MAKE make)
 endif ()
 
-find_package(PythonInterp 2 REQUIRED)
+find_package(PythonInterp 2 EXACT REQUIRED)
 get_filename_component(PYTHON_EXECUTABLE "${PYTHON_EXECUTABLE}" REALPATH)
 
 ################################################################################
@@ -213,9 +269,9 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
 endif ()
 
 if (WINDOWS)
-  set(BASE_FLAGS     "/D WIN32 /D _WINDOWS /W3" CACHE STRING "base flags")
-  set(BASE_C_FLAGS   ""                         CACHE STRING "base C flags")
-  set(BASE_CXX_FLAGS "/GR /EHsc"                CACHE STRING "base C++flags")
+  set(BASE_FLAGS     "/D WIN32 /D _WINDOWS /W3 /MP"      CACHE STRING "base flags")
+  set(BASE_C_FLAGS   ""                         	 CACHE STRING "base C flags")
+  set(BASE_CXX_FLAGS "/GR /EHsc"                	 CACHE STRING "base C++flags")
 else ()
   set(BASE_FLAGS     ""                                  CACHE STRING "base flags")
   set(BASE_C_FLAGS   "${CMAKE_C_FLAGS}   $ENV{CFLAGS}"   CACHE STRING "base C flags")
@@ -264,15 +320,15 @@ find_package(Threads REQUIRED)
 if (MSVC)
   configure_file("Installation/Windows/vcproj.user/arangod.vcxproj.user" ${CMAKE_BINARY_DIR})
   add_definitions("-D_CRT_SECURE_NO_WARNINGS=1")
-  add_definitions("-DFD_SETSIZE=2048")
+  add_definitions("-DFD_SETSIZE=8192")
   add_definitions("-DU_STATIC_IMPLEMENTATION=1")
   
   # https://blogs.msdn.microsoft.com/vcblog/2016/04/14/stl-fixes-in-vs-2015-update-2/
   # https://connect.microsoft.com/VisualStudio/feedback/details/1892487
-  #http://lists.boost.org/boost-users/2016/04/85968.php
+  # http://lists.boost.org/boost-users/2016/04/85968.php
   add_definitions("-D_ENABLE_ATOMIC_ALIGNMENT_FIX")
   
-  set(MSVC_LIBS crypt32.lib;WINMM.LIB;Ws2_32.lib)
+  set(MSVC_LIBS Shlwapi.lib;crypt32.lib;WINMM.LIB;Ws2_32.lib)
 
   set(CMAKE_EXE_LINKER_FLAGS
     "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE /SAFESEH:NO /MACHINE:x64 /ignore:4099 ${BASE_LD_FLAGS}"
@@ -281,6 +337,27 @@ else ()
   set(CMAKE_EXE_LINKER_FLAGS
     "${CMAKE_EXE_LINKER_FLAGS} ${BASE_LD_FLAGS}"
   )
+endif ()
+
+# broken clock_gettime on MacOSX
+SET(USE_LOCAL_CLOCK_GETTIME FALSE)
+
+if (APPLE)
+  TRY_RUN(RUN_CLOCK_GETTIME
+          COMPILE_CLOCK_GETTIME
+          ${PROJECT_BINARY_DIR}/test_clock_gettime
+          ${CMAKE_SOURCE_DIR}/cmake/test_clock_gettime.c
+          OUTPUT_VARIABLE OUTPUT_CLOCK_GETTIME)
+
+  if (${COMPILE_CLOCK_GETTIME})
+    if (${RUN_CLOCK_GETTIME} STREQUAL "FAILED_TO_RUN")
+      set(USE_LOCAL_CLOCK_GETTIME TRUE)
+    endif ()
+  endif ()
+
+  if (USE_LOCAL_CLOCK_GETTIME) 
+    message(STATUS "using a home-made clock_gettime")
+  endif ()
 endif ()
 
 ################################################################################
@@ -328,12 +405,12 @@ else ()
 
   option(USE_OPTIMIZE_FOR_ARCHITECTURE "try to determine CPU architecture" ON)
 
-  if (NOT ${USE_OPTIMIZE_FOR_ARCHITECTURE})
+  if (USE_OPTIMIZE_FOR_ARCHITECTURE)
     # mop: core2 (merom) is our absolute minimum!
-    SET(TARGET_ARCHITECTURE "merom")
+    # SET(TARGET_ARCHITECTURE "merom")
+    include(OptimizeForArchitecture)
+    OptimizeForArchitecture()
   endif ()
-  include(OptimizeForArchitecture)
-  OptimizeForArchitecture()
 
   set(BASE_FLAGS "${Vc_ARCHITECTURE_FLAGS} ${BASE_FLAGS}")
 endif ()
@@ -412,6 +489,8 @@ endif ()
 ## JEMALLOC
 ################################################################################
 
+set(DEFAULT_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_STATIC_LIBRARY_SUFFIX})
 find_package(jemalloc)
 set(JEMALLOC_DEFAULT_VALUE ${JEMALLOC_FOUND})
 
@@ -424,13 +503,21 @@ option(USE_JEMALLOC
   ${JEMALLOC_DEFAULT_VALUE}
 )
 
+set(FORCE_JEMALLOC_LIB "" CACHE STRING "force this library command to link jemalloc")
+
 if (USE_JEMALLOC)
   if (NOT JEMALLOC_FOUND)
     message(FATAL_ERROR "jemalloc build was requested but jemalloc not found")
   endif ()
   add_definitions("-DARANGODB_HAVE_JEMALLOC=1")
-  set(SYS_LIBS ${SYS_LIBS} ${JEMALLOC_jemalloc_LIBRARY})
+
+  if (FORCE_JEMALLOC_LIB STREQUAL "")
+    set(SYS_LIBS ${SYS_LIBS} ${JEMALLOC_jemalloc_LIBRARY})
+  else ()
+    set(SYS_LIBS ${SYS_LIBS} ${FORCE_JEMALLOC_LIB})
+  endif ()
 endif ()
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${DEFAULT_LIBRARY_SUFFIXES})
 
 ################################################################################
 ## TCMALLOC
@@ -601,6 +688,7 @@ if (VERBOSE)
   message(STATUS)
 endif ()
 
+
 ################################################################################
 ## 3RD PARTY
 ################################################################################
@@ -615,40 +703,21 @@ endif ()
 # ICU_LIBS
 # ICU_INCLUDE_DIR
 #
-# LIBEV_VERSION
-# LIBEV_LIBS
-# LIBEV_INCLUDE_DIR
-#
 # ZLIB_VERSION
 # ZLIB_LIBS
 # ZLIB_INCLUDE_DIR
-
+add_definitions(-DBOOST_ALL_NO_LIB=1) #disable boost autolink on windows
 add_subdirectory(3rdParty)
 
-set(BOOST_VERSION 1.61.0b1)
+################################################################################
+## VELOCYPACK
+################################################################################
+
+add_definitions("-DVELOCYPACK_XXHASH=1")
 
 foreach (LINK_DIR ${LINK_DIRECTORIES})
   link_directories("${LINK_DIR}")
 endforeach()
-
-################################################################################
-## BOOST
-################################################################################
-
-message(STATUS "using 3rdParty BOOST")
-option(USE_BOOST_UNITTESTS "use boost unit-tests" ON)
-
-set(Boost_VERSION "1.61.0b1")
-set(Boost_INCLUDE_DIR
-  "${PROJECT_SOURCE_DIR}/3rdParty/boost/${Boost_VERSION}"
-)
-
-if (NOT USE_BOOST_UNITTESTS)
-  message(STATUS "BOOST unit-tests are disabled")
-endif ()
-
-include_directories(${Boost_INCLUDE_DIR})
-add_definitions(-DARANGODB_BOOST_VERSION=\"${Boost_VERSION}\")
 
 ################################################################################
 ## ICU
@@ -657,18 +726,30 @@ add_definitions(-DARANGODB_BOOST_VERSION=\"${Boost_VERSION}\")
 include_directories(${ICU_INCLUDE_DIR})
 
 ################################################################################
-## LIBEV
-################################################################################
-
-include_directories(${LIBEV_INCLUDE_DIR})
-add_definitions("-DARANGODB_LIBEV_VERSION=\"${LIBEV_VERSION}\"")
-
-################################################################################
 ## OPENSSL
 ################################################################################
 
+find_package(OpenSSL REQUIRED)
+
 include_directories(${OPENSSL_INCLUDE_DIR})
 add_definitions(-DARANGODB_OPENSSL_VERSION=\"${OPENSSL_VERSION}\")
+
+if (OPENSSL_VERSION)
+  string(REPLACE "." ";" OPENSSL_VERSION_LIST ${OPENSSL_VERSION})
+  list(GET OPENSSL_VERSION_LIST 0 OPENSSL_VERSION_MAJOR)
+  list(GET OPENSSL_VERSION_LIST 1 OPENSSL_VERSION_MINOR)
+  if ("${OPENSSL_VERSION_MAJOR}" GREATER 0 AND "${OPENSSL_VERSION_MINOR}" GREATER 0)
+    option(USE_OPENSSL_NO_SSL2
+      "do not use OPENSSL_NO_SSL2"
+      ON
+    )
+  else ()
+    option(USE_OPENSSL_NO_SSL2
+      "do not use OPENSSL_NO_SSL2"
+      OFF
+    )
+  endif ()
+endif ()
 
 if (USE_OPENSSL_NO_SSL2)
   add_definitions(-DOPENSSL_NO_SSL2)
@@ -689,11 +770,24 @@ include_directories(${ZLIB_INCLUDE_DIR})
 add_definitions("-DARANGODB_ZLIB_VERSION=\"${ZLIB_VERSION}\"")
 
 ################################################################################
-## PATHS
+## cURL
 ################################################################################
 
-include(ArangoDBMacros)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/curl/curl-7.50.3/include/ ${CMAKE_CURRENT_BINARY_DIR}/3rdParty/curl/curl-7.50.3/include/curl/)
+################################################################################
+## PATHS, installation, packages
+################################################################################
 
+if (MSVC)
+  # versioning
+  set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/Installation/Windows/version")
+  include(generate_product_version)
+endif()
+
+include(ArangoDBInstall)
+if (NOT(SKIP_PACKAGING))
+  include(packages/packages)
+endif()
 ################################################################################
 ## ERRORS FILE
 ################################################################################
@@ -772,6 +866,7 @@ list(INSERT SYSTEM_LIBRARIES 0
   ${ZLIB_LIBS}
   ${ICU_LIBS}
   ${OPENSSL_LIBRARIES}
+  libcurl
   ${BASE_LIBS}
   ${CMAKE_DL_LIBS}
   ${SYS_LIBS}
@@ -787,14 +882,11 @@ endif()
 add_subdirectory(Documentation)
 
 add_dependencies(arangobench   zlibstatic)
-add_dependencies(arangod       ev zlibstatic)
+add_dependencies(arangod       zlibstatic)
 add_dependencies(arangodump    zlibstatic)
 add_dependencies(arangoimp     zlibstatic)
 add_dependencies(arangorestore zlibstatic)
 add_dependencies(arangosh      zlibstatic)
-if (TARGET prepare_debian)
-  add_dependencies(arangod       prepare_debian)
-endif()
 
 if (NOT USE_PRECOMPILED_V8)
   # all binaries depend on v8_build because it contains ICU as well
@@ -805,3 +897,37 @@ if (NOT USE_PRECOMPILED_V8)
   add_dependencies(arangorestore v8_build)
   add_dependencies(arangosh      v8_build)
 endif ()
+
+
+#copy compile commands to source dir
+if( EXISTS "${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json" )
+    message(STATUS "copy compile_commands.json")
+    EXECUTE_PROCESS(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/compile_commands.json
+    )
+endif()
+
+
+################################################################################
+## SNAPCRAFT PACKAGE
+################################################################################
+
+#set(USE_SNAPCRAFT "ON")
+if (USE_SNAPCRAFT)
+  if(NOT DEFINED SNAP_PORT)
+    set(SNAP_PORT 8529)
+  endif()
+  include(packages/snap)
+endif ()
+
+
+add_custom_target(packages
+  DEPENDS ${PACKAGES_LIST}
+  )
+
+add_custom_target(clean_packages
+  DEPENDS ${CLEAN_PACKAGES_LIST}
+  )
+
+message(STATUS "building for git revision: ${ARANGODB_BUILD_REPOSITORY}")

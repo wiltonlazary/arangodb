@@ -22,12 +22,15 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "TransactionContext.h"
+#include "Basics/MutexLocker.h"
 #include "Basics/StringBuffer.h"
 #include "Utils/CollectionNameResolver.h"
 #include "Utils/Transaction.h"
 #include "VocBase/DatafileHelper.h"
 #include "VocBase/Ditch.h"
-#include "VocBase/document-collection.h"
+#include "VocBase/LogicalCollection.h"
+#include "VocBase/ManagedDocumentResult.h"
+#include "VocBase/RevisionCacheChunk.h"
 #include "Wal/LogfileManager.h"
 
 #include <velocypack/Builder.h>
@@ -38,7 +41,7 @@
 using namespace arangodb;
 
 // custom type value handler, used for deciphering the _id attribute
-struct CustomTypeHandler : public VPackCustomTypeHandler {
+struct CustomTypeHandler final : public VPackCustomTypeHandler {
   CustomTypeHandler(TRI_vocbase_t* vocbase, CollectionNameResolver const* resolver)
       : vocbase(vocbase), resolver(resolver) {}
 
@@ -68,16 +71,27 @@ TransactionContext::TransactionContext(TRI_vocbase_t* vocbase)
       _resolver(nullptr), 
       _customTypeHandler(),
       _ditches(),
-      _builder(),
-      _options(),
+      _builders{_arena},
+      _stringBuffer(),
+      _options(arangodb::velocypack::Options::Defaults),
+      _dumpOptions(arangodb::velocypack::Options::Defaults),
       _transaction{ 0, false }, 
-      _ownsResolver(false) {}
+      _ownsResolver(false) {
+  _dumpOptions.escapeUnicode = true;        
+}
 
 //////////////////////////////////////////////////////////////////////////////
 /// @brief destroy the context
 //////////////////////////////////////////////////////////////////////////////
 
 TransactionContext::~TransactionContext() {
+  {
+    MUTEX_LOCKER(locker, _chunksLock);
+    for (auto& chunk : _chunks) {
+      chunk->release();
+    }
+  }
+
   // unregister the transaction from the logfile manager
   if (_transaction.id > 0) {
     arangodb::wal::LogfileManager::instance()->unregisterTransaction(_transaction.id, _transaction.hasFailedOperations);
@@ -88,6 +102,11 @@ TransactionContext::~TransactionContext() {
     auto& ditch = it.second;
     ditch->ditches()->freeDocumentDitch(ditch, true /* fromTransaction */);
     // If some external entity is still using the ditch, it is kept!
+  }
+
+  // free all VPackBuilders we handed out
+  for (auto& it : _builders) {
+    delete it;
   }
 
   if (_ownsResolver) {
@@ -107,23 +126,26 @@ VPackCustomTypeHandler* TransactionContext::createCustomTypeHandler(TRI_vocbase_
   
 //////////////////////////////////////////////////////////////////////////////
 /// @brief order a document ditch for the collection
+/// this will create one if none exists. if no ditch can be created, the
+/// function will return a nullptr!
 //////////////////////////////////////////////////////////////////////////////
 
-DocumentDitch* TransactionContext::orderDitch(TRI_document_collection_t* document) {
-  TRI_voc_cid_t cid = document->_info.id();
+DocumentDitch* TransactionContext::orderDitch(LogicalCollection* collection) {
+
+  TRI_voc_cid_t cid = collection->cid();
 
   auto it = _ditches.find(cid);
 
   if (it != _ditches.end()) {
     // tell everyone else this ditch is still in use,
     // at least until the transaction is over
-    (*it).second->setUsedByTransaction();
+    TRI_ASSERT((*it).second->usedByTransaction());
     // ditch already exists, return it
     return (*it).second;
   }
 
   // this method will not throw, but may return a nullptr
-  auto ditch = document->ditches()->createDocumentDitch(true, __FILE__, __LINE__);
+  auto ditch = collection->ditches()->createDocumentDitch(true, __FILE__, __LINE__);
 
   if (ditch != nullptr) {
     try {
@@ -151,6 +173,27 @@ DocumentDitch* TransactionContext::ditch(TRI_voc_cid_t cid) const {
   }
   return (*it).second;
 }
+  
+void TransactionContext::addChunk(RevisionCacheChunk* chunk) {
+  TRI_ASSERT(chunk != nullptr);
+
+  {
+    MUTEX_LOCKER(locker, _chunksLock);
+    if (_chunks.emplace(chunk).second) {
+      // we're the first ones to insert this chunk
+      return;
+    }
+  }
+    
+  // another thread had inserted the same chunk already
+  // now need to keep track of it twice
+  chunk->release();
+}
+  
+void TransactionContext::stealChunks(std::unordered_set<RevisionCacheChunk*>& target) {
+  target.clear();
+  _chunks.swap(target);
+} 
 
 //////////////////////////////////////////////////////////////////////////////
 /// @brief temporarily lease a StringBuffer object
@@ -179,14 +222,17 @@ void TransactionContext::returnStringBuffer(basics::StringBuffer* stringBuffer) 
 //////////////////////////////////////////////////////////////////////////////
 
 VPackBuilder* TransactionContext::leaseBuilder() {
-  if (_builder == nullptr) {
-    _builder.reset(new VPackBuilder());
-  }
-  else {
-    _builder->clear();
+  if (_builders.empty()) {
+    // create a new builder and return it
+    return new VPackBuilder();
   }
 
-  return _builder.release();
+  // re-use an existing builder
+  VPackBuilder* b = _builders.back();
+  b->clear();
+  _builders.pop_back();
+
+  return b;
 }
   
 //////////////////////////////////////////////////////////////////////////////
@@ -194,7 +240,13 @@ VPackBuilder* TransactionContext::leaseBuilder() {
 //////////////////////////////////////////////////////////////////////////////
 
 void TransactionContext::returnBuilder(VPackBuilder* builder) {
-  _builder.reset(builder);
+  try {
+    // put builder back into our vector of builders
+    _builders.emplace_back(builder);
+  } catch (...) {
+    // no harm done. just wipe the builder
+    delete builder;
+  }
 }
   
 //////////////////////////////////////////////////////////////////////////////
@@ -207,6 +259,18 @@ VPackOptions* TransactionContext::getVPackOptions() {
     orderCustomTypeHandler();
   }
   return &_options;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+/// @brief get velocypack options with a custom type handler for dumping
+//////////////////////////////////////////////////////////////////////////////
+  
+VPackOptions* TransactionContext::getVPackOptionsForDump() {
+  if (_customTypeHandler == nullptr) {
+    // this modifies options!
+    orderCustomTypeHandler();
+  }
+  return &_dumpOptions;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

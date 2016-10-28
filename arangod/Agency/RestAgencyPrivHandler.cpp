@@ -21,9 +21,9 @@
 /// @author Kaveh Vahedipour
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "RestAgencyPrivHandler.h"
 #include "Rest/HttpRequest.h"
 #include "Rest/Version.h"
-#include "RestAgencyPrivHandler.h"
 
 #include "Agency/Agent.h"
 
@@ -44,34 +44,43 @@ using namespace arangodb::consensus;
 /// @brief ArangoDB server
 ////////////////////////////////////////////////////////////////////////////////
 
-RestAgencyPrivHandler::RestAgencyPrivHandler(HttpRequest* request, Agent* agent)
-    : RestBaseHandler(request), _agent(agent) {}
+RestAgencyPrivHandler::RestAgencyPrivHandler(GeneralRequest* request,
+                                             GeneralResponse* response,
+                                             Agent* agent)
+    : RestBaseHandler(request, response), _agent(agent) {}
 
 bool RestAgencyPrivHandler::isDirect() const { return false; }
 
-inline HttpHandler::status_t RestAgencyPrivHandler::reportErrorEmptyRequest() {
-  LOG(WARN) << "Empty request to agency!";
-  generateError(GeneralResponse::ResponseCode::NOT_FOUND, 404);
-  return HttpHandler::status_t(HANDLER_DONE);
+inline RestStatus RestAgencyPrivHandler::reportErrorEmptyRequest() {
+  LOG_TOPIC(WARN, Logger::AGENCY) << "Empty request to agency!";
+  generateError(rest::ResponseCode::NOT_FOUND, 404);
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyPrivHandler::reportTooManySuffices() {
-  LOG(WARN) << "Agency handles a single suffix: vote, log or configure";
-  generateError(GeneralResponse::ResponseCode::NOT_FOUND, 404);
-  return HttpHandler::status_t(HANDLER_DONE);
+inline RestStatus RestAgencyPrivHandler::reportTooManySuffices() {
+  LOG_TOPIC(WARN, Logger::AGENCY)
+      << "Agency handles a single suffix: vote, log or configure";
+  generateError(rest::ResponseCode::NOT_FOUND, 404);
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyPrivHandler::reportBadQuery() {
-  generateError(GeneralResponse::ResponseCode::BAD, 400);
-  return HttpHandler::status_t(HANDLER_DONE);
+inline RestStatus RestAgencyPrivHandler::reportBadQuery(
+    std::string const& message) {
+  generateError(rest::ResponseCode::BAD, 400, message);
+  return RestStatus::DONE;
 }
 
-inline HttpHandler::status_t RestAgencyPrivHandler::reportMethodNotAllowed() {
-  generateError(GeneralResponse::ResponseCode::METHOD_NOT_ALLOWED, 405);
-  return HttpHandler::status_t(HANDLER_DONE);
+inline RestStatus RestAgencyPrivHandler::reportMethodNotAllowed() {
+  generateError(rest::ResponseCode::METHOD_NOT_ALLOWED, 405);
+  return RestStatus::DONE;
 }
 
-HttpHandler::status_t RestAgencyPrivHandler::execute() {
+inline RestStatus RestAgencyPrivHandler::reportGone() {
+  generateError(rest::ResponseCode::GONE, 410);
+  return RestStatus::DONE;
+}
+
+RestStatus RestAgencyPrivHandler::execute() {
   try {
     VPackBuilder result;
     result.add(VPackValue(VPackValueType::Object));
@@ -83,11 +92,10 @@ HttpHandler::status_t RestAgencyPrivHandler::execute() {
     } else {
       term_t term = 0;
       term_t prevLogTerm = 0;
-      arangodb::consensus::id_t
-          id;  // leaderId for appendEntries, cadidateId for requestVote
+      std::string id;  // leaderId for appendEntries, cadidateId for requestVote
       arangodb::consensus::index_t prevLogIndex, leaderCommit;
       if (_request->suffix()[0] == "appendEntries") {  // appendEntries
-        if (_request->requestType() != GeneralRequest::RequestType::POST) {
+        if (_request->requestType() != rest::RequestType::POST) {
           return reportMethodNotAllowed();
         }
         if (readValue("term", term) && readValue("leaderId", id) &&
@@ -96,7 +104,7 @@ HttpHandler::status_t RestAgencyPrivHandler::execute() {
             readValue("leaderCommit", leaderCommit)) {  // found all values
           bool ret = _agent->recvAppendEntriesRPC(
               term, id, prevLogIndex, prevLogTerm, leaderCommit,
-              _request->toVelocyPack(&opts));
+              _request->toVelocyPackBuilderPtr(&opts));
           result.add("success", VPackValue(ret));
         } else {
           return reportBadQuery();  // bad query
@@ -111,28 +119,78 @@ HttpHandler::status_t RestAgencyPrivHandler::execute() {
           result.add("voteGranted", VPackValue(ret.success));
         }
       } else if (_request->suffix()[0] == "notifyAll") {  // notify
-        if (_request->requestType() != GeneralRequest::RequestType::POST) {
+        if (_request->requestType() != rest::RequestType::POST) {
           return reportMethodNotAllowed();
         }
         if (readValue("term", term) && readValue("agencyId", id)) {
           priv_rpc_ret_t ret = _agent->requestVote(
-              term, id, 0, 0, _request->toVelocyPack(&opts));
+              term, id, 0, 0, _request->toVelocyPackBuilderPtr(&opts));
           result.add("term", VPackValue(ret.term));
           result.add("voteGranted", VPackValue(ret.success));
         } else {
           return reportBadQuery();  // bad query
         }
+      } else if (_request->suffix()[0] == "activate") {  // notify
+        if (_request->requestType() != rest::RequestType::POST) {
+          return reportMethodNotAllowed();
+        }
+        arangodb::velocypack::Options options;
+        query_t everything;
+        try {
+          everything = _request->toVelocyPackBuilderPtr(&options);
+        } catch (std::exception const& e) {
+          LOG_TOPIC(ERR, Logger::AGENCY)
+            << "Failure getting activation body:" <<  e.what();
+        }
+        try {
+          query_t res = _agent->activate(everything);
+          for (auto const& i : VPackObjectIterator(res->slice())) {
+            result.add(i.key.copyString(),i.value);
+          }
+        } catch (std::exception const& e) {
+          LOG_TOPIC(ERR, Logger::AGENCY) << "Activation failed: " << e.what();
+        }
+        
+      } else if (_request->suffix()[0] == "gossip") {
+        if (_request->requestType() != rest::RequestType::POST) {
+          return reportMethodNotAllowed();
+        }
+        arangodb::velocypack::Options options;
+        query_t query = _request->toVelocyPackBuilderPtr(&options);
+        try {
+          query_t ret = _agent->gossip(query);
+          result.add("id", ret->slice().get("id"));
+          result.add("endpoint", ret->slice().get("endpoint"));
+          result.add("pool", ret->slice().get("pool"));
+        } catch (std::exception const& e) {
+          return reportBadQuery(e.what());
+        }
+      } else if (_request->suffix()[0] == "activeAgents") {
+        if (_request->requestType() != rest::RequestType::GET) {
+          return reportMethodNotAllowed();
+        }
+        if (_agent->leaderID() != NO_LEADER) {
+          result.add("active",
+                     _agent->config().activeAgentsToBuilder()->slice());
+        }
+      } else if (_request->suffix()[0] == "inform") {
+        arangodb::velocypack::Options options;
+        query_t query = _request->toVelocyPackBuilderPtr(&options);
+        try {
+          _agent->notify(query);
+        } catch (std::exception const& e) {
+          return reportBadQuery(e.what());
+        }
       } else {
-        generateError(GeneralResponse::ResponseCode::NOT_FOUND,
-                      404);  // nothing else here
-        return HttpHandler::status_t(HANDLER_DONE);
+        generateError(rest::ResponseCode::NOT_FOUND, 404);  // nothing else here
+        return RestStatus::DONE;
       }
     }
     result.close();
     VPackSlice s = result.slice();
-    generateResult(GeneralResponse::ResponseCode::OK, s);
+    generateResult(rest::ResponseCode::OK, s);
   } catch (...) {
     // Ignore this error
   }
-  return HttpHandler::status_t(HANDLER_DONE);
+  return RestStatus::DONE;
 }

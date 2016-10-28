@@ -45,7 +45,7 @@ struct QueryCacheResultEntry {
   QueryCacheResultEntry(uint64_t, char const*, size_t, std::shared_ptr<arangodb::velocypack::Builder>,
                         std::vector<std::string> const&);
 
-  ~QueryCacheResultEntry();
+  ~QueryCacheResultEntry() = default;
 
   /// @brief check whether the element can be destroyed, and delete it if yes
   void tryDelete();
@@ -57,8 +57,7 @@ struct QueryCacheResultEntry {
   void unuse();
 
   uint64_t const _hash;
-  char* _queryString;
-  size_t const _queryStringLength;
+  std::string const _queryString;
   std::shared_ptr<arangodb::velocypack::Builder> _queryResult;
   std::vector<std::string> const _collections;
   QueryCacheResultEntry* _prev;
@@ -112,7 +111,6 @@ struct QueryCacheDatabaseEntry {
   /// @brief invalidate all entries for a collection in the database-specific
   /// cache
   void invalidate(std::string const&);
-  void invalidate(char const*);
 
   /// @brief enforce maximum number of results
   void enforceMaxResults(size_t);
@@ -191,7 +189,7 @@ class QueryCache {
   void invalidate(TRI_vocbase_t*, std::vector<std::string> const&);
 
   /// @brief invalidate all queries for a particular collection
-  void invalidate(TRI_vocbase_t*, char const*);
+  void invalidate(TRI_vocbase_t*, std::string const&);
 
   /// @brief invalidate all queries for a particular database
   void invalidate(TRI_vocbase_t*);

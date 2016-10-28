@@ -22,8 +22,8 @@
 
 #include "V8ShellFeature.h"
 
-#include "ApplicationFeatures/ClientFeature.h"
 #include "ApplicationFeatures/V8PlatformFeature.h"
+#include "Basics/ArangoGlobalContext.h"
 #include "Basics/FileUtils.h"
 #include "Basics/StringUtils.h"
 #include "Basics/Utf8Helper.h"
@@ -33,6 +33,7 @@
 #include "ProgramOptions/Section.h"
 #include "Rest/HttpResponse.h"
 #include "Rest/Version.h"
+#include "Shell/ClientFeature.h"
 #include "Shell/V8ClientConnection.h"
 #include "SimpleHttpClient/GeneralClientConnection.h"
 #include "V8/JSLoader.h"
@@ -41,6 +42,7 @@
 #include "V8/v8-conv.h"
 #include "V8/v8-shell.h"
 #include "V8/v8-utils.h"
+#include "V8/v8-vpack.h"
 
 using namespace arangodb;
 using namespace arangodb::basics;
@@ -71,6 +73,11 @@ void V8ShellFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
                            "startup paths containing the Javascript files",
                            new StringParameter(&_startupDirectory));
 
+  options->addHiddenOption(
+      "--javascript.module-directory",
+      "additional paths containing JavaScript modules",
+      new VectorParameter<StringParameter>(&_moduleDirectory));
+
   options->addOption("--javascript.current-module-directory",
                      "add current directory to module path",
                      new BooleanParameter(&_currentModuleDirectory));
@@ -83,23 +90,31 @@ void V8ShellFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
 
 void V8ShellFeature::validateOptions(
     std::shared_ptr<options::ProgramOptions> options) {
-
   if (_startupDirectory.empty()) {
-    LOG(FATAL) << "'--javascript.startup-directory' is empty, giving up";
+    LOG(FATAL)
+        << "no 'javascript.startup-directory' has been supplied, giving up";
     FATAL_ERROR_EXIT();
   }
 
   LOG_TOPIC(DEBUG, Logger::V8) << "using Javascript startup files at '"
                                << _startupDirectory << "'";
+
+  if (!_moduleDirectory.empty()) {
+    LOG_TOPIC(DEBUG, Logger::V8) << "using Javascript modules at '"
+                                 << StringUtils::join(_moduleDirectory, ";")
+                                 << "'";
+  }
 }
 
 void V8ShellFeature::start() {
-  _console = application_features::ApplicationServer::getFeature<ConsoleFeature>("Console");
-  auto platform = application_features::ApplicationServer::getFeature<V8PlatformFeature>("V8Platform");
+  _console =
+      application_features::ApplicationServer::getFeature<ConsoleFeature>(
+          "Console");
+  auto platform =
+      application_features::ApplicationServer::getFeature<V8PlatformFeature>(
+          "V8Platform");
 
-  v8::Isolate::CreateParams createParams;
-  createParams.array_buffer_allocator = platform->arrayBufferAllocator();
-  _isolate = v8::Isolate::New(createParams);
+  _isolate = platform->createIsolate();
 
   v8::Locker locker{_isolate};
 
@@ -130,7 +145,7 @@ void V8ShellFeature::start() {
   initGlobals();
 }
 
-void V8ShellFeature::stop() {
+void V8ShellFeature::unprepare() {
   {
     v8::Locker locker{_isolate};
 
@@ -141,8 +156,8 @@ void V8ShellFeature::stop() {
         v8::Local<v8::Context>::New(_isolate, _context);
 
     v8::Context::Scope context_scope{context};
-    
-    // remove any objects stored in _last global value  
+
+    // remove any objects stored in _last global value
     context->Global()->Delete(TRI_V8_ASCII_STRING2(_isolate, "_last"));
 
     TRI_RunGarbageCollectionV8(_isolate, 2500.0);
@@ -152,9 +167,9 @@ void V8ShellFeature::stop() {
     v8::Locker locker{_isolate};
     v8::Isolate::Scope isolate_scope{_isolate};
 
-    TRI_v8_global_t* v8g =
-        static_cast<TRI_v8_global_t*>(_isolate->GetData(V8DataSlot));
-    _isolate->SetData(V8DataSlot, nullptr);
+    TRI_v8_global_t* v8g = static_cast<TRI_v8_global_t*>(
+        _isolate->GetData(arangodb::V8PlatformFeature::V8_DATA_SLOT));
+    _isolate->SetData(arangodb::V8PlatformFeature::V8_DATA_SLOT, nullptr);
 
     delete v8g;
 
@@ -206,8 +221,7 @@ bool V8ShellFeature::printHello(V8ClientConnection* v8connection) {
 
     if (v8connection != nullptr) {
       if (v8connection->isConnected() &&
-          v8connection->lastHttpReturnCode() ==
-              (int)GeneralResponse::ResponseCode::OK) {
+          v8connection->lastHttpReturnCode() == (int)rest::ResponseCode::OK) {
         std::ostringstream is;
 
         is << "Connected to ArangoDB '" << v8connection->endpointSpecification()
@@ -401,9 +415,13 @@ int V8ShellFeature::runShell(std::vector<std::string> const& positionals) {
     _console->flushLog();
 
     // gc
-    if (++nrCommands >= _gcInterval) {
+    if (++nrCommands >= _gcInterval ||
+        V8PlatformFeature::isOutOfMemory(_isolate)) {
       nrCommands = 0;
       TRI_RunGarbageCollectionV8(_isolate, 500.0);
+
+      // needs to be reset after the garbage collection
+      V8PlatformFeature::resetOutOfMemory(_isolate);
     }
   }
 
@@ -457,7 +475,7 @@ bool V8ShellFeature::runScript(std::vector<std::string> const& files,
       auto oldDirname =
           current->Get(TRI_V8_ASCII_STRING2(_isolate, "__dirname"));
 
-      auto dirname = FileUtils::dirname(TRI_ObjectToString(filename).c_str());
+      auto dirname = FileUtils::dirname(TRI_ObjectToString(filename));
 
       current->ForceSet(TRI_V8_ASCII_STRING2(_isolate, "__dirname"),
                         TRI_V8_STD_STRING2(_isolate, dirname));
@@ -774,6 +792,34 @@ static void JS_CompareString(v8::FunctionCallbackInfo<v8::Value> const& args) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief return client version
+////////////////////////////////////////////////////////////////////////////////
+
+static void JS_VersionClient(v8::FunctionCallbackInfo<v8::Value> const& args) {
+  TRI_V8_TRY_CATCH_BEGIN(isolate);
+  v8::HandleScope scope(isolate);
+
+  bool details = false;
+  if (args.Length() > 0) {
+    details = TRI_ObjectToBoolean(args[0]);
+  }
+
+  if (!details) {
+    // return version string
+    TRI_V8_RETURN(TRI_V8_ASCII_STRING(ARANGODB_VERSION));
+  }
+
+  // return version details
+  VPackBuilder builder;
+  builder.openObject();
+  rest::Version::getVPack(builder);
+  builder.close();
+
+  TRI_V8_RETURN(TRI_VPackToV8(isolate, builder.slice()));
+  TRI_V8_TRY_CATCH_END
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief initializes global Javascript variables
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -799,20 +845,50 @@ void V8ShellFeature::initGlobals() {
       _isolate, context, TRI_V8_ASCII_STRING2(_isolate, "COMPARE_STRING"),
       v8::FunctionTemplate::New(_isolate, JS_CompareString)->GetFunction());
 
+  TRI_AddGlobalVariableVocbase(
+      _isolate, context,
+      TRI_V8_ASCII_STRING2(_isolate, "ARANGODB_CLIENT_VERSION"),
+      v8::FunctionTemplate::New(_isolate, JS_VersionClient)->GetFunction());
+
   // is quite
   TRI_AddGlobalVariableVocbase(_isolate, context,
                                TRI_V8_ASCII_STRING2(_isolate, "ARANGO_QUIET"),
                                v8::Boolean::New(_isolate, _console->quiet()));
 
+  auto ctx = ArangoGlobalContext::CONTEXT;
+
+  if (ctx == nullptr) {
+    LOG(ERR) << "failed to get global context.  ";
+    FATAL_ERROR_EXIT();
+  }
+
+  ctx->normalizePath(_startupDirectory, "javascript.startup-directory", true);
+  ctx->normalizePath(_moduleDirectory, "javascript.module-directory", false);
+
   // initialize standard modules
-  std::string modules =
-      FileUtils::buildFilename(_startupDirectory, "client/modules") + ";" +
-      FileUtils::buildFilename(_startupDirectory, "common/modules") + ";" +
-      FileUtils::buildFilename(_startupDirectory, "node");
+  std::vector<std::string> directories;
+  directories.insert(directories.end(), _moduleDirectory.begin(),
+                     _moduleDirectory.end());
+  directories.emplace_back(_startupDirectory);
+
+  std::string modules = "";
+  std::string sep = "";
+
+  for (auto directory : directories) {
+    modules += sep;
+    sep = ";";
+
+    modules += FileUtils::buildFilename(directory, "client/modules") + sep +
+               FileUtils::buildFilename(directory, "common/modules") + sep +
+               FileUtils::buildFilename(directory, "node");
+  }
 
   if (_currentModuleDirectory) {
-    modules += ";" + FileUtils::currentDirectory();
+    modules += sep + FileUtils::currentDirectory();
   }
+
+  // we take the last entry in _startupDirectory as global path;
+  // all the other entries are only used for the modules
 
   TRI_InitV8Buffer(_isolate, context);
   TRI_InitV8Utils(_isolate, context, _startupDirectory, modules);

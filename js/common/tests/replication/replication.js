@@ -375,7 +375,7 @@ function ReplicationLoggerSuite () {
       assertEqual(cn, entry.data.name);
       assertEqual(2, entry.data.type);
       assertEqual(false, entry.data.deleted);
-      assertEqual(2097152, entry.data.maximalSize);
+      assertEqual(2097152, entry.data.journalSize);
       assertEqual(true, entry.data.waitForSync);
     },
 
@@ -452,20 +452,6 @@ function ReplicationLoggerSuite () {
       assertEqual(true, entry.data.waitForSync);
 
       tick = getLastLogTick();
-      c.rename("_unitfoxx");
-
-      entry = getLogEntries(tick, 2002)[0];
-      assertEqual(2002, entry.type);
-      assertEqual(c._id, entry.cid, JSON.stringify(entry));
-      assertEqual("_unitfoxx", entry.data.name);
-
-      tick = getLastLogTick();
-      c.rename("_unittests");
-
-      entry = getLogEntries(tick, 2002)[0];
-      assertEqual(2002, entry.type);
-      assertEqual(c._id, entry.cid, JSON.stringify(entry));
-      assertEqual("_unittests", entry.data.name);
     },
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2053,7 +2039,8 @@ function ReplicationSyncSuite () {
       }
       catch (err) {
         assertTrue(err.errorNum === errors.ERROR_REPLICATION_INVALID_RESPONSE.code ||
-                   err.errorNum === errors.ERROR_REPLICATION_MASTER_ERROR.code);
+                   err.errorNum === errors.ERROR_REPLICATION_MASTER_ERROR.code ||
+                   err.errorNum === errors.ERROR_REPLICATION_NO_RESPONSE.code);
       }
     },
 

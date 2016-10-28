@@ -42,103 +42,80 @@
 #ifdef TRI_SHOW_LOCK_TIME
 
 #define READ_LOCKER(obj, lock) \
-  arangodb::basics::ReadLocker obj(&lock, __FILE__, __LINE__)
+  arangodb::basics::ReadLocker<std::decay<decltype (lock)>::type> obj(&lock, __FILE__, __LINE__)
 
 #define READ_LOCKER_EVENTUAL(obj, lock, t) \
-  arangodb::basics::ReadLocker obj(&lock, t, __FILE__, __LINE__)
+  arangodb::basics::ReadLocker<std::decay<decltype (lock)>::type> obj(&lock, t, __FILE__, __LINE__)
 
 #else
 
-#define READ_LOCKER(obj, lock) arangodb::basics::ReadLocker obj(&lock)
+#define READ_LOCKER(obj, lock) arangodb::basics::ReadLocker<std::decay<decltype (lock)>::type> obj(&lock)
 
 #define READ_LOCKER_EVENTUAL(obj, lock, t) \
-  arangodb::basics::ReadLocker obj(&lock, t)
+  arangodb::basics::ReadLocker<std::decay<decltype (lock)>::type> obj(&lock, t)
 
 #endif
 
-#define TRY_READ_LOCKER(obj, lock) arangodb::basics::TryReadLocker obj(&lock)
+#define TRY_READ_LOCKER(obj, lock) arangodb::basics::TryReadLocker<std::decay<decltype (lock)>::type> obj(&lock)
+
+#define CONDITIONAL_READ_LOCKER(obj, lock, condition) arangodb::basics::ConditionalReadLocker<std::decay<decltype (lock)>::type> obj(&lock, (condition))
 
 namespace arangodb {
 namespace basics {
 
-////////////////////////////////////////////////////////////////////////////////
 /// @brief read locker
-///
 /// A ReadLocker read-locks a read-write lock during its lifetime and unlocks
 /// the lock when it is destroyed.
-////////////////////////////////////////////////////////////////////////////////
-
+template<class LockType>
 class ReadLocker {
   ReadLocker(ReadLocker const&) = delete;
   ReadLocker& operator=(ReadLocker const&) = delete;
 
  public:
-////////////////////////////////////////////////////////////////////////////////
-/// @brief aquires a read-lock
-///
-/// The constructors read-locks the lock, the destructors unlocks the lock.
-////////////////////////////////////////////////////////////////////////////////
-
 #ifdef TRI_SHOW_LOCK_TIME
 
-  ReadLocker(ReadWriteLock* readWriteLock, char const* file, int line)
-      : _readWriteLock(readWriteLock), _file(file), _line(line) {
+  /// @brief acquires a read-lock
+  /// The constructors read-locks the lock, the destructors unlocks the lock.
+  ReadLocker(LockType* readWriteLock, char const* file, int line)
+      : _readWriteLock(readWriteLock), _file(file), _line(line), _isLocked(false) {
     double t = TRI_microtime();
-    _readWriteLock->readLock();
+    lock();
     _time = TRI_microtime() - t;
   }
-
-#else
-
-  explicit ReadLocker(ReadWriteLock* readWriteLock)
-      : _readWriteLock(readWriteLock) {
-    _readWriteLock->readLock();
-  }
-
-#endif
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief aquires a read-lock, with periodic sleeps while not acquired
-/// sleep time is specified in nanoseconds
-////////////////////////////////////////////////////////////////////////////////
-
-#ifdef TRI_SHOW_LOCK_TIME
-
-  ReadLocker(ReadWriteLock* readWriteLock, uint64_t sleepTime, char const* file,
+  
+  /// @brief acquires a read-lock, with periodic sleeps while not acquired
+  /// sleep time is specified in nanoseconds
+  ReadLocker(LockType* readWriteLock, uint64_t sleepTime, char const* file,
              int line)
-      : _readWriteLock(readWriteLock), _file(file), _line(line) {
+      : _readWriteLock(readWriteLock), _file(file), _line(line), _isLocked(false) {
     double t = TRI_microtime();
-    while (!_readWriteLock->tryReadLock()) {
-#ifdef _WIN32
-      usleep((unsigned long)sleepTime);
-#else
-      usleep((useconds_t)sleepTime);
-#endif
-    }
+    lockEventual(sleepTime);
     _time = TRI_microtime() - t;
   }
 
 #else
 
-  ReadLocker(ReadWriteLock* readWriteLock, uint64_t sleepTime)
-      : _readWriteLock(readWriteLock) {
-    while (!_readWriteLock->tryReadLock()) {
-#ifdef _WIN32
-      usleep((unsigned long)sleepTime);
-#else
-      usleep((useconds_t)sleepTime);
-#endif
-    }
+  /// @brief acquires a read-lock
+  /// The constructors read-locks the lock, the destructors unlocks the lock.
+  explicit ReadLocker(LockType* readWriteLock)
+      : _readWriteLock(readWriteLock), _isLocked(false) {
+    lock();
+  }
+
+  /// @brief acquires a read-lock, with periodic sleeps while not acquired
+  /// sleep time is specified in nanoseconds
+  ReadLocker(LockType* readWriteLock, uint64_t sleepTime)
+      : _readWriteLock(readWriteLock), _isLocked(false) {
+    lockEventual(sleepTime);
   }
 
 #endif
 
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief releases the read-lock
-  //////////////////////////////////////////////////////////////////////////////
-
   ~ReadLocker() {
-    _readWriteLock->unlock();
+    if (_isLocked) {
+      _readWriteLock->unlock();
+    }
 
 #ifdef TRI_SHOW_LOCK_TIME
     if (_time > TRI_SHOW_LOCK_THRESHOLD) {
@@ -146,74 +123,32 @@ class ReadLocker {
     }
 #endif
   }
-
- private:
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief the read-write lock
-  //////////////////////////////////////////////////////////////////////////////
-
-  ReadWriteLock* _readWriteLock;
-
-#ifdef TRI_SHOW_LOCK_TIME
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief file
-  //////////////////////////////////////////////////////////////////////////////
-
-  char const* _file;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief line number
-  //////////////////////////////////////////////////////////////////////////////
-
-  int _line;
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief lock time
-  //////////////////////////////////////////////////////////////////////////////
-
-  double _time;
-
-#endif
-};
-
-class TryReadLocker {
-  TryReadLocker(TryReadLocker const&) = delete;
-  TryReadLocker& operator=(TryReadLocker const&) = delete;
-
- public:
-  ////////////////////////////////////////////////////////////////////////////////
-  /// @brief tries to aquire a read-lock
-  ///
-  /// The constructors tries to read-lock the lock, the destructors unlocks the
-  /// lock if it was acquired in the constructor
-  ////////////////////////////////////////////////////////////////////////////////
-
-  explicit TryReadLocker(ReadWriteLock* readWriteLock)
-      : _readWriteLock(readWriteLock), _isLocked(false) {
-    _isLocked = _readWriteLock->tryReadLock();
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief releases the read-lock
-  //////////////////////////////////////////////////////////////////////////////
-
-  ~TryReadLocker() {
-    if (_isLocked) {
-      _readWriteLock->unlock();
-    }
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
+  
   /// @brief whether or not we acquired the lock
-  //////////////////////////////////////////////////////////////////////////////
-
   bool isLocked() const { return _isLocked; }
   
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief unlocks the read-write lock
-  //////////////////////////////////////////////////////////////////////////////
+  /// @brief eventually acquire the read lock
+  void lockEventual(uint64_t sleepTime) {
+    TRI_ASSERT(!_isLocked);
 
+    while (!_readWriteLock->tryReadLock()) {
+#ifdef _WIN32
+      usleep((unsigned long)sleepTime);
+#else
+      usleep((useconds_t)sleepTime);
+#endif
+    }
+    _isLocked = true;
+  }
+
+  /// @brief acquire the read lock, blocking
+  void lock() { 
+    TRI_ASSERT(!_isLocked);
+    _readWriteLock->readLock();
+    _isLocked = true;
+  }
+  
+  /// @brief unlocks the lock if we own it
   bool unlock() {
     if (_isLocked) {
       _readWriteLock->unlock();
@@ -223,17 +158,182 @@ class TryReadLocker {
     return false;
   }
 
+  /// @brief steals the lock, but does not unlock it
+  bool steal() {
+    if (_isLocked) {
+      _isLocked = false;
+      return true;
+    }
+    return false;
+  }
+
  private:
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief the read-write lock
-  //////////////////////////////////////////////////////////////////////////////
+  LockType* _readWriteLock;
 
-  ReadWriteLock* _readWriteLock;
+#ifdef TRI_SHOW_LOCK_TIME
 
-  //////////////////////////////////////////////////////////////////////////////
+  /// @brief file
+  char const* _file;
+
+  /// @brief line number
+  int _line;
+
+  /// @brief lock time
+  double _time;
+#endif
+
   /// @brief whether or not we acquired the lock
-  //////////////////////////////////////////////////////////////////////////////
+  bool _isLocked;
+};
 
+template<class LockType>
+class TryReadLocker {
+  TryReadLocker(TryReadLocker const&) = delete;
+  TryReadLocker& operator=(TryReadLocker const&) = delete;
+
+ public:
+  /// @brief tries to acquire a read-lock
+  /// The constructor tries to read-lock the lock, the destructors unlocks the
+  /// lock if it was acquired in the constructor
+  explicit TryReadLocker(LockType* readWriteLock)
+      : _readWriteLock(readWriteLock), _isLocked(false) {
+    _isLocked = _readWriteLock->tryReadLock();
+  }
+
+  /// @brief releases the read-lock
+  ~TryReadLocker() {
+    if (_isLocked) {
+      _readWriteLock->unlock();
+    }
+  }
+
+  /// @brief whether or not we acquired the lock
+  bool isLocked() const { return _isLocked; }
+  
+  /// @brief eventually acquire the read lock
+  void lockEventual(uint64_t sleepTime) {
+    TRI_ASSERT(!_isLocked);
+
+    while (!_readWriteLock->tryReadLock()) {
+#ifdef _WIN32
+      usleep((unsigned long)sleepTime);
+#else
+      usleep((useconds_t)sleepTime);
+#endif
+    }
+    _isLocked = true;
+  }
+  
+  /// @brief acquire the read lock, blocking
+  void lock() { 
+    TRI_ASSERT(!_isLocked);
+    _readWriteLock->readLock();
+    _isLocked = true;
+  }
+  
+  /// @brief unlocks the read-write lock
+  bool unlock() {
+    if (_isLocked) {
+      _readWriteLock->unlock();
+      _isLocked = false;
+      return true;
+    }
+    return false;
+  }
+  
+  /// @brief steals the lock, but does not unlock it
+  bool steal() {
+    if (_isLocked) {
+      _isLocked = false;
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  /// @brief the read-write lock
+  LockType* _readWriteLock;
+
+  /// @brief whether or not we acquired the lock
+  bool _isLocked;
+};
+
+template<class LockType>
+class ConditionalReadLocker {
+  ConditionalReadLocker(ConditionalReadLocker const&) = delete;
+  ConditionalReadLocker& operator=(ConditionalReadLocker const&) = delete;
+
+ public:
+  /// @brief acquire a read-lock
+  /// The constructor tries to read-lock the lock, the destructors unlocks the
+  /// lock if it was acquired in the constructor
+  ConditionalReadLocker(LockType* readWriteLock, bool condition)
+      : _readWriteLock(readWriteLock), _isLocked(false) {
+    if (condition) {
+      _readWriteLock->readLock();
+      _isLocked = true;
+    }
+  }
+
+  /// @brief releases the read-lock
+  ~ConditionalReadLocker() {
+    if (_isLocked) {
+      _readWriteLock->unlock();
+    }
+  }
+
+  /// @brief whether or not we acquired the lock
+  bool isLocked() const { return _isLocked; }
+  
+  /// @brief eventually acquire the read lock
+  void lockEventual(uint64_t sleepTime) {
+    TRI_ASSERT(!_isLocked);
+
+    while (!_readWriteLock->tryReadLock()) {
+#ifdef _WIN32
+      usleep((unsigned long)sleepTime);
+#else
+      usleep((useconds_t)sleepTime);
+#endif
+    }
+    _isLocked = true;
+  }
+  
+  /// @brief acquire the read lock, blocking
+  void lock() { 
+    TRI_ASSERT(!_isLocked);
+    _readWriteLock->readLock();
+    _isLocked = true;
+  }
+  
+  /// @brief unlocks the read-write lock
+  bool unlock() {
+    if (_isLocked) {
+      _readWriteLock->unlock();
+      _isLocked = false;
+      return true;
+    }
+    return false;
+  }
+  
+  /// @brief steals the lock, but does not unlock it
+  bool steal() {
+    if (_isLocked) {
+      _isLocked = false;
+      return true;
+    }
+    return false;
+  }
+  
+  static constexpr bool DoLock() { return true; }
+  static constexpr bool DoNotLock() { return false; }
+
+ private:
+  /// @brief the read-write lock
+  LockType* _readWriteLock;
+
+  /// @brief whether or not we acquired the lock
   bool _isLocked;
 };
 }

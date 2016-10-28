@@ -28,7 +28,7 @@
 #include "Cluster/ClusterInfo.h"
 #include "Cluster/ClusterMethods.h"
 #include "Cluster/ServerState.h"
-#include "VocBase/document-collection.h"
+#include "VocBase/LogicalCollection.h"
 #include "VocBase/transaction.h"
 #include "VocBase/vocbase.h"
 
@@ -53,13 +53,11 @@ Collection::Collection(std::string const& name, TRI_vocbase_t* vocbase,
 
 /// @brief destroy a collection wrapper
 Collection::~Collection() {}
-  
-/// @brief get the pointer to the document collection
-TRI_document_collection_t* Collection::documentCollection() const {
-  TRI_ASSERT(collection != nullptr);
-  TRI_ASSERT(collection->_collection != nullptr);
 
-  return collection->_collection;
+
+/// @brief get the collection id
+TRI_voc_cid_t Collection::cid() const {
+  return getCollection()->cid();
 }
   
 /// @brief count the number of documents in the collection
@@ -68,7 +66,7 @@ size_t Collection::count() const {
     if (arangodb::ServerState::instance()->isCoordinator()) {
       // cluster case
       uint64_t result;
-      int res = arangodb::countOnCoordinator(vocbase->_name, name, result);
+      int res = arangodb::countOnCoordinator(vocbase->name(), name, result);
       if (res != TRI_ERROR_NO_ERROR) {
         THROW_ARANGO_EXCEPTION_MESSAGE(
             res, "could not determine number of documents in collection");
@@ -76,9 +74,8 @@ size_t Collection::count() const {
       numDocuments = static_cast<int64_t>(result);
     } else {
       // local case
-      auto document = documentCollection();
       // cache the result
-      numDocuments = static_cast<int64_t>(document->_numberDocuments);
+      numDocuments = static_cast<int64_t>(collection->numberDocuments());
     }
   }
 
@@ -87,48 +84,35 @@ size_t Collection::count() const {
 
 /// @brief returns the collection's plan id
 TRI_voc_cid_t Collection::getPlanId() const {
-  auto clusterInfo = arangodb::ClusterInfo::instance();
-  auto collectionInfo =
-      clusterInfo->getCollection(std::string(vocbase->_name), name);
-
-  if (collectionInfo.get() == nullptr) {
-    THROW_ARANGO_EXCEPTION_FORMAT(TRI_ERROR_INTERNAL,
-                                  "collection not found '%s' -> '%s'",
-                                  vocbase->_name, name.c_str());
-  }
-
-  return collectionInfo.get()->id();
+  return getCollection()->cid();
 }
 
 /// @brief returns the shard ids of a collection
 std::shared_ptr<std::vector<std::string>> Collection::shardIds() const {
   auto clusterInfo = arangodb::ClusterInfo::instance();
+  auto coll = getCollection();
+  if (coll->isSmart() && coll->type() == TRI_COL_TYPE_EDGE) {
+    auto names = coll->realNamesForRead();
+    auto res = std::make_shared<std::vector<std::string>>();
+    for (auto const& n : names) {
+      auto collectionInfo = clusterInfo->getCollection(vocbase->name(), n);
+      auto list = clusterInfo->getShardList(
+          arangodb::basics::StringUtils::itoa(collectionInfo->cid()));
+      for (auto const& x : *list) {
+        res->push_back(x);
+      }
+    }
+    return res;
+  }
   return clusterInfo->getShardList(
       arangodb::basics::StringUtils::itoa(getPlanId()));
 }
 
 /// @brief returns the shard keys of a collection
 std::vector<std::string> Collection::shardKeys() const {
-  auto clusterInfo = arangodb::ClusterInfo::instance();
-
-  std::string id;
-  if (arangodb::ServerState::instance()->isDBServer() &&
-      documentCollection()->_info.planId() > 0) {
-    id = std::to_string(documentCollection()->_info.planId());
-  } else {
-    id = name;
-  }
-
-  auto collectionInfo =
-      clusterInfo->getCollection(std::string(vocbase->_name), id);
-  if (collectionInfo.get() == nullptr) {
-    THROW_ARANGO_EXCEPTION_FORMAT(TRI_ERROR_INTERNAL,
-                                  "collection not found '%s' -> '%s'",
-                                  vocbase->_name, name.c_str());
-  }
-
+  auto coll = getCollection();
   std::vector<std::string> keys;
-  for (auto const& x : collectionInfo.get()->shardKeys()) {
+  for (auto const& x : coll->shardKeys()) {
     keys.emplace_back(x);
   }
   return keys;
@@ -136,11 +120,16 @@ std::vector<std::string> Collection::shardKeys() const {
 
 /// @brief whether or not the collection uses the default sharding
 bool Collection::usesDefaultSharding() const {
-  // check if collection shard keys are only _key
-  std::vector<std::string> sk(shardKeys());
+  return getCollection()->usesDefaultShardKeys();
+}
 
-  if (sk.size() != 1 || sk[0] != StaticStrings::KeyString) {
-    return false;
+/// @brief either use the set collection or get one from ClusterInfo:
+std::shared_ptr<LogicalCollection> Collection::getCollection() const {
+  if (collection == nullptr) {
+    auto clusterInfo = arangodb::ClusterInfo::instance();
+    return clusterInfo->getCollection(vocbase->name(), name);
   }
-  return true;
+  std::shared_ptr<LogicalCollection> dummy;   // intentionally empty
+  // Use the aliasing constructor:
+  return std::shared_ptr<LogicalCollection>(dummy, collection);
 }

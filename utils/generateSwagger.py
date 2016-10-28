@@ -273,6 +273,15 @@ def LIT(txt, wordboundary = ['<b>','</b>']):
     return r.sub(subpattern, txt)
 
 ################################################################################
+### @brief LIT
+###
+### \ -> needs to become \\ so \n's in the text can be differciated.
+################################################################################
+
+def BACKSLASH(txt):
+    return txt.replace('\\', '\\\\\\')
+
+################################################################################
 ### @brief Typegraphy
 ################################################################################
 
@@ -292,7 +301,7 @@ def Typography(txt):
     r = rc(r"""@ref [a-zA-Z0-9]+""", MS)
     txt = r.sub("the manual", txt)
     txt = re.sub(r"@endDocuBlock", "", txt)
-
+    txt = BACKSLASH(txt);
     return txt
 
 ################################################################################
@@ -510,6 +519,9 @@ def restheader(cargo, r=Regexen()):
     (fp, last) = cargo
 
     temp = parameters(last).split(',')
+    if temp == "":
+        raise Exception("Invalid restheader value. got empty string. Maybe missing closing bracket? " + path)
+
     (ucmethod, path) = temp[0].split()
 
     #TODO: hier checken, ob der letzte alles hatte (responses)
@@ -528,7 +540,7 @@ def restheader(cargo, r=Regexen()):
         raise Exception("Duplicate route")
 
     if currentDocuBlock == None:
-        raise Exception("No docublock started for this restheader: " + ucmethod + " " + path )
+        raise Exception("No docublock started for this restheader: " + ucmethod + " " + path)
 
     if lastDocuBlock != None and currentDocuBlock == lastDocuBlock:
         raise Exception("No new docublock started for this restheader: " + ucmethod + " " + path  + ' : ' + currentDocuBlock)
@@ -638,7 +650,7 @@ def restbodyparam(cargo, r=Regexen()):
     if restBodyParam == None:
         # https://github.com/swagger-api/swagger-ui/issues/1430
         # once this is solved we can skip this:
-        operation['description'] += "**A json post document with these Properties is required:**\n"
+        operation['description'] += "\n**A json post document with these Properties is required:**\n"
         restBodyParam = {
             'name': 'Json Post Body',
             'x-description-offset': len(swagger['paths'][httpPath][method]['description']),
@@ -1003,12 +1015,12 @@ def example_arangosh_run(cargo, r=Regexen()):
     except:
         print >> sys.stderr, "Failed to open example file:\n  '%s'" % fn
         raise
-    operation['x-examples'][currentExample]= '<details><summary>Example: ' + exampleHeader.strip('\n ') + '</summary><br><br><pre><code class="json">'
+    operation['x-examples'][currentExample]= '\n\n#Example:\n ' + exampleHeader.strip('\n ') + '\n\n<pre><code class="json">'
 
     for line in examplefile.readlines():
         operation['x-examples'][currentExample] += line
 
-    operation['x-examples'][currentExample] += '</code></pre><br></details>\n'
+    operation['x-examples'][currentExample] += '</code></pre>\n\n\n'
 
     line = ""
 
@@ -1146,34 +1158,41 @@ def unwrapPostJson(reference, layer):
         if '$ref' in thisParam:
             subStructRef = getReference(thisParam, reference, None)
 
-            rc += ' ' * layer + " - **" + param + "**:\n"
+            rc += '  ' * layer + "- **" + param + "**:\n"
             rc += unwrapPostJson(subStructRef, layer + 1)
     
         elif thisParam['type'] == 'object':
-            rc += ' ' * layer + " - **" + param + "**: " + TrimThisParam(brTrim(thisParam['description']), layer) + "\n"
+            rc += '  ' * layer + "- **" + param + "**: " + TrimThisParam(brTrim(thisParam['description']), layer) + "\n"
         elif swagger['definitions'][reference]['properties'][param]['type'] == 'array':
-            rc += ' ' * layer + " - **" + param + "**: " + TrimThisParam(brTrim(thisParam['description']), layer)
+            rc += '  ' * layer + "- **" + param + "**"
+            trySubStruct = False
+            lf=""
             if 'type' in thisParam['items']:
-                rc += " of type " + thisParam['items']['type']  + "\n"
+                rc += " (" + thisParam['items']['type']  + ")"
+                lf="\n"
             else:
                 if len(thisParam['items']) == 0:
-                    rc += "anonymous json object\n"
+                    rc += " (anonymous json object)"
+                    lf="\n"
                 else:
-                    try:
-                        subStructRef = getReference(thisParam['items'], reference, None)
-                    except:
-                        print >>sys.stderr, "while analyzing: " + param
-                        print >>sys.stderr, thisParam
-                    rc += "\n" + unwrapPostJson(subStructRef, layer + 1)
+                    trySubStruct = True
+            rc += ": " + TrimThisParam(brTrim(thisParam['description']), layer) + lf
+            if trySubStruct:
+                try:
+                    subStructRef = getReference(thisParam['items'], reference, None)
+                except:
+                    print >>sys.stderr, "while analyzing: " + param
+                    print >>sys.stderr, thisParam
+                rc += "\n" + unwrapPostJson(subStructRef, layer + 1)
         else:
-            rc += ' ' * layer + " - **" + param + "**: " + TrimThisParam(thisParam['description'], layer) + '\n'
+            rc += '  ' * layer + "- **" + param + "**: " + TrimThisParam(thisParam['description'], layer) + '\n'
     return rc
 
 
 
 
 if len(sys.argv) < 4:
-  print >> sys.stderr, "usage: " + sys.argv[0] + " <scriptDir> <outDir> <relDir> <docublockdir>"
+  print >> sys.stderr, "usage: " + sys.argv[0] + " <scriptDir> <outDir> <relDir> <docublockdir> <optional: filter>"
   sys.exit(1)
 
 scriptDir = sys.argv[1]
@@ -1188,6 +1207,10 @@ relDir = sys.argv[3]
 if not relDir.endswith("/"):
   relDir += "/"
 
+fileFilter = ""
+if len(sys.argv) > 5:
+    fileFilter = sys.argv[5]
+    print >> sys.stderr, "Filtering for: [" + fileFilter + "]"
 # read ArangoDB version
 f = open(scriptDir + "VERSION", "r")
 for version in f:
@@ -1210,6 +1233,9 @@ for chapter in os.listdir(topdir):
     files[chapter] = []
     curPath = os.path.join(topdir, chapter)
     for oneFile in os.listdir(curPath):
+        if fileFilter != "" and oneFile != fileFilter:
+            print >> sys.stderr, "Skipping: [" + oneFile + "]"
+            continue
         curPath2 = os.path.join(curPath, oneFile)
         if os.path.isfile(curPath2) and oneFile[0] != "." and oneFile.endswith(".md"):
             files[chapter].append(os.path.join(topdir, chapter, oneFile))

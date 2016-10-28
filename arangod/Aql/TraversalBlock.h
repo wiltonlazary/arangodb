@@ -26,9 +26,15 @@
 
 #include "Aql/ExecutionBlock.h"
 #include "Aql/TraversalNode.h"
+#include "Basics/VelocyPackHelper.h"
 #include "VocBase/Traverser.h"
 
+#include <velocypack/Slice.h>
+#include <velocypack/velocypack-aliases.h>
+
 namespace arangodb {
+class ManagedDocumentResult;
+
 namespace aql {
 
 class TraversalBlock : public ExecutionBlock {
@@ -37,14 +43,14 @@ class TraversalBlock : public ExecutionBlock {
 
   ~TraversalBlock();
 
-  /// @brief cleanup, here we clean up all internally generated values
-  void freeCaches();
-
   /// @brief initialize, here we fetch all docs from the database
   int initialize() override;
 
   /// @brief initializeCursor
   int initializeCursor(AqlItemBlock* items, size_t pos) override;
+
+  /// @brief shutdown send destroy to all engines.
+  int shutdown(int errorCode) override final;
 
   /// @brief getSome
   AqlItemBlock* getSome(size_t atLeast, size_t atMost) override final;
@@ -53,6 +59,32 @@ class TraversalBlock : public ExecutionBlock {
   // will only return less than atLeast if there aren't atLeast many
   // things to skip overall.
   size_t skipSome(size_t atLeast, size_t atMost) override final;
+
+ private:
+
+  /// @brief cleanup, here we clean up all internally generated values
+  void freeCaches();
+
+  /// @brief continue fetching of paths
+  bool morePaths(size_t hint);
+
+  /// @brief skip the next paths
+  size_t skipPaths(size_t hint);
+
+  /// @brief Initialize the filter expressions
+  void initializeExpressions(AqlItemBlock const*, size_t pos);
+
+  /// @brief Initialize the path enumerator
+  void initializePaths(AqlItemBlock const*, size_t pos);
+
+  /// @brief Checks if we output the vertex
+  bool usesVertexOutput() { return _vertexVar != nullptr; }
+
+  /// @brief Checks if we output the edge
+  bool usesEdgeOutput() { return _edgeVar != nullptr; }
+
+  /// @brief Checks if we output the path
+  bool usesPathOutput() { return _pathVar != nullptr; }
 
  private:
   /// @brief vertices buffer
@@ -67,7 +99,12 @@ class TraversalBlock : public ExecutionBlock {
   /// @brief current position in _paths, _edges, _vertices
   size_t _posInPaths;
 
-  /// @brief Depth first Traverser object
+  std::unique_ptr<ManagedDocumentResult> _mmdr;
+
+  /// @brief Options for the travereser
+  arangodb::traverser::TraverserOptions* _opts;
+
+  /// @brief Traverser object
   std::unique_ptr<arangodb::traverser::Traverser> _traverser;
 
   /// @brief The information to get the starting point, when a register id is
@@ -105,49 +142,15 @@ class TraversalBlock : public ExecutionBlock {
   /// @brief Register for the full path output
   RegisterId _pathReg;
 
-  /// @brief A collection name resolver required to identify vertex collections
-  arangodb::CollectionNameResolver* _resolver;
-
-  /// @brief reference to the conditions that might be executed locally
-  std::unordered_map<
-      size_t, std::vector<arangodb::traverser::TraverserExpression*>> const*
-      _expressions;
-
-  /// @brief whether or not one of the bounds expressions requires V8
-  bool _hasV8Expression;
-
-  /// @brief _inVars, a vector containing for each expression above
-  /// a vector of Variable*, used to execute the expression
-  std::vector<std::vector<Variable const*>> _inVars;
+  /// @brief _inVars, a vector containing all variables required
+  ///        for the filtering conditions.
+  std::vector<Variable const*> _inVars;
 
   /// @brief _inRegs, a vector containing for each expression above
   /// a vector of RegisterId, used to execute the expression
-  std::vector<std::vector<RegisterId>> _inRegs;
+  std::vector<RegisterId> _inRegs;
 
-  /// @brief continue fetching of paths
-  bool morePaths(size_t hint);
-
-  /// @brief skip the next paths
-  size_t skipPaths(size_t hint);
-
-  /// @brief Initialize the path enumerator
-  void initializePaths(AqlItemBlock const*);
-
-  /// @brief Checks if we output the vertex
-  bool usesVertexOutput() { return _vertexVar != nullptr; }
-
-  /// @brief Checks if we output the edge
-  bool usesEdgeOutput() { return _edgeVar != nullptr; }
-
-  /// @brief Checks if we output the path
-  bool usesPathOutput() { return _pathVar != nullptr; }
-
-  /// @brief Executes the path-local filter expressions
-  void executeExpressions();
-
-  /// @brief Executes the path-local filter expressions
-  ///        Also determines the context
-  void executeFilterExpressions();
+  std::unordered_map<ServerID, traverser::TraverserEngineID> const* _engines;
 };
 }  // namespace arangodb::aql
 }  // namespace arangodb

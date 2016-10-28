@@ -1,5 +1,5 @@
 /*jshint globalstrict:false, strict:false, maxlen: 500 */
-/*global assertEqual, assertTrue, assertNotEqual, AQL_EXPLAIN, AQL_EXECUTE */
+/*global assertEqual, assertFalse, assertTrue, assertNotEqual, AQL_EXPLAIN, AQL_EXECUTE */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief tests for optimizer rules
@@ -75,18 +75,17 @@ function optimizerRuleTestSuite() {
     assertEqual(findExecutionNodes(plan, "SortNode").length, 1, "Has SortNode");
   };
   var hasNoSortNode = function (plan) {
-    assertEqual(findExecutionNodes(plan, "SortNode").length, 0, "Has NO SortNode");
+    assertEqual(findExecutionNodes(plan, "SortNode").length, 0, "Has no SortNode");
   };
   var hasNoIndexNode = function (plan) {
-    assertEqual(findExecutionNodes(plan, "IndexNode").length, 0, "Has NO IndexNode");
+    assertEqual(findExecutionNodes(plan, "IndexNode").length, 0, "Has no IndexNode");
   };
   var hasNoResultsNode = function (plan) {
     assertEqual(findExecutionNodes(plan, "NoResultsNode").length, 1, "Has NoResultsNode");
   };
   var hasCalculationNodes = function (plan, countXPect) {
     assertEqual(findExecutionNodes(plan, "CalculationNode").length,
-                countXPect,
-                "Has " + countXPect +  " CalculationNode");
+                countXPect, "Has " + countXPect +  " CalculationNode");
   };
   var hasIndexNode = function (plan) {
     var rn = findExecutionNodes(plan, "IndexNode");
@@ -119,8 +118,8 @@ function optimizerRuleTestSuite() {
         for (i = 1; i <= loopto; ++i) {
           skiplist.save({ "a" : i, "b": j , "c": j, "d": i, "e": i, "joinme" : "aoeu " + j});
         }
-        skiplist.save(    { "a" : i,          "c": j, "d": i, "e": i, "joinme" : "aoeu " + j});
-        skiplist.save(    {                   "c": j,                 "joinme" : "aoeu " + j});
+        skiplist.save(  { "a" : i,          "c": j, "d": i, "e": i, "joinme" : "aoeu " + j});
+        skiplist.save(  {                   "c": j,                 "joinme" : "aoeu " + j});
       }
 
       skiplist.ensureSkiplist("a", "b");
@@ -133,8 +132,8 @@ function optimizerRuleTestSuite() {
         for (i = 1; i <= loopto; ++i) {
           skiplist2.save({ "f" : i, "g": j , "h": j, "i": i, "j": i, "joinme" : "aoeu " + j});
         }
-        skiplist2.save(    { "f" : i, "g": j,          "i": i, "j": i, "joinme" : "aoeu " + j});
-        skiplist2.save(    {                   "h": j,                 "joinme" : "aoeu " + j});
+        skiplist2.save(  { "f" : i, "g": j,          "i": i, "j": i, "joinme" : "aoeu " + j});
+        skiplist2.save(  {                   "h": j,                 "joinme" : "aoeu " + j});
       }
       skiplist2.ensureSkiplist("f", "g");
       skiplist2.ensureSkiplist("i");
@@ -159,45 +158,49 @@ function optimizerRuleTestSuite() {
       skiplist.ensureIndex({ type: "hash", fields: [ "y", "z" ], unique: false });
       
       var queries = [ 
-        [ "FOR v IN " + colName + " FILTER v.u == 1 SORT v.u RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.c RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.z RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.f RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 SORT v.z RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 SORT v.y RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.z == 1 SORT v.y RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.z == 1 SORT v.z RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.y RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.z RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.y, v.z RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.z, v.y RETURN 1", false ], // not supported yet
-        [ "FOR v IN " + colName + " FILTER v.d == 1 SORT v.d RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.d == 1 && v.e == 1 SORT v.d RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.d == 1 SORT v.e RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a, v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a, v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.a, v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.b RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.b, v.a RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b, v.a RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.b RETURN 1", true ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.c RETURN 1", false ],
-        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b, v.a RETURN 1", false ]
+        [ "FOR v IN " + colName + " FILTER v.u == 1 SORT v.u RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.c RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.z RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.c == 1 SORT v.f RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 SORT v.z RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 SORT v.y RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.z == 1 SORT v.y RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.z == 1 SORT v.z RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.y RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.z RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.y, v.z RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.y == 1 && v.z == 1 SORT v.z, v.y RETURN 1", true, false ], 
+        [ "FOR v IN " + colName + " FILTER v.d == 1 SORT v.d RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.d == 1 && v.e == 1 SORT v.d RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.d == 1 SORT v.e RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a, v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a, v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 SORT v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.a, v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.b RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.b == 1 SORT v.b, v.a RETURN 1", false, true ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b, v.a RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.b RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.c RETURN 1", true, true ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.b, v.a RETURN 1", true, false ],
+        [ "FOR v IN " + colName + " FILTER v.a == 1 && v.b == 1 SORT v.a, v.b, v.c RETURN 1", true, true ]
       ];
 
       queries.forEach(function(query) {
         var result = AQL_EXPLAIN(query[0]);
         if (query[1]) {
           assertNotEqual(-1, removeAlwaysOnClusterRules(result.plan.rules).indexOf(ruleName), query[0]);
-          hasNoSortNode(result);
         }
         else {
           assertEqual(-1, removeAlwaysOnClusterRules(result.plan.rules).indexOf(ruleName), query[0]);
+        }
+        if (query[2]) {
           hasSortNode(result);
+        } else {
+          hasNoSortNode(result);
         }
       });
     },
@@ -229,7 +232,7 @@ function optimizerRuleTestSuite() {
           for (j = 1; j < allresults.results.length; j++) {
             assertTrue(isEqual(allresults.results[0],
                                allresults.results[j]),
-                       "whether the execution of '" + query[0] +
+                       "while execution of '" + query[0] +
                        "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                        " Should be: '" + JSON.stringify(allresults.results[0]) +
                        "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -237,9 +240,7 @@ function optimizerRuleTestSuite() {
           }
         }
       });
-
     },
-
 
     ////////////////////////////////////////////////////////////////////////////////
     /// @brief test that rule has an effect
@@ -273,7 +274,7 @@ function optimizerRuleTestSuite() {
         for (j = 1; j < allresults.results.length; j++) {
             assertTrue(isEqual(allresults.results[0],
                                allresults.results[j]),
-                       "whether the execution of '" + query +
+                       "while execution of '" + query +
                        "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                        " Should be: '" + JSON.stringify(allresults.results[0]) +
                        "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -311,7 +312,7 @@ function optimizerRuleTestSuite() {
         for (j = 1; j < allresults.results.length; j++) {
           assertTrue(isEqual(allresults.results[0],
                              allresults.results[j]),
-                     "whether the execution of '" + query +
+                     "while execution of '" + query +
                      "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                      " Should be: '" + JSON.stringify(allresults.results[0]) +
                      "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -319,12 +320,8 @@ function optimizerRuleTestSuite() {
         }
         i++;
       });
-
     },
 
-
-
-    
     ////////////////////////////////////////////////////////////////////////////////
     /// @brief this sort is replaceable by an index.
     ////////////////////////////////////////////////////////////////////////////////
@@ -372,7 +369,7 @@ function optimizerRuleTestSuite() {
           // This plan didn't sort by the index, so we need to re-sort the result by v.a and v.b
           assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                              allresults.results[j].json.sort(sortArray)),
-                     "whether the execution of '" + query +
+                     "while execution of '" + query +
                      "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                      " Should be: '" + JSON.stringify(allresults.results[0]) +
                      "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -382,7 +379,7 @@ function optimizerRuleTestSuite() {
         else {
           assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                              allresults.results[j].json),
-                     "whether the execution of '" + query +
+                     "while execution of '" + query +
                      "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                      " Should be: '" + JSON.stringify(allresults.results[0]) +
                      "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -426,7 +423,7 @@ function optimizerRuleTestSuite() {
       QResults[2] = AQL_EXECUTE(query, { }, paramIndexFromSort_IndexRange).json;
       XPresult    = AQL_EXPLAIN(query, { }, paramIndexFromSort_IndexRange);
 
-      assertEqual([ secondRuleName ], removeAlwaysOnClusterRules(XPresult.plan.rules).sort());
+      assertEqual([ ruleName, secondRuleName ], removeAlwaysOnClusterRules(XPresult.plan.rules).sort());
       // The sortnode and its calculation node should not have been removed.
       hasSortNode(XPresult);
       hasCalculationNodes(XPresult, 4);
@@ -456,7 +453,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0],
                            allresults.results[j]),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -536,7 +533,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                            allresults.results[j].json.sort(sortArray)),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -550,7 +547,6 @@ function optimizerRuleTestSuite() {
     ////////////////////////////////////////////////////////////////////////////////
 
     testRangeSupersedesSort2: function () {
-
       var query = "FOR v IN " + colName + " FILTER v.a == 1 SORT v.a, v.b RETURN [v.a, v.b, v.c]";
       var XPresult;
       var QResults=[];
@@ -618,22 +614,19 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0],
                            allresults.results[j]),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
                   );
       }
     },
-
-
-
     
     ////////////////////////////////////////////////////////////////////////////////
     /// @brief test in detail that an index range can be used for an equality filter.
     ////////////////////////////////////////////////////////////////////////////////
+    
     testRangeEquals: function () {
-
       var query = "FOR v IN " + colName + " FILTER v.a == 1 RETURN [v.a, v.b]";
 
       var XPresult;
@@ -660,7 +653,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
           assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                              allresults.results[j].json.sort(sortArray)),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -668,10 +661,10 @@ function optimizerRuleTestSuite() {
       }
     },
 
+    ////////////////////////////////////////////////////////////////////////////////
+    /// @brief test in detail that an index range can be used for a less than filter
+    ////////////////////////////////////////////////////////////////////////////////
 
-    ////////////////////////////////////////////////////////////////////////////////
-    /// @brief test in detail that an index range can be used for a less than filter.
-    ////////////////////////////////////////////////////////////////////////////////
     testRangeLessThan: function () {
       var query = "FOR v IN " + colName + " FILTER v.a < 5 RETURN [v.a, v.b]";
 
@@ -697,7 +690,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                            allresults.results[j].json.sort(sortArray)),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -733,7 +726,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                            allresults.results[j].json.sort(sortArray)),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -745,6 +738,7 @@ function optimizerRuleTestSuite() {
     /// @brief test in detail that an index range can be used for an and combined 
     ///   greater than + less than filter spanning a range.
     ////////////////////////////////////////////////////////////////////////////////
+
     testRangeBandpass: function () {
       var query = "FOR v IN " + colName + " FILTER v.a > 4 && v.a < 10 RETURN [v.a, v.b]";
       var XPresult;
@@ -769,7 +763,7 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0].json.sort(sortArray),
                            allresults.results[j].json.sort(sortArray)),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
@@ -811,14 +805,13 @@ function optimizerRuleTestSuite() {
       for (j = 1; j < allresults.results.length; j++) {
         assertTrue(isEqual(allresults.results[0],
                            allresults.results[j]),
-                   "whether the execution of '" + query +
+                   "while execution of '" + query +
                    "' this plan gave the wrong results: " + JSON.stringify(allresults.plans[j]) +
                    " Should be: '" + JSON.stringify(allresults.results[0]) +
                    "' but Is: " + JSON.stringify(allresults.results[j]) + "'"
                   );
       }
     },
-
 
     ////////////////////////////////////////////////////////////////////////////////
     /// @brief test in detail that an index range can be used for an or combined 
@@ -896,6 +889,16 @@ function optimizerRuleTestSuite() {
       
       var rules = AQL_EXPLAIN("FOR v IN " + colName + " SORT v.d ASC RETURN v").plan.rules;
       assertNotEqual(-1, rules.indexOf(ruleName));
+
+      var nodes = AQL_EXPLAIN("FOR v IN " + colName + " SORT v.d ASC RETURN v").plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse);
+        }
+      });
+      assertTrue(seen);
     },
 
     testSortDescEmptyCollection : function () {
@@ -908,6 +911,228 @@ function optimizerRuleTestSuite() {
       
       var rules = AQL_EXPLAIN("FOR v IN " + colName + " SORT v.d DESC RETURN v").plan.rules;
       assertNotEqual(-1, rules.indexOf(ruleName));
+      
+      var nodes = AQL_EXPLAIN("FOR v IN " + colName + " SORT v.d DESC RETURN v").plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertTrue(node.reverse);
+        }
+      });
+      assertTrue(seen);
+    },
+
+    testSortAscWithFilter : function () {
+      var query = "FOR v IN " + colName + " FILTER v.d == 123 SORT v.d ASC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse);
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortAscWithFilterMulti : function () {
+      var query = "FOR v IN " + colName + " FILTER v.a == 123 SORT v.b ASC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse);
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortAscWithFilterNonConst : function () {
+      var query = "FOR v IN " + colName + " FILTER v.d == NOOPT(123) SORT v.d ASC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse);
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortAscWithFilterNonConstMulti : function () {
+      var query = "FOR v IN " + colName + " FILTER v.a == NOOPT(123) SORT v.b ASC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse);
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortDescWithFilter : function () {
+      var query = "FOR v IN " + colName + " FILTER v.d == 123 SORT v.d DESC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse); // forward or backward does not matter here
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortDescWithFilterMulti : function () {
+      var query = "FOR v IN " + colName + " FILTER v.a == 123 SORT v.b DESC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertTrue(node.reverse); 
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortAscWithFilterSubquery : function () {
+      var query = "FOR i IN [123] RETURN (FOR v IN " + colName + " FILTER v.a == i SORT v.b ASC RETURN v)";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = helper.findExecutionNodes(AQL_EXPLAIN(query).plan, "SubqueryNode")[0].subquery.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse); 
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortDescWithFilterSubquery : function () {
+      var query = "FOR i IN [123] RETURN (FOR v IN " + colName + " FILTER v.a == i SORT v.b DESC RETURN v)";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = helper.findExecutionNodes(AQL_EXPLAIN(query).plan, "SubqueryNode")[0].subquery.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertTrue(node.reverse); 
+        }
+      });
+      assertTrue(seen);
+    },
+
+    testSortDescWithFilterNonConst : function () {
+      var query = "FOR v IN " + colName + " FILTER v.d == NOOPT(123) SORT v.d DESC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertFalse(node.reverse); // forward or backward does not matter here
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortDescWithFilterNonConstMulti : function () {
+      var query = "FOR v IN " + colName + " FILTER v.a == NOOPT(123) SORT v.b DESC RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = false;
+      nodes.forEach(function(node) {
+        assertNotEqual("SortNode", node.type);
+        if (node.type === "IndexNode") {
+          seen = true;
+          assertTrue(node.reverse); 
+        }
+      });
+      assertTrue(seen);
+    },
+    
+    testSortModifyFilterCondition : function () {
+      var query = "FOR v IN " + colName + " FILTER v.a == 123 SORT v.a, v.xxx RETURN v";
+      var rules = AQL_EXPLAIN(query).plan.rules;
+      assertNotEqual(-1, rules.indexOf(ruleName));
+      assertNotEqual(-1, rules.indexOf(secondRuleName));
+      assertNotEqual(-1, rules.indexOf("remove-filter-covered-by-index"));
+
+      var nodes = AQL_EXPLAIN(query).plan.nodes;
+      var seen = 0;
+      nodes.forEach(function(node) {
+        if (node.type === "IndexNode") {
+          ++seen;
+          assertFalse(node.reverse);
+        } else if (node.type === "SortNode") {
+          // first sort condition (v.a) should have been removed because it is const
+          ++seen;
+          assertEqual(1, node.elements.length);
+        }
+      });
+      assertEqual(2, seen);
     }
 
   };
@@ -920,4 +1145,3 @@ function optimizerRuleTestSuite() {
 jsunity.run(optimizerRuleTestSuite);
 
 return jsunity.done();
-
